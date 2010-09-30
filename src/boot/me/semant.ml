@@ -2134,27 +2134,28 @@ and vec_sty (word_bits:Il.bits) : Il.scalar_ty =
   let ptr = Il.ScalarTy (Il.AddrTy Il.OpaqueTy) in
     Il.AddrTy (Il.StructTy [| word; word; word; ptr |])
 
-and referent_type (cx:ctxt) (t:Ast.ty) : Il.referent_ty =
+and referent_type
+    ?parent_tag:parent_tag
+    ?boxed:(boxed=false)
+    (cx:ctxt)
+    (t:Ast.ty)
+    : Il.referent_ty =
   let s t = Il.ScalarTy t in
   let v b = Il.ValTy b in
   let p t = Il.AddrTy t in
   let sv b = s (v b) in
   let sp t = s (p t) in
+  let recur ty = referent_type ?parent_tag:parent_tag ~boxed:boxed cx ty in
 
   let word_bits = cx.ctxt_abi.Abi.abi_word_bits in
   let word = word_rty word_bits in
   let ptr = sp Il.OpaqueTy in
   let rc_ptr = sp (Il.StructTy [| word; Il.OpaqueTy |]) in
-  let tup ttup = Il.StructTy (Array.map (referent_type cx) ttup) in
+  let tup ttup = Il.StructTy (Array.map recur ttup) in
   let tag ttag =
     let n = get_n_tag_tups cx ttag in
     let union =
-      let rty t =
-        match t with
-            Ast.TY_box (Ast.TY_tag dst_tag) when is_back_edge ttag dst_tag ->
-              sp (Il.StructTy [| word; Il.OpaqueTy |])
-          | _ -> referent_type cx t
-      in
+      let rty t = referent_type ~parent_tag:ttag ~boxed:boxed cx t in
       let tup ttup = Il.StructTy (Array.map rty ttup) in
         Array.init n (fun i -> tup (get_nth_tag_tup cx ttag i))
     in
@@ -2194,7 +2195,13 @@ and referent_type (cx:ctxt) (t:Ast.ty) : Il.referent_ty =
       | Ast.TY_fn _ -> fn_rty cx false
       | Ast.TY_obj _ -> obj_rty word_bits
 
-      | Ast.TY_tag ttag -> tag ttag
+      | Ast.TY_tag ttag ->
+          begin
+            match parent_tag with
+                Some parent_tag when boxed && is_back_edge ttag parent_tag ->
+                  Il.StructTy [| word; Il.OpaqueTy |]
+              | _ -> tag ttag
+          end
 
       | Ast.TY_chan _
       | Ast.TY_port _
@@ -2205,14 +2212,15 @@ and referent_type (cx:ctxt) (t:Ast.ty) : Il.referent_ty =
       | Ast.TY_native _ -> ptr
 
       | Ast.TY_box t ->
-          sp (Il.StructTy [| word; referent_type cx t |])
+          sp (Il.StructTy
+            [| word; referent_type ?parent_tag:parent_tag ~boxed:true cx t |])
 
-      | Ast.TY_mutable t -> referent_type cx t
+      | Ast.TY_mutable t -> recur t
 
       | Ast.TY_param (i, _) -> Il.ParamTy i
 
       | Ast.TY_named _ -> bug () "named type in referent_type"
-      | Ast.TY_constrained (t, _) -> referent_type cx t
+      | Ast.TY_constrained (t, _) -> recur t
 
 and slot_referent_type (cx:ctxt) (sl:Ast.slot) : Il.referent_ty =
   let s t = Il.ScalarTy t in
