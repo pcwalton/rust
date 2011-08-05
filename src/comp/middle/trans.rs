@@ -27,6 +27,7 @@ import syntax::ast;
 import driver::session;
 import middle::ty;
 import middle::freevars::*;
+import middle::mm;
 import back::link;
 import back::x86;
 import back::abi;
@@ -7878,6 +7879,7 @@ fn declare_intrinsics(llmod: ModuleRef) -> hashmap[str, ValueRef] {
     intrinsics.insert("llvm.memset.p0i8.i32", memset32);
     intrinsics.insert("llvm.memset.p0i8.i64", memset64);
     intrinsics.insert("llvm.trap", trap);
+    mm::gc::insert_gc_intrinsics(llmod, intrinsics);
     ret intrinsics;
 }
 

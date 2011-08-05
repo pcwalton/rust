@@ -17,6 +17,7 @@ import std::fs;
 import std::unsafe;
 import syntax::ast;
 import driver::session;
+import middle::mm;
 import middle::ty;
 import back::link;
 import back::x86;
@@ -284,10 +285,12 @@ tag cleanup {
 
 fn add_clean(cx: &@block_ctxt, val: ValueRef, ty: ty::t) {
     find_scope_cx(cx).cleanups += ~[clean(bind drop_slot(_, val, ty))];
+    mm::gc::root_if_necessary(cx, val, ty);
 }
 fn add_clean_temp(cx: &@block_ctxt, val: ValueRef, ty: ty::t) {
     find_scope_cx(cx).cleanups +=
         ~[clean_temp(val, bind drop_ty(_, val, ty))];
+    mm::gc::root_if_necessary(cx, val, ty);
 }
 
 // Note that this only works for temporaries. We should, at some point, move
