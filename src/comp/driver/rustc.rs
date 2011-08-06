@@ -406,6 +406,7 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
     let cfg = parse_cfgspecs(getopts::opt_strs(match, "cfg"));
     let test = opt_present(match, "test");
     let dps = opt_present(match, "dps");
+    let monomorphize = opt_present(match, "monomorphize");
     let sopts: @session::options =
         @{crate_mode: crate_mode,
           optimize: opt_level,
@@ -423,7 +424,8 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
           test: test,
           dps: dps,
           parse_only: parse_only,
-          no_trans: no_trans};
+          no_trans: no_trans,
+          monomorphize: monomorphize};
     ret sopts;
 }
 
@@ -456,7 +458,7 @@ fn opts() -> vec[getopts::opt] {
          optflag("time-llvm-passes"), optflag("no-typestate"),
          optflag("noverify"), optmulti("cfg"), optflag("test"),
          optflag("lib"), optflag("static"), optflag("dps"),
-         optflag("static-lto")];
+         optflag("static-lto"), optflag("monomorphize")];
 }
 
 fn main(args: vec[str]) {

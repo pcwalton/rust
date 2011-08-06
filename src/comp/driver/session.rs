@@ -44,7 +44,8 @@ type options =
      test: bool,
      dps: bool,
      parse_only: bool,
-     no_trans: bool
+     no_trans: bool,
+     monomorphize: bool
      };
 
 type crate_metadata = {name: str, data: u8[]};
