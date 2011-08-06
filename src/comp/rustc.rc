@@ -30,6 +30,8 @@ mod middle {
     mod kind;
     mod freevars;
     mod shape;
+    mod callgraph;
+    mod monomorph;
 
     mod tstate {
         mod ck;

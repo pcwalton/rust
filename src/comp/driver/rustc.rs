@@ -11,6 +11,7 @@ import front::attr;
 import middle::trans;
 import middle::resolve;
 import middle::freevars;
+import middle::callgraph;
 import middle::kind;
 import middle::ty;
 import middle::typeck;
@@ -154,6 +155,9 @@ fn compile_input(sess: session::session, cfg: ast::crate_cfg, input: str,
              bind typeck::check_crate(ty_cx, crate));
     time[()](time_passes, "alt checking",
              bind middle::check_alt::check_crate(ty_cx, crate));
+    //let call_graph =
+        time(time_passes, "call graph creation",
+             bind callgraph::create_call_graph(sess, ty_cx, crate));
     if sess.get_opts().run_typestate {
         time(time_passes, "typestate checking",
              bind middle::tstate::ck::check_crate(ty_cx, crate));
@@ -279,6 +283,7 @@ options:
     --no-typestate     don't run the typestate pass (unsafe!)
     --test             build test harness
     --dps              translate via destination-passing style (experimental)
+    --print-call-graph print a call graph in dot format to standard out
 
 ");
 }
@@ -407,6 +412,7 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
     let test = opt_present(match, "test");
     let dps = opt_present(match, "dps");
     let monomorphize = opt_present(match, "monomorphize");
+    let print_call_graph = opt_present(match, "print-call-graph");
     let sopts: @session::options =
         @{crate_mode: crate_mode,
           optimize: opt_level,
@@ -425,7 +431,8 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
           dps: dps,
           parse_only: parse_only,
           no_trans: no_trans,
-          monomorphize: monomorphize};
+          monomorphize: monomorphize,
+          print_call_graph: print_call_graph};
     ret sopts;
 }
 
@@ -458,7 +465,8 @@ fn opts() -> vec[getopts::opt] {
          optflag("time-llvm-passes"), optflag("no-typestate"),
          optflag("noverify"), optmulti("cfg"), optflag("test"),
          optflag("lib"), optflag("static"), optflag("dps"),
-         optflag("static-lto"), optflag("monomorphize")];
+         optflag("static-lto"), optflag("monomorphize"),
+         optflag("print-call-graph")];
 }
 
 fn main(args: vec[str]) {
