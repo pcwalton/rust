@@ -23,11 +23,12 @@ type config =
      uint_type: ty_mach,
      float_type: ty_mach};
 
+tag crate_mode { cm_exec; cm_dynamic_lib; cm_static_lib; cm_static_lto_lib; }
+
 type options =
     // The crate config requested for the session, which may be combined
     // with additional crate configurations during the compile process
-    {library: bool,
-     static: bool,
+    {crate_mode: crate_mode,
      optimize: uint,
      debuginfo: bool,
      verify: bool,

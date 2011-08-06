@@ -137,10 +137,13 @@ fn find_library_crate(sess: &session::session, ident: &ast::ident,
         }
     };
 
-    let nn = default_native_lib_naming(sess, sess.get_opts().static);
+    let nn = default_native_lib_naming(sess, sess.get_opts().crate_mode ==
+                                       session::cm_static_lib);
     let x =
         find_library_crate_aux(nn, crate_name, metas, library_search_paths);
-    if x != none || sess.get_opts().static { ret x; }
+    if x != none || sess.get_opts().crate_mode == session::cm_static_lib {
+        ret x;
+    }
     let nn2 = default_native_lib_naming(sess, true);
     ret find_library_crate_aux(nn2, crate_name, metas, library_search_paths);
 }

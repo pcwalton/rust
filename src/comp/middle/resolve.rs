@@ -10,6 +10,7 @@ import ast::local_def;
 
 import metadata::csearch;
 import metadata::cstore;
+import driver::session;
 import driver::session::session;
 import util::common::*;
 import std::map::new_int_hash;
@@ -333,7 +334,8 @@ fn visit_fn_with_scope(e: &@env, f: &ast::_fn, tp: &ast::ty_param[],
     // is this a main fn declaration?
     alt name {
       some(nm) {
-        if is_main_name(~[nm]) && !e.sess.get_opts().library {
+        if is_main_name(~[nm]) && e.sess.get_opts().crate_mode ==
+                session::cm_exec {
             // This is a main function -- set it in the session
             // as the main ID
             e.sess.set_main_id(id);

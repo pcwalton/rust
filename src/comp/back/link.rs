@@ -329,7 +329,7 @@ fn build_link_meta(sess: &session::session, c: &ast::crate, output: &str,
     }
 
     fn warn_missing(sess: &session::session, name: str, default: str) {
-        if !sess.get_opts().library { ret; }
+        if sess.get_opts().crate_mode == session::cm_exec { ret; }
         sess.warn(#fmt("missing crate link meta '%s', using '%s' as default",
                        name, default));
     }

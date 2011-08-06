@@ -330,6 +330,24 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
    -> @session::options {
     let library = opt_present(match, "lib");
     let static = opt_present(match, "static");
+    let static_lto = opt_present(match, "static-lto");
+
+    let crate_mode;
+    if static && static_lto {
+        fail "--static and --static-lto are mutually exclusive";
+    }
+    if !library {
+        if static || static_lto {
+            fail "--static and --static-lto are only valid with --library";
+        }
+        crate_mode = session::cm_exec;
+    } else if static {
+        crate_mode = session::cm_static_lib;
+    } else if static_lto {
+        crate_mode = session::cm_static_lto_lib;
+    } else {
+        crate_mode = session::cm_dynamic_lib;
+    }
 
     let library_search_paths = ~[binary_dir + "/lib"];
     // FIXME: Remove this vec->ivec conversion.
@@ -386,8 +404,7 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
     let test = opt_present(match, "test");
     let dps = opt_present(match, "dps");
     let sopts: @session::options =
-        @{library: library,
-          static: static,
+        @{crate_mode: crate_mode,
           optimize: opt_level,
           debuginfo: debuginfo,
           verify: verify,
@@ -435,7 +452,8 @@ fn opts() -> vec[getopts::opt] {
          optopt("sysroot"), optflag("stats"), optflag("time-passes"),
          optflag("time-llvm-passes"), optflag("no-typestate"),
          optflag("noverify"), optmulti("cfg"), optflag("test"),
-         optflag("lib"), optflag("static"), optflag("dps")];
+         optflag("lib"), optflag("static"), optflag("dps"),
+         optflag("static-lto")];
 }
 
 fn main(args: vec[str]) {
@@ -506,9 +524,19 @@ fn main(args: vec[str]) {
         ret;
     }
 
-    let stop_after_codegen =
-        sopts.output_type != link::output_type_exe ||
-            sopts.static && sopts.library;
+    let stop_after_codegen;
+    if sopts.output_type != link::output_type_exe {
+        stop_after_codegen = true;
+    } else {
+        alt sopts.crate_mode {
+            session::cm_exec. | session::cm_dynamic_lib. {
+                stop_after_codegen = false;
+            }
+            session::cm_static_lib. | session::cm_static_lto_lib. {
+                stop_after_codegen = true;
+            }
+        }
+    }
 
     alt output_file {
       none. {
@@ -611,7 +639,7 @@ fn main(args: vec[str]) {
     let used_libs = cstore::get_used_libraries(cstore);
     for l: str  in used_libs { gcc_args += ["-l" + l]; }
 
-    if sopts.library {
+    if sopts.crate_mode != session::cm_exec {
         gcc_args += [lib_cmd];
     } else {
         // FIXME: why do we hardcode -lm?
