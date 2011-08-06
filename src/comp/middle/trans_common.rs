@@ -17,6 +17,7 @@ import std::fs;
 import std::unsafe;
 import syntax::ast;
 import driver::session;
+import middle::monomorph;
 import middle::ty;
 import back::link;
 import back::x86;
@@ -142,7 +143,8 @@ type crate_ctxt = {
     rust_object_type: TypeRef,
     tydesc_type: TypeRef,
     task_type: TypeRef,
-    shape_cx: shape::ctxt
+    shape_cx: shape::ctxt,
+    monomorph_cx: monomorph::ctxt
 };
 
 type local_ctxt =

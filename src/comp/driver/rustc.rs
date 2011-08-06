@@ -155,7 +155,7 @@ fn compile_input(sess: session::session, cfg: ast::crate_cfg, input: str,
              bind typeck::check_crate(ty_cx, crate));
     time[()](time_passes, "alt checking",
              bind middle::check_alt::check_crate(ty_cx, crate));
-    //let call_graph =
+    let call_graph =
         time(time_passes, "call graph creation",
              bind callgraph::create_call_graph(sess, ty_cx, crate));
     if sess.get_opts().run_typestate {
@@ -171,7 +171,8 @@ fn compile_input(sess: session::session, cfg: ast::crate_cfg, input: str,
         time[llvm::llvm::ModuleRef](time_passes, "translation",
                                     bind trans::trans_crate(sess, crate,
                                                             ty_cx, output,
-                                                            ast_map));
+                                                            ast_map,
+                                                            call_graph));
     time[()](time_passes, "LLVM passes",
              bind link::write::run_passes(sess, llmod, output));
 }

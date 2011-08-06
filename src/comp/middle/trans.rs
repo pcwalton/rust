@@ -27,6 +27,8 @@ import syntax::ast;
 import driver::session;
 import middle::ty;
 import middle::freevars::*;
+import middle::callgraph;
+import middle::monomorph;
 import back::link;
 import back::x86;
 import back::abi;
@@ -7450,6 +7452,24 @@ fn decl_fn_and_pair_full(ccx: &@crate_ctxt, sp: &span, path: &str[],
     }
 }
 
+// Declares the LLVM function corresponding to an instantiation of a generic
+// item.
+fn decl_instn(ccx: @crate_ctxt, sig: &callgraph::sig) -> ValueRef {
+    // TODO: Munge the declaration of the item ID, replacing all type
+    // parameter types with the real types.
+    if sig.node.crate == ast::local_crate {
+        let llval = ccx.item_ids.get(sig.node.node);
+        llvm::LLVMDumpValue(llval);
+        log_err "at types: ";
+        for typ in sig.types { log_err ty_to_str(ccx.tcx, typ); }
+        log_err "---";
+        ret llval;
+    } else {
+        // TODO
+        fail "external crate instantiations unimplemented";
+    }
+}
+
 // Create a closure: a pair containing (1) a ValueRef, pointing to where the
 // fn's definition is in the executable we're creating, and (2) a pointer to
 // space for the function's environment.
@@ -8035,7 +8055,8 @@ fn write_metadata(cx: &@crate_ctxt, crate: &@ast::crate) {
 }
 
 fn trans_crate(sess: &session::session, crate: &@ast::crate, tcx: &ty::ctxt,
-               output: &str, amap: &ast_map::map) -> ModuleRef {
+               output: &str, amap: &ast_map::map, callgraph: &callgraph::t)
+        -> ModuleRef {
     let llmod =
         llvm::LLVMModuleCreateWithNameInContext(str::buf("rust_out"),
                                                 llvm::LLVMGetGlobalContext());
@@ -8046,6 +8067,7 @@ fn trans_crate(sess: &session::session, crate: &@ast::crate, tcx: &ty::ctxt,
     let td = mk_target_data(dat_layt);
     let tn = mk_type_names();
     let intrinsics = declare_intrinsics(llmod);
+    let item_ids = new_int_hash[ValueRef]();
     let task_type = T_task();
     let taskptr_type = T_ptr(task_type);
     tn.associate("taskptr", taskptr_type);
@@ -8067,7 +8089,7 @@ fn trans_crate(sess: &session::session, crate: &@ast::crate, tcx: &ty::ctxt,
           tn: tn,
           externs: new_str_hash[ValueRef](),
           intrinsics: intrinsics,
-          item_ids: new_int_hash[ValueRef](),
+          item_ids: item_ids,
           ast_map: amap,
           item_symbols: new_int_hash[str](),
           mutable main_fn: none[ValueRef],
@@ -8099,11 +8121,16 @@ fn trans_crate(sess: &session::session, crate: &@ast::crate, tcx: &ty::ctxt,
           rust_object_type: T_rust_object(),
           tydesc_type: tydesc_type,
           task_type: task_type,
-          shape_cx: shape::mk_ctxt(llmod)};
+          shape_cx: shape::mk_ctxt(llmod),
+          monomorph_cx: monomorph::mk_ctxt(tcx, item_ids, amap)};
     let cx = new_local_ctxt(ccx);
     collect_items(ccx, crate);
     collect_tag_ctors(ccx, crate);
     trans_constants(ccx, crate);
+    if tcx.sess.get_opts().monomorphize {
+        monomorph::populate_instns(ccx.monomorph_cx, callgraph,
+                                   bind decl_instn(ccx, _));
+    }
     trans_mod(cx, crate.node.module);
     create_crate_map(ccx);
     emit_tydescs(ccx);

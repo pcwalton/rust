@@ -2,6 +2,7 @@
 // strategy for generics.
 
 import lib::llvm::llvm::ValueRef;
+import middle::ast_map;
 import middle::callgraph;
 import middle::callgraph::ref;
 import middle::callgraph::sig;
@@ -25,8 +26,10 @@ type instn_info = {
 type instns = hashmap[sig, instn_info];
 
 type ctxt = {
-    tcx: ty::ctxt,      // The type context.
-    instns: instns      // The type instantiations.
+    tcx: ty::ctxt,                              // The type context.
+    instns: instns,                             // The type instantiations.
+    item_ids: hashmap[ast::node_id,ValueRef],
+    ast_map: ast_map::map
 };
 
 
@@ -55,20 +58,38 @@ fn eq_sig(a: &sig, b: &sig) -> bool {
 
 
 // Creates a context.
-fn mk_ctxt(tcx: &ty::ctxt) -> ctxt {
-    ret { tcx: tcx, instns: map::mk_hashmap(hash_sig, eq_sig) };
+fn mk_ctxt(tcx: &ty::ctxt, item_ids: &hashmap[ast::node_id,ValueRef],
+           ast_map: &ast_map::map) -> ctxt {
+    ret {
+        tcx: tcx,
+        instns: map::mk_hashmap[sig,instn_info](hash_sig, eq_sig),
+        item_ids: item_ids,
+        ast_map: ast_map
+    };
 }
 
 fn item_is_generic(cx: &ctxt, item_id: &ast::def_id) -> bool {
-    // TODO
-    fail;
+    // TODO: externals
+    alt cx.ast_map.get(item_id.node) {
+        ast_map::node_item(item) {
+            alt item.node {
+                ast::item_const(_,_) | ast::item_mod(_) |
+                ast::item_native_mod(_) { ret false; }
+                ast::item_fn(_, tps) { ret ivec::len(tps) > 0u; }
+                ast::item_ty(_, tps) { ret ivec::len(tps) > 0u; }
+                ast::item_tag(_, tps) { ret ivec::len(tps) > 0u; }
+                ast::item_obj(_, tps, _) { ret ivec::len(tps) > 0u; }
+                ast::item_res(_, _, tps, _) { ret ivec::len(tps) > 0u; }
+            }
+        }
+        _ { fail "non-item in item_is_generic"; }
+    }
 }
 
 // Uses the call graph to determine which specializations we need to generate.
 // The provided |callback| generates the |ValueRef| declaration for each
 // instantiation.
 fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
-                   item_ids: &hashmap[ast::def_id,ValueRef],
                    callback: fn(&sig)->ValueRef) {
     let graph_map = common::new_def_hash[@mutable (ref[])]();
     let worklist: sig[] = ~[];
@@ -102,7 +123,7 @@ fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
                     }
 
                     // Now add the item to the worklist.
-                    worklist += ~[{ node: sig.node, types: new_types }];
+                    worklist += ~[{ node: ref.sig.node, types: new_types }];
 
                     generic_refs += ~[{
                         path_id: ref.path_id,
@@ -112,11 +133,13 @@ fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
             }
 
             // Now monomorphize the item.
-            cx.instns.insert(sig, {
-                template: item_ids.get(sig.node),
-                special: callback(sig),
-                uses: generic_refs
-            });
+            if item_is_generic(cx, sig.node) {
+                cx.instns.insert(sig, {
+                    template: cx.item_ids.get(sig.node.node), // TODO: externs
+                    special: callback(sig),
+                    uses: generic_refs
+                });
+            }
         }
 
         i += 1u;
