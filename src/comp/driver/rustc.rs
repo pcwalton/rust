@@ -360,13 +360,16 @@ fn build_session_options(binary: str, match: getopts::match, binary_dir: str)
     let output_type =
         if parse_only || no_trans {
             link::output_type_none
-        } else if (opt_present(match, "S")) {
+        } else if opt_present(match, "S") {
             link::output_type_assembly
-        } else if (opt_present(match, "c")) {
+        } else if opt_present(match, "c") {
             link::output_type_object
-        } else if (opt_present(match, "emit-llvm")) {
+        } else if opt_present(match, "emit-llvm") ||
+                crate_mode == session::cm_static_lto_lib {
             link::output_type_bitcode
-        } else { link::output_type_exe };
+        } else {
+            link::output_type_exe
+        };
     let verify = !opt_present(match, "noverify");
     let save_temps = opt_present(match, "save-temps");
     let debuginfo = opt_present(match, "g");
