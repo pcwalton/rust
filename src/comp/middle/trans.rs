@@ -128,7 +128,7 @@ fn type_of_fn_full(cx: &@crate_ctxt, sp: &span, proto: ast::proto,
     } else { atys += ~[T_opaque_closure_ptr(*cx)]; }
 
     // Args >3: ty params, if not acquired via capture...
-    if !is_method {
+    if !is_method && !monomorphizing(cx) {
         let i = 0u;
         while i < ty_param_count {
             atys += ~[T_ptr(cx.tydesc_type)];
@@ -247,7 +247,7 @@ fn type_of_inner(cx: &@crate_ctxt, sp: &span, t: &ty::t) -> TypeRef {
       ty::ty_var(_) {
         cx.tcx.sess.span_fatal(sp, "trans::type_of called on ty_var");
       }
-      ty::ty_param(_, _) { llty = T_typaram(cx.tn); }
+      ty::ty_param(n, _) { llty = T_typaram(cx.tn, n); }
       ty::ty_type. { llty = T_ptr(cx.tydesc_type); }
     }
     assert (llty as int != 0);
@@ -4284,8 +4284,10 @@ fn trans_lval_gen(cx: &@block_ctxt, e: &@ast::expr) -> lval_result {
                 let ety = ty::expr_ty(ccx.tcx, e);
                 let ellty;
                 if ty::type_has_dynamic_size(ccx.tcx, ety) {
-                    ellty = T_typaram_ptr(ccx.tn);
-                } else { ellty = T_ptr(type_of(ccx, e.span, ety)); }
+                    ellty = T_ptr(T_i8());
+                } else {
+                    ellty = T_ptr(type_of(ccx, e.span, ety));
+                }
                 sub.bcx.build.PointerCast(sub.val, ellty)
               }
               ty::ty_ptr(_) { sub.val }
@@ -4707,7 +4709,8 @@ fn trans_arg_expr(cx: &@block_ctxt, arg: &ty::arg, lldestty0: TypeRef,
         val = do_spill(bcx, val);
     }
 
-    if !is_bot && ty::type_contains_params(ccx.tcx, arg.ty) {
+    if !is_bot && ty::type_contains_params(ccx.tcx, arg.ty) &&
+            !monomorphizing(ccx) {
         let lldestty = lldestty0;
         if arg.mode == ty::mo_val && ty::type_is_structural(ccx.tcx, e_ty) {
             lldestty = T_ptr(lldestty);
@@ -4753,8 +4756,10 @@ fn trans_args(cx: &@block_ctxt, llenv: ValueRef,
     let llretslot = llretslot_res.val;
     alt gen {
       some(g) {
-        lazily_emit_all_generic_info_tydesc_glues(cx, g);
-        lltydescs = g.tydescs;
+        if !monomorphizing(bcx_ccx(cx)) {
+            lazily_emit_all_generic_info_tydesc_glues(cx, g);
+            lltydescs = g.tydescs;
+        }
         args = ty::ty_fn_args(bcx_tcx(cx), g.item_type);
         retty = ty::ty_fn_ret(bcx_tcx(cx), g.item_type);
       }
@@ -4852,13 +4857,12 @@ fn trans_call(cx: &@block_ctxt, f: &@ast::expr,
     bcx = args_res.bcx;
     let llargs = args_res.args;
     let llretslot = args_res.retslot;
-    /*
-    log "calling: " + val_str(bcx_ccx(cx).tn, faddr);
 
-    for (ValueRef arg in llargs) {
-        log "arg: " + val_str(bcx_ccx(cx).tn, arg);
+    log_err "calling: " + val_str(bcx_ccx(cx).tn, faddr);
+
+    for arg in llargs {
+        log_err "arg: " + val_str(bcx_ccx(cx).tn, arg);
     }
-    */
 
     /* If the block is terminated,
        then one or more of the args has

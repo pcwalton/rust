@@ -442,6 +442,10 @@ fn find_scope_cx(cx: &@block_ctxt) -> @block_ctxt {
     }
 }
 
+fn monomorphizing(ccx: &@crate_ctxt) -> bool {
+    ret ccx.tcx.sess.get_opts().monomorphize;
+}
+
 // Accessors
 // TODO: When we have overloading, simplify these names!
 
@@ -690,16 +694,15 @@ fn T_chan(t: TypeRef) -> TypeRef {
 fn T_taskptr(cx: &crate_ctxt) -> TypeRef { ret T_ptr(cx.task_type); }
 
 
-// This type must never be used directly; it must always be cast away.
-fn T_typaram(tn: &type_names) -> TypeRef {
-    let s = "typaram";
-    if tn.name_has_type(s) { ret tn.get_type(s); }
-    let t = T_i8();
-    tn.associate(s, t);
+// This type must never be used directly; it must always be cast away or
+// monomorphized.
+fn T_typaram(tn: &type_names, n: uint) -> TypeRef {
+    let name = #fmt("typaram_%u", n);
+    if tn.name_has_type(name) { ret tn.get_type(name); }
+    let t = T_named_struct(name);
+    tn.associate(name, t);
     ret t;
 }
-
-fn T_typaram_ptr(tn: &type_names) -> TypeRef { ret T_ptr(T_typaram(tn)); }
 
 fn T_closure_ptr(cx: &crate_ctxt, llbindings_ty: TypeRef,
                  n_ty_params: uint) -> TypeRef {
