@@ -993,7 +993,12 @@ fn get_tydesc(cx: &@block_ctxt, orig_t: &ty::t, escapes: bool,
 
     // Is the supplied type a type param? If so, return the passed-in tydesc.
     alt ty::type_param(bcx_tcx(cx), t) {
-      some(id) { ret rslt(cx, cx.fcx.lltydescs.(id)); }
+      some(id) {
+        if monomorphizing(bcx_ccx(cx)) {
+            ret rslt(cx, monomorph::get_placeholder_tydesc(bcx_ccx(cx), id));
+        }
+        ret rslt(cx, cx.fcx.lltydescs.(id));
+      }
       none. {/* fall through */ }
     }
 
@@ -6247,13 +6252,15 @@ fn create_llargs_for_fn_args(cx: &@fn_ctxt, proto: ast::proto,
     alt ty_self {
       some(tt) { cx.llself = some[val_self_pair]({v: cx.llenv, t: tt}); }
       none. {
-        let i = 0u;
-        for tp: ast::ty_param  in ty_params {
-            let llarg = llvm::LLVMGetParam(cx.llfn, arg_n);
-            assert (llarg as int != 0);
-            cx.lltydescs += ~[llarg];
-            arg_n += 1u;
-            i += 1u;
+        if !monomorphizing(fcx_ccx(cx)) {
+            let i = 0u;
+            for tp: ast::ty_param  in ty_params {
+                let llarg = llvm::LLVMGetParam(cx.llfn, arg_n);
+                assert (llarg as int != 0);
+                cx.lltydescs += ~[llarg];
+                arg_n += 1u;
+                i += 1u;
+            }
         }
       }
     }

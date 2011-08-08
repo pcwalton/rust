@@ -156,6 +156,16 @@ fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
 }
 
 
+// Returns the placeholder constant that represents a type descriptor for a
+// polymorphic argument.
+fn get_placeholder_tydesc(ccx: &@tc::crate_ctxt, n: uint) -> ValueRef {
+    let name = #fmt("typaram_tydesc_%u", n);
+    let llglobal = lll::LLVMGetNamedGlobal(ccx.llmod, str::buf(name));
+    if (llglobal as uint) != 0u { ret llglobal; }
+    ret lll::LLVMAddGlobal(ccx.llmod, ccx.tydesc_type, str::buf(name));
+}
+
+
 // Converts a polymorphic value declaration to a monomorphic value
 // declaration.
 fn transform_decl(ccx: &@tc::crate_ctxt, llval: ValueRef, sig: &sig) ->
