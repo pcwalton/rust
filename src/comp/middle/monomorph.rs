@@ -163,11 +163,11 @@ fn transform_decl(ccx: &@tc::crate_ctxt, llval: ValueRef, sig: &sig) ->
     }
 
     // TODO: Better names.
-    let llpolyty = tc::val_ty(llval);
+    let llpolyty = lll::LLVMGetElementType(tc::val_ty(llval));
+    log_err tc::ty_str(ccx.tn, llpolyty);
     let llmonoty = lll::LLVMRustReplaceTypes(llpolyty,
                                              ivec::to_ptr(llsubsttypes),
                                              ivec::len(llsubsttypes));
     ret lll::LLVMAddFunction(ccx.llmod, str::buf("instantiated"), llmonoty);
 }
-
 
