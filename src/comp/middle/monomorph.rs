@@ -6,6 +6,8 @@ import middle::ast_map;
 import middle::callgraph;
 import middle::callgraph::ref;
 import middle::callgraph::sig;
+import middle::shape;
+import middle::trans;
 import middle::ty;
 import syntax::ast;
 import util::common;
@@ -13,6 +15,10 @@ import util::common;
 import std::ivec;
 import std::map;
 import std::map::hashmap;
+import std::str;
+
+import lll = lib::llvm::llvm;
+import tc = middle::trans_common;
 
 // The information needed to instantiate a generic function.
 type instn_info = {
@@ -145,4 +151,23 @@ fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
         i += 1u;
     }
 }
+
+
+// Converts a polymorphic value declaration to a monomorphic value
+// declaration.
+fn transform_decl(ccx: &@tc::crate_ctxt, llval: ValueRef, sig: &sig) ->
+        ValueRef {
+    let llsubsttypes = ~[];
+    for typ in sig.types {
+        llsubsttypes += ~[trans::type_of(ccx, shape::fake_span(), typ)];
+    }
+
+    // TODO: Better names.
+    let llpolyty = tc::val_ty(llval);
+    let llmonoty = lll::LLVMRustReplaceTypes(llpolyty,
+                                             ivec::to_ptr(llsubsttypes),
+                                             ivec::len(llsubsttypes));
+    ret lll::LLVMAddFunction(ccx.llmod, str::buf("instantiated"), llmonoty);
+}
+
 

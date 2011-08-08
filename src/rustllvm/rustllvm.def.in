@@ -6,6 +6,7 @@ LLVMRustGetHostTriple
 LLVMRustConstSmallInt
 LLVMRustParseBitcode
 LLVMRustPrintPassTimings
+LLVMRustReplaceTypes
 LLVMLinkModules
 LLVMCreateObjectFile
 LLVMDisposeObjectFile

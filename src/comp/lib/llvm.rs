@@ -868,6 +868,10 @@ native "cdecl" mod llvm = "rustllvm" {
     /** Print the pass timings since static dtors aren't picking them up. */
     fn LLVMRustPrintPassTimings();
 
+    /** Performs an LLVM type-fold operation. */
+    fn LLVMRustReplaceTypes(Ty: TypeRef, ReplacementTypes: *TypeRef,
+                            ReplacementTypeCount: uint) -> TypeRef;
+
     fn LLVMStructCreateNamed(C: ContextRef, Name: sbuf) -> TypeRef;
 
     fn LLVMStructSetBody(StructTy: TypeRef, ElementTypes: *TypeRef,

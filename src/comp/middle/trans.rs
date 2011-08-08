@@ -7459,10 +7459,9 @@ fn decl_fn_and_pair_full(ccx: &@crate_ctxt, sp: &span, path: &str[],
 // Declares the LLVM function corresponding to an instantiation of a generic
 // item.
 fn decl_instn(ccx: @crate_ctxt, sig: &callgraph::sig) -> ValueRef {
-    // TODO: Munge the declaration of the item ID, replacing all type
-    // parameter types with the real types.
     if sig.node.crate == ast::local_crate {
         let llval = ccx.item_ids.get(sig.node.node);
+        llval = monomorph::transform_decl(ccx, llval, sig);
         llvm::LLVMDumpValue(llval);
         log_err "at types: ";
         for typ in sig.types { log_err ty_to_str(ccx.tcx, typ); }
