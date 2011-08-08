@@ -275,6 +275,9 @@ type fn_ctxt = {
     // reporting.
     sp: span,
 
+    // Whether this function is generic.
+    is_generic: bool,
+
     // This function's enclosing local context.
     lcx: @local_ctxt
 };

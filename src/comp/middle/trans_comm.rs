@@ -163,7 +163,7 @@ fn mk_spawn_wrapper(cx: &@block_ctxt, func: &@ast::expr, args_ty: &ty::t) ->
         mangle_internal_name_by_path_and_seq(cx.fcx.lcx.ccx, cx.fcx.lcx.path,
                                              "spawn_wrapper");
     let llfndecl = decl_cdecl_fn(llmod, wrap_name, wrapper_fn_type);
-    let fcx = new_fn_ctxt(cx.fcx.lcx, cx.sp, llfndecl);
+    let fcx = new_fn_ctxt(cx.fcx.lcx, cx.sp, llfndecl, false);
     let fbcx = new_top_block_ctxt(fcx);
     // 3u to skip the three implicit args
 

@@ -131,6 +131,9 @@ fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
                     // Now add the item to the worklist.
                     worklist += ~[{ node: ref.sig.node, types: new_types }];
 
+                    log_err #fmt("reference to %d:%d", ref.sig.node.crate,
+                        ref.sig.node.node);
+
                     generic_refs += ~[{
                         path_id: ref.path_id,
                         sig: { node: ref.sig.node, types: ref.sig.types }
@@ -138,7 +141,7 @@ fn populate_instns(cx: &ctxt, callgraph: &callgraph::t,
                 }
             }
 
-            // Now monomorphize the item.
+            // If necessary, monomorphize the item.
             if item_is_generic(cx, sig.node) {
                 cx.instns.insert(sig, {
                     template: cx.item_ids.get(sig.node.node), // TODO: externs

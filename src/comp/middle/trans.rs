@@ -1111,7 +1111,7 @@ fn make_generic_glue_inner(cx: &@local_ctxt, sp: &span, t: &ty::t,
                            llfn: ValueRef,
                            helper: &make_generic_glue_helper_fn,
                            ty_params: &uint[]) -> ValueRef {
-    let fcx = new_fn_ctxt(cx, sp, llfn);
+    let fcx = new_fn_ctxt(cx, sp, llfn, std::ivec::len(ty_params) > 0u);
     llvm::LLVMSetLinkage(llfn,
                          lib::llvm::LLVMInternalLinkage as llvm::Linkage);
     cx.ccx.stats.n_glues_created += 1u;
@@ -3913,7 +3913,7 @@ fn trans_for_each(cx: &@block_ctxt, local: &@ast::local, seq: &@ast::expr,
                            ty::mk_iter_body_fn(lcx.ccx.tcx, decl_ty), 0u);
     let lliterbody: ValueRef =
         decl_internal_fastcall_fn(lcx.ccx.llmod, s, iter_body_llty);
-    let fcx = new_fn_ctxt_w_id(lcx, cx.sp, lliterbody, body.node.id);
+    let fcx = new_fn_ctxt_w_id(lcx, cx.sp, lliterbody, false, body.node.id);
     fcx.iterbodyty = cx.fcx.iterbodyty;
 
     // Generate code to load the environment out of the
@@ -4013,6 +4013,28 @@ fn trans_external_path(cx: &@block_ctxt, did: &ast::def_id,
 
 fn lval_generic_fn(cx: &@block_ctxt, tpt: &ty::ty_param_kinds_and_ty,
                    fn_id: &ast::def_id, id: ast::node_id) -> lval_result {
+    let tys = ty::node_id_to_type_params(bcx_tcx(cx), id);
+
+    if monomorphizing(bcx_ccx(cx)) && !bcx_fcx(cx).is_generic &&
+            std::ivec::len(tys) != 0u {
+        // Return the instantiated function.
+        let sig = { node: fn_id, types: tys };
+
+        log_err #fmt("fn_id is %d:%d", fn_id.crate, fn_id.node);
+        for typ in tys {
+            log_err "type: " + ty_to_str(bcx_tcx(cx), typ);
+        }
+
+        for each kvp in bcx_ccx(cx).monomorph_cx.instns.items() {
+            log_err #fmt("sig id: %d:%d", kvp.key.node.crate,
+                         kvp.key.node.node);
+            for typ in kvp.key.types {
+                log_err "type: " + ty_to_str(bcx_tcx(cx), typ);
+            }
+        }
+        ret lval_val(cx, bcx_ccx(cx).monomorph_cx.instns.get(sig).special);
+    }
+
     let lv;
     if fn_id.crate == ast::local_crate {
         // Internal reference.
@@ -4022,7 +4044,6 @@ fn lval_generic_fn(cx: &@block_ctxt, tpt: &ty::ty_param_kinds_and_ty,
         // External reference.
         lv = lval_val(cx, trans_external_path(cx, fn_id, tpt));
     }
-    let tys = ty::node_id_to_type_params(bcx_tcx(cx), id);
     if std::ivec::len[ty::t](tys) != 0u {
         let bcx = lv.res.bcx;
         let tydescs: ValueRef[] = ~[];
@@ -4447,7 +4468,7 @@ fn trans_bind_thunk(cx: &@local_ctxt, sp: &span, incoming_fty: &ty::t,
 
     // Create a new function context and block context for the thunk, and hold
     // onto a pointer to the first block in the function for later use.
-    let fcx = new_fn_ctxt(cx, sp, llthunk);
+    let fcx = new_fn_ctxt(cx, sp, llthunk, false);
     let bcx = new_top_block_ctxt(fcx);
     let lltop = bcx.llbb;
     // Since we might need to construct derived tydescs that depend on
@@ -6161,7 +6182,7 @@ fn mk_standard_basic_blocks(llfn: ValueRef) ->
 //  - new_fn_ctxt
 //  - trans_args
 fn new_fn_ctxt_w_id(cx: @local_ctxt, sp: &span, llfndecl: ValueRef,
-                    id: ast::node_id) -> @fn_ctxt {
+                    is_generic: bool, id: ast::node_id) -> @fn_ctxt {
     let llretptr: ValueRef = llvm::LLVMGetParam(llfndecl, 0u);
     let lltaskptr: ValueRef = llvm::LLVMGetParam(llfndecl, 1u);
     let llenv: ValueRef = llvm::LLVMGetParam(llfndecl, 2u);
@@ -6193,11 +6214,13 @@ fn new_fn_ctxt_w_id(cx: @local_ctxt, sp: &span, llfndecl: ValueRef,
           derived_tydescs: derived_tydescs,
           id: id,
           sp: sp,
+          is_generic: is_generic,
           lcx: cx};
 }
 
-fn new_fn_ctxt(cx: @local_ctxt, sp: &span, llfndecl: ValueRef) -> @fn_ctxt {
-    be new_fn_ctxt_w_id(cx, sp, llfndecl, -1);
+fn new_fn_ctxt(cx: @local_ctxt, sp: &span, llfndecl: ValueRef,
+               is_generic: bool) -> @fn_ctxt {
+    be new_fn_ctxt_w_id(cx, sp, llfndecl, is_generic, -1);
 }
 
 // NB: must keep 4 fns in sync:
@@ -6382,7 +6405,8 @@ fn trans_closure(bcx_maybe: &option::t[@block_ctxt],
     set_uwtable(llfndecl);
 
     // Set up arguments to the function.
-    let fcx = new_fn_ctxt_w_id(cx, sp, llfndecl, id);
+    let fcx = new_fn_ctxt_w_id(cx, sp, llfndecl,
+                               std::ivec::len(ty_params) > 0u, id);
     create_llargs_for_fn_args(fcx, f.proto, ty_self,
                               ty::ret_ty_of_fn(cx.ccx.tcx, id), f.decl.inputs,
                               ty_params);
@@ -6509,7 +6533,8 @@ fn process_bkwding_mthd(cx: @local_ctxt, sp: &span, m: @ty::method,
 
     // Create a new function context and block context for the backwarding
     // function, holding onto a pointer to the first block.
-    let fcx = new_fn_ctxt(cx, sp, llbackwarding_fn);
+    let fcx = new_fn_ctxt(cx, sp, llbackwarding_fn,
+                          std::ivec::len(ty_params) > 0u);
     let bcx = new_top_block_ctxt(fcx);
     let lltop = bcx.llbb;
 
@@ -6628,7 +6653,8 @@ fn process_fwding_mthd(cx: @local_ctxt, sp: &span, m: @ty::method,
 
     // Create a new function context and block context for the forwarding
     // function, holding onto a pointer to the first block.
-    let fcx = new_fn_ctxt(cx, sp, llforwarding_fn);
+    let fcx = new_fn_ctxt(cx, sp, llforwarding_fn,
+                          std::ivec::len(ty_params) > 0u);
     let bcx = new_top_block_ctxt(fcx);
     let lltop = bcx.llbb;
 
@@ -7032,7 +7058,8 @@ fn trans_obj(cx: @local_ctxt, sp: &span, ob: &ast::_obj,
         fn_args +=
             ~[{mode: ast::alias(false), ty: f.ty, ident: f.ident, id: f.id}];
     }
-    let fcx = new_fn_ctxt(cx, sp, llctor_decl);
+    let fcx = new_fn_ctxt(cx, sp, llctor_decl,
+                          std::ivec::len(ty_params) > 0u);
 
     // Both regular arguments and type parameters are handled here.
     create_llargs_for_fn_args(fcx, ast::proto_fn, none[ty::t],
@@ -7199,7 +7226,8 @@ fn trans_res_ctor(cx: @local_ctxt, sp: &span, dtor: &ast::_fn,
       some(x) { llctor_decl = x; }
       _ { cx.ccx.sess.span_fatal(sp, "unbound ctor_id in trans_res_ctor"); }
     }
-    let fcx = new_fn_ctxt(cx, sp, llctor_decl);
+    let fcx = new_fn_ctxt(cx, sp, llctor_decl,
+                          std::ivec::len(ty_params) > 0u);
     let ret_t = ty::ret_ty_of_fn(cx.ccx.tcx, ctor_id);
     create_llargs_for_fn_args(fcx, ast::proto_fn, none[ty::t], ret_t,
                               dtor.decl.inputs, ty_params);
@@ -7257,7 +7285,8 @@ fn trans_tag_variant(cx: @local_ctxt, tag_id: ast::node_id,
                                "unbound variant id in trans_tag_variant");
       }
     }
-    let fcx = new_fn_ctxt(cx, variant.span, llfndecl);
+    let fcx = new_fn_ctxt(cx, variant.span, llfndecl,
+                          std::ivec::len(ty_params) > 0u);
     create_llargs_for_fn_args(fcx, ast::proto_fn, none[ty::t],
                               ty::ret_ty_of_fn(cx.ccx.tcx, variant.node.id),
                               fn_args, ty_params);
@@ -7351,6 +7380,7 @@ fn trans_item(cx: @local_ctxt, item: &ast::item) {
         let sub_cx = extend_path(cx, item.ident);
         alt cx.ccx.item_ids.find(item.id) {
           some(llfndecl) {
+            log_err "transing " + item.ident;
             trans_fn(sub_cx, item.span, f, llfndecl, none, tps, item.id);
           }
           _ {
@@ -7466,7 +7496,8 @@ fn decl_instn(ccx: @crate_ctxt, sig: &callgraph::sig) -> ValueRef {
         log_err "at types: ";
         for typ in sig.types { log_err ty_to_str(ccx.tcx, typ); }
         log_err "---";
-        ret llval;
+        let llfnty = llvm::LLVMGetElementType(val_ty(llval));
+        ret create_fn_pair(ccx, "instantiation", llfnty, llval, false);
     } else {
         // TODO
         fail "external crate instantiations unimplemented";
@@ -7563,7 +7594,7 @@ fn decl_native_fn_and_pair(ccx: &@crate_ctxt, sp: &span, path: &str[],
     register_fn_pair(ccx, ps, wrapper_type, wrapper_fn, id);
     // Build the wrapper.
 
-    let fcx = new_fn_ctxt(new_local_ctxt(ccx), sp, wrapper_fn);
+    let fcx = new_fn_ctxt(new_local_ctxt(ccx), sp, wrapper_fn, false);
     let bcx = new_top_block_ctxt(fcx);
     let lltop = bcx.llbb;
     // Declare the function itself.
