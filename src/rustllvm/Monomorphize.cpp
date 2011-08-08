@@ -4,22 +4,83 @@
 
 using namespace llvm;
 
+
+// Type folds
+
 namespace {
 
-class TypeMonomorphizer {
-private:
-  Type **ReplacementTypes;
-  unsigned ReplacementTypeCount;
+template<typename T,typename U>
+class TypeFold {
+public:
+    U Fold(Type *Ty) const;
+};
 
-  FunctionType *MonomorphizeFunctionType(FunctionType *FTy) const;
-  Type *MonomorphizeStructType(StructType *STy) const;
-  StructType *MonomorphizeAnonymousStructType(StructType *STy) const;
+}
+
+template<typename T,typename U>
+U TypeFold::Fold(Type *Ty) const {
+  PointerType *PTy;
+  ArrayType *ATy;
+  VectorType *VTy;
+
+  switch (Ty->getTypeID()) {
+  case Type::VoidTyID:
+  case Type::FloatTyID:
+  case Type::DoubleTyID:
+  case Type::X86_FP80TyID:
+  case Type::FP128TyID:
+  case Type::PPC_FP128TyID:
+  case Type::LabelTyID:
+  case Type::MetadataTyID:
+  case Type::X86_MMXTyID:
+  case Type::IntegerTyID:
+    return static_cast<T *>(this)->FoldSimpleType(Ty);
+  case Type::FunctionTyID:
+    return static_cast<T *>(this)->FoldFunctionType(cast<FunctionType>(Ty));
+  case Type::StructTyID:
+    return static_cast<T *>(this)->FoldStructType(cast<StructType>(Ty));
+  case Type::PointerTyID:
+    PTy = cast<PointerType>(Ty);
+    return static_cast<T *>(this)->FoldPointerType(cast<PointerType>(Ty));
+    return PointerType::get(Monomorphize(PTy->getElementType()),
+                            PTy->getAddressSpace());
+  case Type::ArrayTyID:
+    return static_cast<T *>(this)->FoldArrayType(cast<ArrayType>(Ty));
+    ATy = cast<ArrayType>(Ty);
+    return ArrayType::get(Monomorphize(ATy->getElementType()),
+                          ATy->getNumElements());
+  case Type::VectorTyID:
+    return static_cast<T *>(this)->FoldVectorType(cast<VectorType>(Ty));
+    VTy = cast<VectorType>(Ty);
+    return VectorType::get(Monomorphize(VTy->getElementType()),
+                           VTy->getNumElements());
+  default:
+    assert(0 && "Unrecognized type!");
+  }
+}
+
+
+// Type monomorphization
+
+namespace {
+
+class TypeMonomorphizer : public TypeFold<TypeMonomorphizer,Type *> {
+private:
+    Type **ReplacementTypes;
+    unsigned ReplacementTypeCount;
+
+    Type *MonomorphizeAnonymousStructType(StructType *STy) const;
 
 public:
-  TypeMonomorphizer(Type **RT, unsigned RTCount)
-  : ReplacementTypes(RT), ReplacementTypeCount(RTCount) {}
+    TypeMonomorphizer(Type **RT, unsigned RTCount)
+    : ReplacementTypes(RT), ReplacementTypeCount(RTCount) {}
 
-  Type *Monomorphize(Type *Ty) const;
+    Type *FoldSimpleType(Type *Ty) const { return Ty; }
+    Type *FoldFunctionType(FunctionType *FTy) const;
+    Type *FoldStructType(StructType *STy) const;
+    Type *FoldPointerType(PointerType *PTy) const;
+
+    Type *Monomorphize(Type *Ty) const;
 };
 
 } // end anonymous namespace
@@ -64,46 +125,6 @@ Type *TypeMonomorphizer::MonomorphizeStructType(StructType *STy) const {
   return STy; // Numeric struct type. We assume we never monomorphize these.
 }
 
-// Monomorphizes a type by replacing type placeholders with their
-// substitutions.
-Type *TypeMonomorphizer::Monomorphize(Type *Ty) const {
-  PointerType *PTy;
-  ArrayType *ATy;
-  VectorType *VTy;
-
-  switch (Ty->getTypeID()) {
-  case Type::VoidTyID:
-  case Type::FloatTyID:
-  case Type::DoubleTyID:
-  case Type::X86_FP80TyID:
-  case Type::FP128TyID:
-  case Type::PPC_FP128TyID:
-  case Type::LabelTyID:
-  case Type::MetadataTyID:
-  case Type::X86_MMXTyID:
-  case Type::IntegerTyID:
-    return Ty;
-  case Type::FunctionTyID:
-    return MonomorphizeFunctionType(cast<FunctionType>(Ty));
-  case Type::StructTyID:
-    return MonomorphizeStructType(cast<StructType>(Ty));
-  case Type::PointerTyID:
-    PTy = cast<PointerType>(Ty);
-    return PointerType::get(Monomorphize(PTy->getElementType()),
-                            PTy->getAddressSpace());
-  case Type::ArrayTyID:
-    ATy = cast<ArrayType>(Ty);
-    return ArrayType::get(Monomorphize(ATy->getElementType()),
-                          ATy->getNumElements());
-  case Type::VectorTyID:
-    VTy = cast<VectorType>(Ty);
-    return VectorType::get(Monomorphize(VTy->getElementType()),
-                           VTy->getNumElements());
-  default:
-    assert(0 && "Unrecognized type!");
-  }
-  return Ty;  // TODO
-}
 
 extern "C" LLVMTypeRef LLVMRustReplaceTypes(LLVMTypeRef Ty,
     LLVMTypeRef *ReplacementTypes, unsigned ReplacementTypeCount) {
@@ -111,4 +132,14 @@ extern "C" LLVMTypeRef LLVMRustReplaceTypes(LLVMTypeRef Ty,
                         ReplacementTypeCount);
   return reinterpret_cast<LLVMTypeRef>(TMM.Monomorphize(unwrap(Ty)));
 }
+
+
+// Performs substitution on function bodies to monomorphize them.
+
+extern "C" LLVMValueRef LLVMRustMonomorphizeFunction(LLVMValueRef Function,
+    LLVMTypeRef *Types, unsigned TypeCount) {
+  Function *F = cast<Function>(reinterpret_cast<Value *>(Function));
+  
+}
+
 
