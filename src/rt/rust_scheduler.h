@@ -109,6 +109,7 @@ struct rust_scheduler : public kernel_owned<rust_scheduler>,
 
     void init_tls();
     void place_task_in_tls(rust_task *task);
+    void place_sp_in_tls(rust_task *task);
 
     static rust_task *get_task();
 };

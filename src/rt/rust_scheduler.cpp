@@ -4,10 +4,23 @@
 #include "rust_internal.h"
 #include "globals.h"
 
-#ifndef _WIN32
+#if !defined(_WIN32)
 pthread_key_t rust_scheduler::task_key;
-#else
+
+#ifdef __APPLE__
+// This is really __PTK_FRAMEWORK_GC_KEY9 for Objective-C garbage collection,
+// but we steal it.
+#define RUST_STACK_KEY  89
+#else   // Linux
+void *__thread rust_stack_limit;
+#endif  // __APPLE__
+
+#else   // !defined(_WIN32)
+
+#define pvArbitrary 0x14
+
 DWORD rust_scheduler::task_key;
+
 #endif
 
 bool rust_scheduler::tls_initialized = false;
@@ -286,6 +299,7 @@ rust_scheduler::start_main_loop() {
              scheduled_task->state->name);
 
         place_task_in_tls(scheduled_task);
+        place_sp_in_tls(scheduled_task);
 
         interrupt_flag = 0;
 
@@ -373,6 +387,20 @@ rust_scheduler::place_task_in_tls(rust_task *task) {
     assert(!result && "Couldn't place the task in TLS!");
 }
 
+#ifdef __APPLE__
+void
+rust_scheduler::place_sp_in_tls(rust_task *task) {
+    // Steal the Objective-C garbage collection key.
+    pthread_setspecific((pthread_key_t)RUST_STACK_KEY, task->stk->data);
+}
+#else   // Linux
+void
+rust_scheduler::place_sp_in_tls(rust_task *task) {
+    // This one is too easy.
+    rust_stack_limit = task->stk->data;
+}
+#endif
+
 rust_task *
 rust_scheduler::get_task() {
     rust_task *task = reinterpret_cast<rust_task *>
@@ -392,6 +420,15 @@ void
 rust_scheduler::place_task_in_tls(rust_task *task) {
     BOOL result = TlsSetValue(task_key, task);
     assert(result && "Couldn't place the task in TLS!");
+}
+
+void
+rust_scheduler::place_sp_in_tls(rust_task *task) {
+    // Place the stack limit in the pvArbitrary slot in the Thread Information
+    // Block. This is checked at every function invocation, so it has to be
+    // fast.
+    asm volatile("movl %1,%%fs:(%P1)" : : "r" (task->stk->data),
+                 "i" (pvArbitrary));
 }
 
 rust_task *

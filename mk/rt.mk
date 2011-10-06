@@ -34,11 +34,13 @@ RUNTIME_CS := rt/sync/timer.cpp \
               rt/test/rust_test_runtime.cpp \
               rt/test/rust_test_util.cpp \
               rt/arch/i386/context.cpp \
+              rt/arch/i386/morestack.cpp
 
 RUNTIME_LL :=
 
 RUNTIME_S := rt/arch/i386/_context.S \
-             rt/arch/i386/ccall.S
+             rt/arch/i386/ccall.S \
+             rt/arch/i386/growstack.S
 
 RUNTIME_HDR := rt/globals.h \
                rt/rust.h \
