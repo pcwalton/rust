@@ -12,7 +12,7 @@ pthread_key_t rust_scheduler::task_key;
 // but we steal it.
 #define RUST_STACK_KEY  89
 #else   // Linux
-void *__thread rust_stack_limit;
+__thread void *rust_stack_limit;
 #endif  // __APPLE__
 
 #else   // !defined(_WIN32)
