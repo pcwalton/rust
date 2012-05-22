@@ -37,7 +37,6 @@ enum scope {
     scope_bare_fn(ast::fn_decl, node_id, [ast::ty_param]),
     scope_fn_expr(ast::fn_decl, node_id, [ast::ty_param]),
     scope_native_item(@ast::native_item),
-    scope_loop(@ast::local), // there's only 1 decl per loop.
     scope_block(ast::blk, @mut uint, @mut uint),
     scope_arm(ast::arm),
     scope_method(node_id, [ast::ty_param]),
@@ -1086,14 +1085,6 @@ fn lookup_in_scope(e: env, &&sc: scopes, sp: span, name: ident, ns: namespace,
           scope_bare_fn(decl, _, ty_params) |
           scope_fn_expr(decl, _, ty_params) {
             ret lookup_in_fn(e, name, decl, ty_params, ns);
-          }
-          scope_loop(local) {
-            if ns == ns_val {
-                alt lookup_in_pat(e, name, local.node.pat) {
-                  some(nid) { ret some(ast::def_binding(nid)); }
-                  _ { }
-                }
-            }
           }
           scope_block(b, pos, loc) {
             ret lookup_in_block(e, name, sp, b.node, *pos, *loc, ns);

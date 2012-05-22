@@ -13,6 +13,7 @@ import std::getopts;
 import io::{reader_util, writer_util};
 import getopts::{optopt, optmulti, optflag, optflagopt, opt_present};
 import back::{x86, x86_64};
+import std::map::hashmap;
 
 enum pp_mode {ppm_normal, ppm_expanded, ppm_typed, ppm_identified,
               ppm_expanded_identified }
@@ -171,7 +172,9 @@ fn compile_upto(sess: session, cfg: ast::crate_cfg,
              sess.filesearch,
              session::sess_os_to_meta_os(sess.targ_cfg.os),
              sess.opts.static));
-    let {def_map, exp_map, impl_map} =
+    let {def_map: def_map, impl_map} = time(time_passes, "resolution, experimental",
+         bind middle::resolve2::resolve_crate(sess, ast_map, crate));
+    let {exp_map, _} =
         time(time_passes, "resolution",
              bind resolve::resolve_crate(sess, ast_map, crate));
     let freevars =
