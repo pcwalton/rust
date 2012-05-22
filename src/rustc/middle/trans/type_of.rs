@@ -5,8 +5,6 @@ import lib::llvm::llvm;
 import driver::session::session;
 import std::map::hashmap;
 
-import ty::*;
-
 export type_of;
 export type_of_explicit_args;
 export type_of_fn_from_ty;
@@ -146,7 +144,7 @@ fn type_of(cx: @crate_ctxt, t: ty::t) -> TypeRef {
           ty::ty_constr(subt,_) { type_of(cx, subt) }
           ty::ty_class(did, ts) {
             // only instance vars are record fields at runtime
-            let fields = lookup_class_fields(cx.tcx, did);
+            let fields = ty::lookup_class_fields(cx.tcx, did);
             let tys = vec::map(fields) {|f|
                 let t = ty::lookup_field_type(cx.tcx, did, f.id, ts);
                 type_of(cx, t)

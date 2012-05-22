@@ -1,3 +1,4 @@
+// xfail-test
 // xfail-fast
 // (Not sure why, though -- FIXME (tjc)
 import to_str::*;

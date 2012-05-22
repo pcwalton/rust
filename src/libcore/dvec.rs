@@ -251,7 +251,28 @@ impl extensions<A:copy> for dvec<A> {
     }
 
     #[doc = "Returns the last element, failing if the vector is empty"]
+    #[inline(always)]
     fn last() -> A {
-        self.get_elt(self.len() - 1u)
+        self.check_not_borrowed();
+
+        let length = self.len();
+        if length == 0u {
+            fail "attempt to retrieve the last element of an empty vector";
+        }
+
+        ret self.data[length - 1u];
+    }
+
+    #[inline(always)]
+    #[doc="Iterates over the elements in reverse order"]
+    fn reach(f: fn(A) -> bool) {
+        let length = self.len();
+        let mut i = 0u;
+        while i < length {
+            if !f(self.get_elt(i)) {
+                break;
+            }
+            i += 1u;
+        }
     }
 }

@@ -30,7 +30,7 @@ export notification;
 export sched_mode;
 export sched_opts;
 export task_opts;
-export builder::{};
+export builder;
 
 export default_task_opts;
 export get_opts;

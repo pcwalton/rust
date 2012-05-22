@@ -32,6 +32,7 @@ const stats: uint = 16u;
 const no_asm_comments: uint = 32u;
 const no_verify: uint = 64u;
 const trace: uint = 128u;
+const fast_resolve: uint = 256u;
 
 fn debugging_opts_map() -> [(str, str, uint)] {
     [("ppregions", "prettyprint regions with \
@@ -43,7 +44,8 @@ fn debugging_opts_map() -> [(str, str, uint)] {
      ("stats", "gather trans statistics", stats),
      ("no-asm-comments", "omit comments when using -S", no_asm_comments),
      ("no-verify", "skip LLVM verification", no_verify),
-     ("trace", "emit trace logs", trace)]
+     ("trace", "emit trace logs", trace),
+     ("fast-resolve", "use fast resolution", fast_resolve)]
 }
 
 type options =
@@ -161,6 +163,7 @@ impl session for session {
     fn no_asm_comments() -> bool { self.debugging_opt(no_asm_comments) }
     fn no_verify() -> bool { self.debugging_opt(no_verify) }
     fn trace() -> bool { self.debugging_opt(trace) }
+    fn fast_resolve() -> bool { self.debugging_opt(fast_resolve) }
 }
 
 #[doc = "Some reasonable defaults"]

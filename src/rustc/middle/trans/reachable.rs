@@ -75,6 +75,22 @@ fn traverse_public_mod(cx: ctx, m: _mod) {
     if !traverse_exports(cx, m.view_items) {
         // No exports, so every local item is exported
         for vec::each(m.items) {|item| traverse_public_item(cx, item); }
+    } else {
+        // Traverse all impls. We must do this because each export can
+        // potentially refer to multiple impls; thus the assumption that
+        // each export refers to a reexported or a non-reexported item is
+        // false.
+
+        for vec::each(m.items) {|item|
+            alt item.node {
+                item_impl(*) {
+                    traverse_public_item(cx, item);
+                }
+                _ {
+                    // Nothing to do.
+                }
+            }
+        }
     }
 }
 
