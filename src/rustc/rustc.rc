@@ -53,6 +53,7 @@ mod middle {
     mod ty;
     mod resolve;
     mod resolve2;
+    mod resolve3;
     mod typeck {
         mod check {
             mod alt;
