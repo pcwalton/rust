@@ -51,6 +51,7 @@ mod deque;
 mod fun_treemap;
 mod list;
 mod map;
+mod rbtree;
 mod rope;
 mod smallintmap;
 mod sort;

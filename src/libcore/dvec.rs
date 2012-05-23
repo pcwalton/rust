@@ -262,4 +262,17 @@ impl extensions<A:copy> for dvec<A> {
 
         ret self.data[length - 1u];
     }
+
+    #[inline(always)]
+    #[doc="Iterates over the elements in reverse order"]
+    fn reach(f: fn(T) -> bool) {
+        let length = self.len();
+        let i = 0u;
+        while i < length {
+            if !f(self.get_elt(i)) {
+                break;
+            }
+            i += 1u;
+        }
+    }
 }
