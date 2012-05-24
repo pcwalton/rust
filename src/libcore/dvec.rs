@@ -265,9 +265,9 @@ impl extensions<A:copy> for dvec<A> {
 
     #[inline(always)]
     #[doc="Iterates over the elements in reverse order"]
-    fn reach(f: fn(T) -> bool) {
+    fn reach(f: fn(A) -> bool) {
         let length = self.len();
-        let i = 0u;
+        let mut i = 0u;
         while i < length {
             if !f(self.get_elt(i)) {
                 break;
