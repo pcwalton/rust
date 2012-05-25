@@ -116,7 +116,6 @@ fn atom_hashmap<V:copy>() -> hashmap<atom,V> {
 #[doc="Contains data for specific types of import directives."]
 enum import_directive_subclass {
     ids_single(atom /* target */, atom /* source */),
-    ids_multi(@dvec<atom>),
     ids_glob
 }
 
@@ -125,9 +124,20 @@ class import_directive {
     let module_path: @dvec<atom>;
     let subclass: @import_directive_subclass;
 
+    // The graph node that this import resolves to.
+    let mut target: option<@graph_node>;
+
+    // An import is marked if we're currently following it. This is used for
+    // cycle detection.
+    let mut marked: bool;
+
     new(module_path: @dvec<atom>, subclass: @import_directive_subclass) {
         self.module_path = module_path;
         self.subclass = subclass;
+
+        self.target = none;
+
+        self.marked = true;
     }
 }
 
@@ -146,9 +156,6 @@ class module_node {
     // The index of the import we're resolving.
     let mut resolved_import_count: uint;
 
-    // True if we're currently resolving this module.
-    let mut marked: bool;
-
     new(parent_graph_node: @graph_node) {
         self.parent_graph_node = parent_graph_node;
 
@@ -159,8 +166,6 @@ class module_node {
         self.exports_globs = false;
 
         self.resolved_import_count = 0u;
-
-        self.marked = false;
     }
 
     fn all_imports_resolved() -> bool {
@@ -466,8 +471,8 @@ class resolver {
                         }
                     }
 
-                    // Build up the subclass.
-                    let mut subclass;
+                    // Build up the import directives.
+                    let module_node = (*parent_node).get_module();
                     alt view_path.node {
                         view_path_simple(binding, full_path, _) {
                             let target_atom =
@@ -475,56 +480,55 @@ class resolver {
                             let source_atom =
                                 (*self.atom_table).intern(full_path.
                                                        idents.last());
-                            subclass = @ids_single(target_atom, source_atom);
-                        }
-                        view_path_glob(_, _) {
-                            subclass = @ids_glob;
+                            let subclass = @ids_single(target_atom,
+                                                       source_atom);
+                            self.build_import_directive(module_node,
+                                                        module_path,
+                                                        subclass);
                         }
                         view_path_list(_, source_idents, _) {
-                            let sources = @dvec();
                             for source_idents.each {
                                 |source_ident|
-                                let atom =
-                                    (*self.atom_table).intern(source_ident.
-                                                              node.name);
-                                (*sources).push(atom);
-                            }
-                            subclass = @ids_multi(sources);
-                        }
-                    }
-
-                    // Create the import directive and add it to the list of
-                    // imports for this module.
-                    let directive = @import_directive(module_path, subclass);
-                    let module_node = (*parent_node).get_module();
-                    module_node.imports.push(directive);
-
-                    // If we know the names that this import injects into the
-                    // module namespace, add them now. This is the case for
-                    // every import subclass except the glob.
-                    alt *subclass {
-                        ids_single(name, _) {
-                            module_node.exported_imports.insert(name,
-                                                                directive);
-                        }
-                        ids_multi(names) {
-                            for (*names).each {
-                                |name|
-                                module_node.exported_imports.insert(name,
-                                                                    directive);
+                                let name = source_ident.node.name;
+                                let atom = (*self.atom_table).intern(name);
+                                let subclass = @ids_single(atom, atom);
+                                self.build_import_directive(module_node,
+                                                            module_path,
+                                                            subclass);
                             }
                         }
-                        ids_glob {
-                            // Set the flag indicating that this module exports
-                            // a glob. This tells us that we don't know its
-                            // exports at the moment.
-                            module_node.exports_globs = true;
+                        view_path_glob(_, _) {
+                            self.build_import_directive(module_node,
+                                                        module_path,
+                                                        @ids_glob);
                         }
                     }
                 }
             }
             view_item_export(*) { /* TODO */ }
             view_item_use(*) { /* Ignore. */ }
+        }
+    }
+
+    #[doc="Creates and adds an import directive to the given module."]
+    fn build_import_directive(module_node: @module_node,
+                              module_path: @dvec<atom>,
+                              subclass: @import_directive_subclass) {
+        let directive = @import_directive(module_path, subclass);
+        module_node.imports.push(directive);
+
+        // If we know the name that this import injects into the module
+        // namespace, add it now. This is the case for single imports, but not
+        // globs.
+        alt *subclass {
+            ids_single(target, _) {
+                module_node.exported_imports.insert(target, directive);
+            }
+            ids_glob {
+                // Set the glob flag. This tells us that we don't know the
+                // module's exports.
+                module_node.exports_globs = true;
+            }
         }
     }
 
@@ -577,13 +581,6 @@ class resolver {
             ret;
         }
 
-        if module_node.marked {
-            #debug("(resolving imports for module) skipping; marked!");
-            ret;
-        }
-
-        module_node.marked = true;
-
         let import_count = module_node.imports.len();
         while module_node.resolved_import_count < import_count {
             let import_index = module_node.resolved_import_count;
@@ -603,8 +600,6 @@ class resolver {
 
             module_node.resolved_import_count += 1u;
         }
-
-        module_node.marked = false;
     }
 
     #[doc="
@@ -638,9 +633,8 @@ class resolver {
             containing_module = module_node;
         }
 
-        // Next, look up the name or names within that module.
         // TODO
-        ret rifmr_success;
+        ret rifmr_failed;
     }
 
     #[doc="
@@ -654,7 +648,8 @@ class resolver {
         let module_path_len = (*module_path).len();
         assert module_path_len > 0u;
 
-        #debug("(resolving module path for import) processing %s rooted at %s",
+        #debug("(resolving module path for import) processing '%s' rooted at \
+               '%s'",
                (*self.atom_table).atoms_to_str(module_path),
                self.module_to_str(module_node));
 
@@ -767,7 +762,7 @@ class resolver {
     "]
     fn resolve_name_in_module(module_node: @module_node, name: atom) ->
             resolve_name_in_module_result {
-        #debug("(resolving name in module) resolving %s in %s",
+        #debug("(resolving name in module) resolving '%s' in '%s'",
                (*self.atom_table).atom_to_str(name),
                self.module_to_str(module_node));
 
@@ -782,22 +777,18 @@ class resolver {
             }
         }
 
-        // If we've marked this module, then stop here. This prevents us from
-        // following cycles forever.
-        //
-        // In particular, this prevents the otherwise-very-common case of an
-        // import following itself.
-        if module_node.marked {
-            ret rnimr_failed;
-        }
-
         // Next, check known exports.
         alt module_node.exported_imports.find(name) {
-            some(import_directive) {
+            some(import_directive) if !import_directive.marked {
                 #debug("(resolving name in module) following import");
 
-                alt self.resolve_import_for_module(module_node,
-                                                   import_directive) {
+                import_directive.marked = true;
+                let resolution_result =
+                    self.resolve_import_for_module(module_node,
+                                                   import_directive);
+                import_directive.marked = false;
+
+                alt resolution_result {
                     rifmr_failed {
                         // Continue.
                     }
@@ -807,11 +798,22 @@ class resolver {
                     rifmr_success {
                         #debug("(resolving name in module) found node as \
                                 known export");
-                        // TODO
-                        //ret rnimr_success(target_node);
-                        ret rnimr_failed;
+                        alt import_directive.target {
+                            none {
+                                fail "resolve_import_for_module claimed to \
+                                      succeed but didn't actually write the \
+                                      target into the directive!";
+                            }
+                            some(target_node) {
+                                ret rnimr_success(target_node);
+                            }
+                        }
                     }
                 }
+            }
+            some(import_directive) {
+                #debug("(resolving name in module) not following marked \
+                        import");
             }
             none {
                 // Continue.

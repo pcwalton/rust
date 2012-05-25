@@ -1,11 +1,11 @@
 import syntax::{ast, ast_util, visit};
 import syntax::codemap::span;
 import ast::*;
-import ast_util::{local_def, def_id_of_def, path_name, walk_pat};
+import ast_util::{hash_def, local_def, def_id_of_def, new_def_hash, path_name};
+import ast_util::{walk_pat};
 import driver::session::session;
 import metadata::{csearch, cstore};
 import syntax::ast_map;
-import util::common::new_def_hash;
 
 import std::map::{hashmap, str_hash, int_hash};
 import std::list;
@@ -49,7 +49,7 @@ type ext_key = {did: def_id, ns: ns, ident: str};
 type ext_map = hashmap<ext_key, def>;
 fn ext_hash() -> ext_map {
     fn hash(v: ext_key) -> uint {
-        str::hash(v.ident) + util::common::hash_def(v.did) + v.ns as uint
+        str::hash(v.ident) + hash_def(v.did) + v.ns as uint
     }
     std::map::hashmap(hash, {|a, b| a == b})
 }
@@ -745,7 +745,7 @@ fn build_for_tps(sc: scopes, tps: [ty_param], off: uint, v: vt) -> scopes {
         for vec::each(*tp.bounds) {|bound|
             alt bound {
               bound_iface(t) { v.visit_ty(t, sc, v); }
-              bound_copy | bound_send { }
+              bound_copy | bound_send | bound_const { }
             }
         }
         let def = def_ty_param(local_def(tp.id), n + off);
