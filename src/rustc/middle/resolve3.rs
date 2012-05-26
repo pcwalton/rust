@@ -31,7 +31,19 @@ enum pattern_binding_mode {
     pbm_irrefutable
 }
 
-type namespace = hashmap<str,@dvec<binding>>;
+enum namespace {
+    ns_module,
+    ns_type,
+    ns_value
+}
+
+enum namespace_result {
+    nsr_unknown,
+    nsr_unbound,
+    nsr_bound(@graph_node)
+}
+
+type namespace_bindings = hashmap<str,@dvec<binding>>;
 type resolve_visitor = vt<()>;
 
 resource auto_scope(scopes: @dvec<uint>) {
@@ -124,20 +136,36 @@ class import_directive {
     let module_path: @dvec<atom>;
     let subclass: @import_directive_subclass;
 
-    // The graph node that this import resolves to.
-    let mut target: option<@graph_node>;
-
-    // An import is marked if we're currently following it. This is used for
-    // cycle detection.
-    let mut marked: bool;
-
     new(module_path: @dvec<atom>, subclass: @import_directive_subclass) {
         self.module_path = module_path;
         self.subclass = subclass;
+    }
+}
 
-        self.target = none;
+class import_resolution {
+    // The number of outstanding references to this name. When this reaches
+    // zero, outside modules can count on the targets being correct. Before
+    // then, all bets are off; future imports could override this name.
+    let mut outstanding_references: uint;
 
-        self.marked = true;
+    let mut module_target: option<@graph_node>;
+    let mut value_target: option<@graph_node>;
+    let mut type_target: option<@graph_node>;
+
+    new() {
+        self.outstanding_references = 0u;
+
+        self.module_target = none;
+        self.value_target = none;
+        self.type_target = none;
+    }
+
+    fn target_for_namespace(namespace: namespace) -> option<@graph_node> {
+        alt namespace {
+            ns_module { ret self.module_target; }
+            ns_type   { ret self.type_target;   }
+            ns_value  { ret self.value_target;  }
+        }
     }
 }
 
@@ -148,10 +176,11 @@ class module_node {
     let children: hashmap<atom,@graph_node>;
     let imports: dvec<@import_directive>;
 
-    // The names that we know to be exported from this module.
-    let exported_imports: hashmap<atom,@import_directive>;
-    // True if this module exports globs.
-    let mut exports_globs: bool;
+    // The status of resolving each import in this module.
+    let import_resolutions: hashmap<atom,@import_resolution>;
+
+    // The number of unresolved globs that this module exports.
+    let mut glob_count: uint;
 
     // The index of the import we're resolving.
     let mut resolved_import_count: uint;
@@ -162,9 +191,8 @@ class module_node {
         self.children = atom_hashmap();
         self.imports = dvec();
 
-        self.exported_imports = atom_hashmap();
-        self.exports_globs = false;
-
+        self.import_resolutions = atom_hashmap();
+        self.glob_count = 0u;
         self.resolved_import_count = 0u;
     }
 
@@ -243,6 +271,14 @@ class graph_node {
         }
     }
 
+    fn defined_in_namespace(namespace: namespace) -> bool {
+        alt namespace {
+            ns_module { ret self.module_def != md_none; }
+            ns_type   { ret self.type_def != none;      }
+            ns_value  { ret self.value_def != none;     }
+        }
+    }
+
     // FIXME: Shouldn't have a this parameter. Use an impl instead. Thought
     // this might have been the cause of an ICE, but I don't think it is.
     #[doc="
@@ -269,6 +305,8 @@ class graph_node {
         }
     }
 }
+
+// FIXME: resolve_result<T>, please
 
 enum resolve_module_path_for_import_result {
     rmpfir_failed,                  // Failed to resolve the name.
@@ -298,9 +336,12 @@ class resolver {
 
     let graph_root: @graph_node;
 
-    let module_namespace: namespace;
-    let type_namespace: namespace;
-    let value_namespace: namespace;
+    // The number of imports that are currently unresolved.
+    let mut unresolved_imports: uint;
+
+    let module_namespace: namespace_bindings;
+    let type_namespace: namespace_bindings;
+    let value_namespace: namespace_bindings;
 
     let scope_ids: hashmap<node_id,uint>;
     let mut next_scope_id: uint;
@@ -318,6 +359,8 @@ class resolver {
 
         self.graph_root = @graph_node(none);
         (*self.graph_root).define_module(self.graph_root);
+
+        self.unresolved_imports = 0u;
 
         self.module_namespace = str_hash();
         self.type_namespace = str_hash();
@@ -346,12 +389,13 @@ class resolver {
         Binds the supplied name in the supplied namespace to the given node ID
         in this crate.
     "]
-    fn record_local_name(namespace: namespace, name: str, id: node_id) {
+    fn record_local_name(namespace: namespace_bindings, name: str,
+                         id: node_id) {
         ret self.record_global_name(namespace, name, local_def(id));
     }
 
-    fn resolve() {
-        self.build_reduced_graph();
+    fn resolve(this: @resolver) {
+        self.build_reduced_graph(this);
         self.resolve_imports();
         self.resolve_crate();
     }
@@ -364,10 +408,19 @@ class resolver {
     //
 
     #[doc="Constructs the reduced graph for the entire crate."]
-    fn build_reduced_graph() {
+    fn build_reduced_graph(this: @resolver) {
         visit_crate(*self.crate, self.graph_root, mk_vt(@{
-            visit_item: self.build_reduced_graph_for_item,
-            visit_view_item: self.build_reduced_graph_for_view_item
+            visit_item: {
+                |item, parent_node, visitor|
+                (*this).build_reduced_graph_for_item(item, parent_node,
+                                                     visitor)
+            },
+            visit_view_item: {
+                |view_item, parent_node, visitor|
+                (*this).build_reduced_graph_for_view_item(view_item,
+                                                          parent_node,
+                                                          visitor)
+            }
             with *default_visitor()
         }));
     }
@@ -517,19 +570,31 @@ class resolver {
         let directive = @import_directive(module_path, subclass);
         module_node.imports.push(directive);
 
-        // If we know the name that this import injects into the module
-        // namespace, add it now. This is the case for single imports, but not
-        // globs.
+        // Bump the reference count on the name. Or, if this is a glob, set
+        // the appropriate flag.
         alt *subclass {
             ids_single(target, _) {
-                module_node.exported_imports.insert(target, directive);
+                alt module_node.import_resolutions.find(target) {
+                    some(resolution) {
+                        resolution.outstanding_references += 1u;
+                    }
+                    none {
+                        let resolution = @import_resolution();
+                        resolution.outstanding_references = 1u;
+                        module_node.import_resolutions.insert(target,
+                                                              resolution);
+                            
+                    }
+                }
             }
             ids_glob {
                 // Set the glob flag. This tells us that we don't know the
-                // module's exports.
-                module_node.exports_globs = true;
+                // module's exports ahead of time.
+                module_node.glob_count += 1u;
             }
         }
+
+        self.unresolved_imports += 1u;
     }
 
     //
@@ -545,9 +610,26 @@ class resolver {
         point iteration.
     "]
     fn resolve_imports() {
-        #debug("resolving imports, top level");
-        let module_root = (*self.graph_root).get_module();
-        self.resolve_imports_for_module_subtree(module_root);
+        let mut i = 0u;
+        let mut prev_unresolved_imports = 0u;
+        loop {
+            #debug("(resolving imports) iteration %u, %u imports left",
+                   i, self.unresolved_imports);
+
+            let module_root = (*self.graph_root).get_module();
+            self.resolve_imports_for_module_subtree(module_root);
+
+            if self.unresolved_imports == 0u {
+                break;
+            }
+            if self.unresolved_imports == prev_unresolved_imports {
+                self.report_unresolved_imports(self.graph_root);
+                break;
+            }
+
+            i += 1u;
+            prev_unresolved_imports = self.unresolved_imports;
+        }
     }
 
     #[doc="
@@ -605,9 +687,9 @@ class resolver {
     #[doc="
         Attempts to resolve the given import. The return value indicates
         failure if we're certain the name does not exist, indeterminate if we
-        don't know whether the name exists at the moment due to outstanding
-        globs, or success if we know the name exists. If successful, the
-        bindings are written into the import directive.
+        don't know whether the name exists at the moment due to other
+        currently-unresolved imports, or success if we know the name exists. If
+        successful, the resolved bindings are written into the module.
     "]
     fn resolve_import_for_module(module_node: @module_node,
                                  import_directive: @import_directive)
@@ -633,8 +715,267 @@ class resolver {
             containing_module = module_node;
         }
 
-        // TODO
-        ret rifmr_failed;
+        // Next, attempt to resolve the import.
+        let mut resolution_result;
+        alt *import_directive.subclass {
+            ids_single(target, source) {
+                resolution_result =
+                    self.resolve_single_import(module_node, containing_module,
+                                               target, source);
+            }
+            ids_glob {
+                resolution_result =
+                    self.resolve_glob_import(module_node, containing_module);
+            }
+        }
+
+        // Decrement the count of unresolved imports.
+        alt resolution_result {
+            rifmr_success {
+                assert self.unresolved_imports >= 1u;
+                self.unresolved_imports -= 1u;
+            }
+            _ { /* Nothing to do. */ }
+        }
+        ret resolution_result;
+    }
+
+    fn resolve_single_import(module_node: @module_node,
+                             containing_module: @module_node,
+                             target: atom, source: atom)
+            -> resolve_import_for_module_result {
+
+        // We need to resolve all three namespaces for this to succeed.
+        let mut module_result = nsr_unbound;
+        let mut value_result = nsr_unbound;
+        let mut type_result = nsr_unbound;
+
+        // Search for direct children of the containing module.
+        alt containing_module.children.find(target) {
+            none { /* Continue. */ }
+            some(child_graph_node) {
+                if (*child_graph_node).defined_in_namespace(ns_module) {
+                    module_result = nsr_bound(child_graph_node);
+                }
+                if (*child_graph_node).defined_in_namespace(ns_value) {
+                    value_result = nsr_bound(child_graph_node);
+                }
+                if (*child_graph_node).defined_in_namespace(ns_type) {
+                    type_result = nsr_bound(child_graph_node);
+                }
+            }
+        }
+
+        // If we didn't find all three results, search imports.
+        alt (module_result, value_result, type_result) {
+            (nsr_bound(_), nsr_bound(_), nsr_bound(_)) {
+                // Continue.
+            }
+            _ {
+                // If there is an unresolved glob at this point in the
+                // containing module, bail out. We don't know enough to be able
+                // to resolve this import.
+                if containing_module.glob_count > 0u {
+                    #debug("(resolving single import) unresolved glob; \
+                            bailing out");
+                    ret rifmr_indeterminate;
+                }
+
+                // Now search the exported imports within the containing
+                // module.
+                alt containing_module.import_resolutions.find(target) {
+                    none {
+                        // The containing module definitely doesn't have an
+                        // exported import with the name in question. We can
+                        // therefore accurately report that the names are
+                        // unbound.
+                        if module_result == nsr_unknown {
+                            module_result = nsr_unbound;
+                        }
+                        if value_result == nsr_unknown {
+                            value_result = nsr_unbound;
+                        }
+                        if type_result == nsr_unknown {
+                            type_result = nsr_unbound;
+                        }
+                    }
+                    some(import_resolution)
+                            if import_resolution.outstanding_references == 0u {
+                        fn get_binding(import_resolution: @import_resolution,
+                                       namespace: namespace)
+                                    -> namespace_result {
+                            alt (*import_resolution).
+                                    target_for_namespace(namespace) {
+                                none {
+                                    ret nsr_unbound;
+                                }
+                                some(binding) {
+                                    ret nsr_bound(binding);
+                                }
+                            }
+                        }
+
+                        // The name is an import which has been fully resolved.
+                        // We can, therefore, just follow the import.
+                        if module_result == nsr_unknown {
+                            module_result = get_binding(import_resolution,
+                                                        ns_module);
+                        }
+                        if value_result == nsr_unknown {
+                            value_result = get_binding(import_resolution,
+                                                       ns_type);
+                        }
+                        if type_result == nsr_unknown {
+                            type_result = get_binding(import_resolution,
+                                                      ns_value);
+                        }
+                    }
+                    some(_) {
+                        // The import is unresolved. Bail out.
+                        #debug("(resolving single import) unresolved import; \
+                                bailing out");
+                        ret rifmr_indeterminate;
+                    }
+                }
+            }
+        }
+
+        // We've successfully resolved the import. Write the results in.
+        assert module_node.import_resolutions.contains_key(target);
+        let import_resolution = module_node.import_resolutions.get(target);
+
+        alt module_result {
+            nsr_bound(binding) {
+                import_resolution.module_target = some(binding);
+            }
+            nsr_unbound { /* Continue. */ }
+            nsr_unknown { fail "module result should be known at this point"; }
+        }
+        alt value_result {
+            nsr_bound(binding) {
+                import_resolution.value_target = some(binding);
+            }
+            nsr_unbound { /* Continue. */ }
+            nsr_unknown { fail "value result should be known at this point"; }
+        }
+        alt type_result {
+            nsr_bound(binding) {
+                import_resolution.type_target = some(binding);
+            }
+            nsr_unbound { /* Continue. */ }
+            nsr_unknown { fail "type result should be known at this point"; }
+        }
+
+        assert import_resolution.outstanding_references >= 1u;
+        import_resolution.outstanding_references -= 1u;
+
+        #debug("(resolving single import) successfully resolved import");
+        ret rifmr_success;
+    }
+
+    #[doc="
+        Resolves a glob import. Note that this function cannot fail; it either
+        succeeds or bails out (as importing * from an empty module or a module
+        that exports nothing is valid).
+    "]
+    fn resolve_glob_import(module_node: @module_node,
+                           containing_module: @module_node)
+            -> resolve_import_for_module_result {
+
+        // This function works in a highly imperative manner; it eagerly adds
+        // everything it can to the list of import resolutions of the module
+        // node.
+
+        // We must bail out if the node has unresolved imports of any kind
+        // (including globs).
+        if !(*containing_module).all_imports_resolved() {
+            #debug("(resolving glob import) target module has unresolved \
+                    imports; bailing out");
+            ret rifmr_indeterminate;
+        }
+
+        assert containing_module.glob_count == 0u;
+
+        // Add all resolved imports from the containing module.
+        for containing_module.import_resolutions.each {
+            |atom, target_import_resolution|
+
+            // Here we merge two import resolutions.
+            alt module_node.import_resolutions.find(atom) {
+                none {
+                    // Simple: just copy the old import resolution.
+                    let new_import_resolution = @import_resolution();
+                    new_import_resolution.module_target =
+                        target_import_resolution.module_target;
+                    new_import_resolution.value_target =
+                        target_import_resolution.value_target;
+                    new_import_resolution.type_target =
+                        target_import_resolution.type_target;
+                    module_node.import_resolutions.insert(atom,
+                            new_import_resolution);
+                }
+                some(dest_import_resolution) {
+                    // Merge the two import resolutions at a finer-grained
+                    // level.
+                    alt target_import_resolution.module_target {
+                        none { /* Continue. */ }
+                        some(module_target) {
+                            dest_import_resolution.module_target =
+                                some(module_target);
+                        }
+                    }
+                    alt target_import_resolution.value_target {
+                        none { /* Continue. */ }
+                        some(value_target) {
+                            dest_import_resolution.value_target =
+                                some(value_target);
+                        }
+                    }
+                    alt target_import_resolution.type_target {
+                        none { /* Continue. */ }
+                        some(type_target) {
+                            dest_import_resolution.type_target =
+                                some(type_target);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add all children from the containing module.
+        for containing_module.children.each {
+            |atom, graph_node|
+
+            let mut dest_import_resolution;
+            alt module_node.import_resolutions.find(atom) {
+                none {
+                    // Create a new import resolution from this child.
+                    dest_import_resolution = @import_resolution();
+                    module_node.import_resolutions.insert(atom,
+                            dest_import_resolution);
+                }
+                some(existing_import_resolution) {
+                    dest_import_resolution = existing_import_resolution;
+                }
+            }
+
+            // Merge the child item into the import resolution.
+            if (*graph_node).defined_in_namespace(ns_module) {
+                dest_import_resolution.module_target = some(graph_node);
+            }
+            if (*graph_node).defined_in_namespace(ns_value) {
+                dest_import_resolution.value_target = some(graph_node);
+            }
+            if (*graph_node).defined_in_namespace(ns_type) {
+                dest_import_resolution.type_target = some(graph_node);
+            }
+        }
+
+        assert module_node.glob_count >= 1u;
+        module_node.glob_count -= 1u;
+
+        #debug("(resolving glob import) successfully resolved import");
+        ret rifmr_success;
     }
 
     #[doc="
@@ -655,62 +996,22 @@ class resolver {
 
         // The first element of the module path must be in the current scope
         // chain.
-
         let first_element = (*module_path).get_elt(0u);
-        let mut search_module = module_node;
-        loop {
-            let resolve_result = self.resolve_name_in_module(search_module,
-                                                             first_element);
-            alt resolve_result {
-                rnimr_failed {
-                    /* Continue. */
-                }
-                rnimr_indeterminate {
-                    #debug("!!! (resolving module path for import) \
-                           UNEXPECTED: indeterminate");
-                }
-                rnimr_success(graph_node) {
-                    alt (*graph_node).get_module_if_available() {
-                        none {
-                            #debug("!!! (resolving module path for import) \
-                                   not a module: %s",
-                                   (*self.atom_table).
-                                        atom_to_str(first_element));
-                        }
-                        some(module_node) {
-                            #debug("(resolving module path for import) \
-                                    found: %s",
-                                   (*self.atom_table).
-                                        atom_to_str(first_element));
-                            search_module = module_node;
-                            break;
-                        }
-                    }
-                }
+        let mut search_module;
+        alt self.resolve_module_in_lexical_scope(module_node, first_element) {
+            rmpfir_failed {
+                #error("(resolving module path for import) !!! unresolved \
+                        name: %s",
+                       (*self.atom_table).atom_to_str(first_element));
+                ret rmpfir_failed;
             }
-
-            // We didn't find the module at this scope level. Go to the next
-            // one.
-            alt search_module.parent_graph_node.parent_node {
-                none {
-                    // No more parents. This module was unresolved.
-                    ret rmpfir_failed;
-                }
-                some(gnh_graph_node(parent_node)) {
-                    alt (*parent_node).get_module_if_available() {
-                        none {
-                            // The parent is not a module. This should not
-                            // happen.
-                            #debug("!!! (resolving module path for import) \
-                                    UNEXPECTED: parent is not a module");
-                            ret rmpfir_failed;
-                        }
-                        some(parent_module_node) {
-                            // Continue up to the next parent.
-                            search_module = parent_module_node;
-                        }
-                    }
-                }
+            rmpfir_indeterminate {
+                #debug("(resolving module path for import) indeterminate; \
+                        bailing");
+                ret rmpfir_indeterminate;
+            }
+            rmpfir_success(resulting_module) {
+                search_module = resulting_module;
             }
         }
 
@@ -720,7 +1021,7 @@ class resolver {
         let mut index = 1u;
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module, name) {
+            alt self.resolve_name_in_module(search_module, name, ns_module) {
                 rnimr_failed {
                     #debug("!!! (resolving module path for import) module \
                            resolution failed: %s",
@@ -756,89 +1057,196 @@ class resolver {
         ret rmpfir_success(search_module);
     }
 
-    #[doc="
-        Attempts to resolve the supplied name in the given module. If
-        successful, returns the reduced graph node corresponding to the name.
-    "]
-    fn resolve_name_in_module(module_node: @module_node, name: atom) ->
-            resolve_name_in_module_result {
-        #debug("(resolving name in module) resolving '%s' in '%s'",
-               (*self.atom_table).atom_to_str(name),
-               self.module_to_str(module_node));
-
-        // First, check children.
+    fn resolve_module_in_lexical_scope(module_node: @module_node, name: atom)
+            -> resolve_module_path_for_import_result {
+        // The current module node is handled specially. First, check for
+        // its immediate children.
         alt module_node.children.find(name) {
-            some(child_node) {
-                #debug("(resolving name in module) found node as child");
-                ret rnimr_success(child_node);
-            }
-            none {
-                // Continue.
+            none { /* Not found; continue. */ }
+            some(graph_node) {
+                alt (*graph_node).get_module_if_available() {
+                    none { /* Not found; continue. */ }
+                    some(target_module_node) {
+                        // The target module is an immediate child of the
+                        // reference module. Return it.
+                        #debug("(resolving module in lexical scope) resolved \
+                                module to immediate child");
+                        ret rmpfir_success(target_module_node);
+                    }
+                }
             }
         }
 
-        // Next, check known exports.
-        alt module_node.exported_imports.find(name) {
-            some(import_directive) if !import_directive.marked {
-                #debug("(resolving name in module) following import");
-
-                import_directive.marked = true;
-                let resolution_result =
-                    self.resolve_import_for_module(module_node,
-                                                   import_directive);
-                import_directive.marked = false;
-
-                alt resolution_result {
-                    rifmr_failed {
-                        // Continue.
-                    }
-                    rifmr_indeterminate {
-                        ret rnimr_indeterminate;
-                    }
-                    rifmr_success {
-                        #debug("(resolving name in module) found node as \
-                                known export");
-                        alt import_directive.target {
+        // Now check for its import directives. We don't have to have resolved
+        // all its imports in the usual way; this is because chains of adjacent
+        // import statements are processed as though they mutated the current
+        // scope.
+        alt module_node.import_resolutions.find(name) {
+            none { /* Not found; continue. */ }
+            some(import_resolution) {
+                alt import_resolution.module_target {
+                    none { /* Not found; continue. */ }
+                    some(target_graph_node) { 
+                        alt (*target_graph_node).get_module_if_available() {
                             none {
-                                fail "resolve_import_for_module claimed to \
-                                      succeed but didn't actually write the \
-                                      target into the directive!";
+                                // The parent is not a module. This should not
+                                // happen.
+                                #error("!!! (resolving module in lexical \
+                                        scope) UNEXPECTED: parent is not a \
+                                        module");
+                                ret rmpfir_failed;
                             }
-                            some(target_node) {
-                                ret rnimr_success(target_node);
+                            some(target_module_node) {
+                                #debug("(resolving module in lexical scope) \
+                                        resolved module to import");
+                                ret rmpfir_success(target_module_node);
                             }
                         }
                     }
                 }
             }
-            some(import_directive) {
-                #debug("(resolving name in module) not following marked \
-                        import");
+        }
+        
+        // Finally, proceed up the scope chain looking for parent modules.
+        let mut search_module = module_node;
+        loop {
+            // Go to the next parent.
+            alt search_module.parent_graph_node.parent_node {
+                none {
+                    // No more parents. This module was unresolved.
+                    #debug("(resolving module in lexical scope) unresolved \
+                            module");
+                    ret rmpfir_failed;
+                }
+                some(gnh_graph_node(parent_node)) {
+                    alt (*parent_node).get_module_if_available() {
+                        none {
+                            // The parent is not a module. This should not
+                            // happen.
+                            #error("!!! (resolving module in lexical scope) \
+                                    UNEXPECTED: parent is not a module");
+                            ret rmpfir_failed;
+                        }
+                        some(parent_module_node) {
+                            search_module = parent_module_node;
+                        }
+                    }
+                }
+            }
+
+            alt self.resolve_name_in_module(search_module, name, ns_module) {
+                rnimr_failed {
+                    // Continue up the search chain.
+                }
+                rnimr_indeterminate {
+                    // We couldn't see through the higher scope because of an
+                    // unresolved import higher up. Bail.
+                    #debug("(resolving module in lexical scope) indeterminate \
+                            higher scope; bailing");
+                    ret rmpfir_indeterminate;
+                }
+                rnimr_success(graph_node) {
+                    // We found the module.
+                    alt (*graph_node).get_module_if_available() {
+                        none {
+                            #error("!!! (resolving module in lexical scope) \
+                                   not a module: %s",
+                                   (*self.atom_table).atom_to_str(name));
+                        }
+                        some(module_node) {
+                            #debug("(resolving module in lexical scope) \
+                                    found: %s",
+                                   (*self.atom_table).atom_to_str(name));
+                            ret rmpfir_success(module_node);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[doc="
+        Attempts to resolve the supplied name in the given module for the
+        given namespace. If successful, returns the reduced graph node
+        corresponding to the name.
+    "]
+    fn resolve_name_in_module(module_node: @module_node, name: atom,
+                              namespace: namespace) ->
+            resolve_name_in_module_result {
+        #debug("(resolving name in module) resolving '%s' in '%s'",
+               (*self.atom_table).atom_to_str(name),
+               self.module_to_str(module_node));
+
+        // First, check the direct children of the module.
+        alt module_node.children.find(name) {
+            some(child_node) if (*child_node).defined_in_namespace(namespace) {
+                #debug("(resolving name in module) found node as child");
+                ret rnimr_success(child_node);
+            }
+            some(_) | none {
+                // Continue.
+            }
+        }
+
+        // Next, check the module's imports. If the module has a glob, then
+        // we bail out; we don't know its imports.
+        if module_node.glob_count > 0u {
+            #debug("(resolving name in module) module has glob; bailing out");
+            ret rnimr_indeterminate;
+        }
+
+        // Otherwise, we check the list of resolved imports.
+        alt module_node.import_resolutions.find(name) {
+            some(import_resolution) {
+                if import_resolution.outstanding_references != 0u {
+                    #debug("(resolving name in module) import unresolved; \
+                            bailing out");
+                    ret rnimr_indeterminate;
+                }
+
+                alt (*import_resolution).target_for_namespace(namespace) {
+                    none { /* Continue. */ }
+                    some(target) {
+                        #debug("(resolving name in module) resolved to \
+                                import");
+                        ret rnimr_success(target);
+                    }
+                }
             }
             none {
                 // Continue.
             }
         }
 
-        // Check to see if this name might be covered by a glob. If so, we
-        // can't figure it out right now. We'll get to it in a subsequent
-        // import resolution pass; for now, bail out.
-        //
-        // FIXME: We might be able to be a little more precise here; we only
-        // have to have all *globs* resolved in the module, not all imports.
-
-        if module_node.exports_globs &&
-                !(*module_node).all_imports_resolved() {
-            #debug("(resolving name in module) module exports globs; will \
-                    return later");
-            ret rnimr_indeterminate;
-        }
-
-        // The name is not covered by a glob (or all the globs have been
-        // resolved). We're out of luck.
+        // We're out of luck.
         #debug("(resolving name in module) failed to resolve %s",
                (*self.atom_table).atom_to_str(name));
         ret rnimr_failed;
+    }
+
+    fn report_unresolved_imports(graph_node: @graph_node) {
+        let mut module_node;
+        alt (*graph_node).get_module_if_available() {
+            none { ret; }
+            some(associated_module_node) {
+                module_node = associated_module_node;
+            }
+        }
+
+        let import_count = module_node.imports.len();
+        uint::range(module_node.resolved_import_count, import_count) {
+            |index|
+            let module_path = module_node.imports.get_elt(index).module_path;
+            #error("!!! unresolved import in %s: %s",
+                   self.module_to_str(module_node),
+                   (*self.atom_table).atoms_to_str(module_path));
+        }
+
+        // Descend into children.
+        for module_node.children.each {
+            |_name, child_node|
+            self.report_unresolved_imports(child_node);
+        }
     }
 
     //
@@ -853,7 +1261,8 @@ class resolver {
         Binds the supplied name in the supplied namespace to the given node ID
         in any crate.
     "]
-    fn record_global_name(namespace: namespace, name: str, id: def_id) {
+    fn record_global_name(namespace: namespace_bindings, name: str,
+                          id: def_id) {
         let mut bindings;
         alt namespace.find(name) {
             none {
@@ -1056,8 +1465,8 @@ class resolver {
 #[doc="Entry point to crate resolution."]
 fn resolve_crate(session: session, ast_map: ast_map_t, crate: @crate)
         -> { def_map: def_map, impl_map: impl_map } {
-    let resolver = resolver(session, ast_map, crate);
-    resolver.resolve();
+    let resolver = @resolver(session, ast_map, crate);
+    (*resolver).resolve(resolver);
     ret { def_map: resolver.def_map, impl_map: resolver.impl_map };
 }
 
