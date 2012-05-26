@@ -600,9 +600,11 @@ class resolver {
     //
     // Import resolution
     //
-    // This is a fixed-point algorithm. We greedily follow imports around the
-    // crate until our attempts at name resolution are stymied by a glob we
-    // haven't resolved yet. In that case we come around again.
+    // This is a fixed-point algorithm. We resolve imports until our efforts
+    // are stymied by an unresolved import; then we bail out of the current
+    // module and continue. We terminate successfully once no more imports
+    // remain or unsuccessfully when no forward progress in resolving imports
+    // is made.
     //
 
     #[doc="
@@ -620,9 +622,12 @@ class resolver {
             self.resolve_imports_for_module_subtree(module_root);
 
             if self.unresolved_imports == 0u {
+                #debug("(resolving imports) success");
                 break;
             }
+
             if self.unresolved_imports == prev_unresolved_imports {
+                #debug("!!! (resolving imports) failure");
                 self.report_unresolved_imports(self.graph_root);
                 break;
             }
@@ -695,10 +700,18 @@ class resolver {
                                  import_directive: @import_directive)
             -> resolve_import_for_module_result {
 
-        // First, resolve the module path for the directive, if necessary.
-        let mut containing_module;
+        let mut resolution_result;
+
+        // One-level renaming imports of the form `import foo = bar;` are
+        // handled specially.
         let module_path = import_directive.module_path;
-        if (*module_path).len() > 0u {
+        if (*module_path).len() == 0u {
+            resolution_result =
+                self.resolve_one_level_renaming_import(module_node,
+                                                       import_directive);
+        } else {
+            // First, resolve the module path for the directive, if necessary.
+            let mut containing_module;
             alt self.resolve_module_path_for_import(module_node, module_path) {
                 rmpfir_failed {
                     ret rifmr_failed;
@@ -711,21 +724,20 @@ class resolver {
                     containing_module = module_node;
                 }
             }
-        } else {
-            containing_module = module_node;
-        }
 
-        // Next, attempt to resolve the import.
-        let mut resolution_result;
-        alt *import_directive.subclass {
-            ids_single(target, source) {
-                resolution_result =
-                    self.resolve_single_import(module_node, containing_module,
-                                               target, source);
-            }
-            ids_glob {
-                resolution_result =
-                    self.resolve_glob_import(module_node, containing_module);
+            // Next, attempt to resolve the import.
+            alt *import_directive.subclass {
+                ids_single(target, source) {
+                    resolution_result =
+                        self.resolve_single_import(module_node,
+                                                   containing_module, target,
+                                                   source);
+                }
+                ids_glob {
+                    resolution_result =
+                        self.resolve_glob_import(module_node,
+                                                 containing_module);
+                }
             }
         }
 
@@ -735,7 +747,7 @@ class resolver {
                 assert self.unresolved_imports >= 1u;
                 self.unresolved_imports -= 1u;
             }
-            _ { /* Nothing to do. */ }
+            _ { /* Nothing to do here; just return the error. */ }
         }
         ret resolution_result;
     }
@@ -1057,24 +1069,16 @@ class resolver {
         ret rmpfir_success(search_module);
     }
 
-    fn resolve_module_in_lexical_scope(module_node: @module_node, name: atom)
-            -> resolve_module_path_for_import_result {
+    fn resolve_item_in_lexical_scope(module_node: @module_node, name: atom,
+                                     namespace: namespace)
+            -> resolve_name_in_module_result {
         // The current module node is handled specially. First, check for
         // its immediate children.
         alt module_node.children.find(name) {
-            none { /* Not found; continue. */ }
-            some(graph_node) {
-                alt (*graph_node).get_module_if_available() {
-                    none { /* Not found; continue. */ }
-                    some(target_module_node) {
-                        // The target module is an immediate child of the
-                        // reference module. Return it.
-                        #debug("(resolving module in lexical scope) resolved \
-                                module to immediate child");
-                        ret rmpfir_success(target_module_node);
-                    }
-                }
+            some(graph_node) if (*graph_node).defined_in_namespace(namespace) {
+                ret rnimr_success(graph_node);
             }
+            some(_) | none { /* Not found; continue. */ }
         }
 
         // Now check for its import directives. We don't have to have resolved
@@ -1084,24 +1088,10 @@ class resolver {
         alt module_node.import_resolutions.find(name) {
             none { /* Not found; continue. */ }
             some(import_resolution) {
-                alt import_resolution.module_target {
+                alt (*import_resolution).target_for_namespace(namespace) {
                     none { /* Not found; continue. */ }
-                    some(target_graph_node) { 
-                        alt (*target_graph_node).get_module_if_available() {
-                            none {
-                                // The parent is not a module. This should not
-                                // happen.
-                                #error("!!! (resolving module in lexical \
-                                        scope) UNEXPECTED: parent is not a \
-                                        module");
-                                ret rmpfir_failed;
-                            }
-                            some(target_module_node) {
-                                #debug("(resolving module in lexical scope) \
-                                        resolved module to import");
-                                ret rmpfir_success(target_module_node);
-                            }
-                        }
+                    some(target_graph_node) {
+                        ret rnimr_success(target_graph_node);
                     }
                 }
             }
@@ -1114,18 +1104,18 @@ class resolver {
             alt search_module.parent_graph_node.parent_node {
                 none {
                     // No more parents. This module was unresolved.
-                    #debug("(resolving module in lexical scope) unresolved \
+                    #debug("(resolving item in lexical scope) unresolved \
                             module");
-                    ret rmpfir_failed;
+                    ret rnimr_failed;
                 }
                 some(gnh_graph_node(parent_node)) {
                     alt (*parent_node).get_module_if_available() {
                         none {
                             // The parent is not a module. This should not
                             // happen.
-                            #error("!!! (resolving module in lexical scope) \
+                            #error("!!! (resolving item in lexical scope) \
                                     UNEXPECTED: parent is not a module");
-                            ret rmpfir_failed;
+                            ret rnimr_failed;
                         }
                         some(parent_module_node) {
                             search_module = parent_module_node;
@@ -1134,33 +1124,51 @@ class resolver {
                 }
             }
 
-            alt self.resolve_name_in_module(search_module, name, ns_module) {
+            // Resolve the name in the parent module.
+            alt self.resolve_name_in_module(search_module, name, namespace) {
                 rnimr_failed {
                     // Continue up the search chain.
                 }
                 rnimr_indeterminate {
                     // We couldn't see through the higher scope because of an
                     // unresolved import higher up. Bail.
-                    #debug("(resolving module in lexical scope) indeterminate \
+                    #debug("(resolving item in lexical scope) indeterminate \
                             higher scope; bailing");
-                    ret rmpfir_indeterminate;
+                    ret rnimr_indeterminate;
                 }
                 rnimr_success(graph_node) {
                     // We found the module.
-                    alt (*graph_node).get_module_if_available() {
-                        none {
-                            #error("!!! (resolving module in lexical scope) \
-                                   not a module: %s",
-                                   (*self.atom_table).atom_to_str(name));
-                        }
-                        some(module_node) {
-                            #debug("(resolving module in lexical scope) \
-                                    found: %s",
-                                   (*self.atom_table).atom_to_str(name));
-                            ret rmpfir_success(module_node);
-                        }
+                    ret rnimr_success(graph_node);
+                }
+            }
+        }
+    }
+
+    fn resolve_module_in_lexical_scope(module_node: @module_node, name: atom)
+            -> resolve_module_path_for_import_result {
+        alt self.resolve_item_in_lexical_scope(module_node, name, ns_module) {
+            rnimr_success(graph_node) {
+                alt (*graph_node).get_module_if_available() {
+                    some(target_module_node) {
+                        #debug("(resolving module in lexical scope) found");
+                        ret rmpfir_success(target_module_node);
+                    }
+                    none {
+                        #error("!!! (resolving module in lexical scope) module
+                                wasn't actually a module!");
+                        ret rmpfir_failed;
                     }
                 }
+            }
+            rnimr_indeterminate {
+                #debug("(resolving module in lexical scope) indeterminate; \
+                        bailing");
+                ret rmpfir_indeterminate;
+            }
+            rnimr_failed {
+                #debug("(resolving module in lexical scope) failed to \
+                        resolve");
+                ret rmpfir_failed;
             }
         }
     }
@@ -1222,6 +1230,124 @@ class resolver {
         #debug("(resolving name in module) failed to resolve %s",
                (*self.atom_table).atom_to_str(name));
         ret rnimr_failed;
+    }
+
+    #[doc="
+        Resolves a one-level renaming import of the kind `import foo = bar;`
+        This needs special handling, as, unlike all of the other imports, it
+        needs to look in the scope chain for modules and non-modules alike.
+    "]
+    fn resolve_one_level_renaming_import(module_node: @module_node,
+                                         import_directive: @import_directive)
+            -> resolve_import_for_module_result {
+
+        let mut target_name;
+        let mut source_name;
+        alt *import_directive.subclass {
+            ids_single(target, source) {
+                target_name = target;
+                source_name = source;
+            }
+            ids_glob {
+                fail "found `import *`, which is invalid";
+            }
+        }
+
+        #debug("(resolving one-level naming result) resolving import '%s' = \
+                '%s'",
+                (*self.atom_table).atom_to_str(target_name),
+                (*self.atom_table).atom_to_str(source_name));
+
+        // Find the matching items in the lexical scope chain for every
+        // namespace. If any of them come back indeterminate, this entire
+        // import is indeterminate.
+        let mut module_result;
+        #debug("(resolving one-level naming result) searching for module");
+        alt self.resolve_item_in_lexical_scope(module_node, source_name,
+                                               ns_module) {
+            rnimr_failed {
+                #debug("(resolving one-level renaming import) didn't find \
+                        module result");
+                module_result = none;
+            }
+            rnimr_indeterminate {
+                #debug("(resolving one-level renaming import) module result \
+                        is indeterminate; bailing");
+                ret rifmr_indeterminate;
+            }
+            rnimr_success(graph_node) {
+                #debug("(resolving one-level renaming import) module result \
+                        found");
+                module_result = some(graph_node);
+            }
+        }
+
+        let mut value_result;
+        #debug("(resolving one-level naming result) searching for value");
+        alt self.resolve_item_in_lexical_scope(module_node, source_name,
+                                               ns_value) {
+            rnimr_failed {
+                #debug("(resolving one-level renaming import) didn't find \
+                        value result");
+                value_result = none;
+            }
+            rnimr_indeterminate {
+                #debug("(resolving one-level renaming import) value result is \
+                        indeterminate; bailing");
+                ret rifmr_indeterminate;
+            }
+            rnimr_success(graph_node) {
+                #debug("(resolving one-level renaming import) value result \
+                        found");
+                value_result = some(graph_node);
+            }
+        }
+
+        let mut type_result;
+        #debug("(resolving one-level naming result) searching for type");
+        alt self.resolve_item_in_lexical_scope(module_node, source_name,
+                                               ns_type) {
+            rnimr_failed {
+                #debug("(resolving one-level renaming import) didn't find \
+                        type result");
+                type_result = none;
+            }
+            rnimr_indeterminate {
+                #debug("(resolving one-level renaming import) type result is \
+                        indeterminate; bailing");
+                ret rifmr_indeterminate;
+            }
+            rnimr_success(graph_node) {
+                #debug("(resolving one-level renaming import) type result \
+                        found");
+                type_result = some(graph_node);
+            }
+        }
+
+        // If nothing at all was found, that's an error.
+        if module_result.is_none() && value_result.is_none() &&
+                type_result.is_none() {
+            #error("!!! (resolving one-level renaming import) couldn't find \
+                    anything with that name");
+            ret rifmr_failed;
+        }
+
+        // Otherwise, proceed and write in the bindings.
+        alt module_node.import_resolutions.find(target_name) {
+            none {
+                fail "(resolving one-level renaming import) reduced graph \
+                      construction or glob importing should have created the \
+                      import resolution name by now";
+            }
+            some(import_resolution) {
+                import_resolution.module_target = module_result;
+                import_resolution.value_target = value_result;
+                import_resolution.type_target = type_result;
+            }
+        }
+
+        #debug("(resolving one-level renaming import) successfully resolved");
+        ret rifmr_success;
     }
 
     fn report_unresolved_imports(graph_node: @graph_node) {
