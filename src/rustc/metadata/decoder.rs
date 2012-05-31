@@ -37,6 +37,7 @@ export get_crate_vers;
 export get_impls_for_mod;
 export get_iface_methods;
 export get_crate_module_paths;
+export get_subitem_names;
 export get_item_path;
 export maybe_find_item; // sketchy
 export item_type; // sketchy
@@ -348,6 +349,32 @@ fn class_dtor(cdata: cmd, id: ast::node_id) -> option<ast::def_id> {
 
 fn get_symbol(data: @[u8], id: ast::node_id) -> str {
     ret item_symbol(lookup_item(id, data));
+}
+
+#[doc="
+    Given the ID of an item, returns the names of its immediate children.
+    If the path supplied is empty, returns the names of the items at the top
+    level of the crate.
+"]
+fn get_subitem_names(cdata: cmd, node_id: option<ast::node_id>)
+        -> [ast::ident] {
+
+    let mut outer_item;
+    alt node_id {
+        none {
+            // Search from the root of the crate.
+            let items = ebml::get_doc(ebml::doc(cdata.data), tag_items);
+            let items_data = ebml::get_doc(items, tag_items_data);
+
+    let outer_item = lookup_item(node_id, cdata.data);
+
+    let mut result = [];
+    ebml::tagged_docs(outer_item, tag_items_data_item) {
+        |inner_item|
+        let name = ebml::get_doc(inner_item, tag_paths_data_name);
+        result += [str::from_bytes(ebml::doc_data(name))];
+    }
+    ret result;
 }
 
 fn get_item_path(cdata: cmd, id: ast::node_id) -> ast_map::path {

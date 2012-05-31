@@ -1,5 +1,5 @@
 import driver::session::session;
-import metadata::csearch::lookup_defs;
+import metadata::csearch::{get_subitem_names, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
@@ -106,17 +106,15 @@ class atom_table {
         ret self.strings.get_elt(atom.id);
     }
 
+    fn atoms_to_strs(atoms: [atom]) -> [str] {
+        ret atoms.map {
+            |atom|
+            self.atom_to_str(atom)
+        };
+    }
+
     fn atoms_to_str(atoms: [atom]) -> str {
-        // FIXME: Use join and map or something.
-        let mut string = "";
-        uint::range(0u, atoms.len()) {
-            |index|
-            if index != 0u {
-                string += "::";
-            }
-            string += self.atom_to_str(atoms[index]);
-        }
-        ret string;
+        ret str::connect(self.atoms_to_strs(atoms), "::");
     }
 }
 
@@ -211,6 +209,9 @@ class local_module {
 class external_module {
     let parent_graph_node: @graph_node;
     let crate_id: crate_num;
+
+    // FIXME: This should probably be a def ID instead for speed. But that
+    // requires modifying metadata some more.
     let path: [atom];
 
     let children: hashmap<atom,option<@graph_node>>;
@@ -786,9 +787,9 @@ class resolver {
                                     source);
                         }
                         ids_glob {
-                            #debug("(resolving import for module) TODO: \
-                                    external globs");
-                            resolution_result = rr_failed;
+                            resolution_result =
+                                self.resolve_glob_external_import(local_module,
+                                    containing_module);
                         }
                     }
                 }
@@ -1109,10 +1110,26 @@ class resolver {
         }
     }
 
-    fn resolve_glob_external_import(local_module: @local_module,
+    fn resolve_glob_external_import(_local_module: @local_module,
                                     containing_module: @external_module)
             -> resolve_result<()> {
-        fail;
+        // We need a list of idents in order to perform the metadata lookup.
+        let mut idents =
+            (*self.atom_table).atoms_to_strs(containing_module.path);
+
+        #debug("(resolving glob external import) attempting to resolve %s::* \
+                in crate ID %d",
+                str::connect(idents, "::"), containing_module.crate_id);
+
+        for get_subitem_names(self.session.cstore, containing_module.crate_id,
+                              idents).each {
+            |subitem_name|
+            #debug("(resolving glob external import) found %s::%s",
+            str::connect(idents, "::"), subitem_name);
+        }
+
+        // TODO
+        ret rr_failed;
     }
 
     #[doc="
@@ -1558,11 +1575,7 @@ class resolver {
         // To build the graph node, we need to perform a lookup in the external
         // crate metadata. For that, we need the full path as a list of strings
         // (not as a list of atoms).
-        let mut idents = [];
-        for parent_module.path.each {
-            |atom|
-            idents += [(*self.atom_table).atom_to_str(atom)];
-        }
+        let mut idents = (*self.atom_table).atoms_to_strs(parent_module.path);
         idents += [(*self.atom_table).atom_to_str(name)];
 
         // Run the search and build up the graph node.
