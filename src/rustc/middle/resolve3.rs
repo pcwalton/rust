@@ -1,11 +1,15 @@
 import driver::session::session;
+import metadata::csearch::lookup_defs;
 import metadata::cstore::find_use_stmt_cnum;
-import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_const, def_fn};
-import syntax::ast::{def_id, def_ty, expr, expr_fn, expr_fn_block, expr_path};
-import syntax::ast::{ident, item, item_class, item_const, item_enum, item_fn};
-import syntax::ast::{item_iface, item_impl, item_mod, item_native_mod};
-import syntax::ast::{item_res, item_ty, native_item_fn, node_id, pat};
-import syntax::ast::{pat_ident, view_item, view_item_export};
+import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_arg};
+import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
+import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
+import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
+import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
+import syntax::ast::{expr_path, ident, item, item_class, item_const};
+import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
+import syntax::ast::{item_native_mod, item_res, item_ty, native_item_fn};
+import syntax::ast::{node_id, pat, pat_ident, view_item, view_item_export};
 import syntax::ast::{view_item_import, view_item_use, view_path_glob};
 import syntax::ast::{view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
@@ -102,15 +106,15 @@ class atom_table {
         ret self.strings.get_elt(atom.id);
     }
 
-    fn atoms_to_str(atoms: @dvec<atom>) -> str {
+    fn atoms_to_str(atoms: [atom]) -> str {
         // FIXME: Use join and map or something.
         let mut string = "";
-        uint::range(0u, (*atoms).len()) {
+        uint::range(0u, atoms.len()) {
             |index|
             if index != 0u {
                 string += "::";
             }
-            string += self.atom_to_str((*atoms).get_elt(index));
+            string += self.atom_to_str(atoms[index]);
         }
         ret string;
     }
@@ -203,14 +207,20 @@ class local_module {
     }
 }
 
-#[doc="An external module in the graph."]
+#[doc="An external module in the graph. These are lazily constructed."]
 class external_module {
     let parent_graph_node: @graph_node;
     let crate_id: crate_num;
+    let path: [atom];
 
-    new(parent_graph_node: @graph_node, crate_id: crate_num) {
+    let children: hashmap<atom,option<@graph_node>>;
+
+    new(parent_graph_node: @graph_node, crate_id: crate_num, path: [atom]) {
         self.parent_graph_node = parent_graph_node;
         self.crate_id = crate_id;
+        self.path = path;
+
+        self.children = atom_hashmap();
     }
 }
 
@@ -252,9 +262,11 @@ class graph_node {
     }
 
     #[doc="Records an external module definition with the given crate ID."]
-    fn define_external_module(this: @graph_node, crate_id: crate_num) {
+    fn define_external_module(this: @graph_node, crate_id: crate_num,
+                              path: [atom]) {
         assert self.module_def == md_none;  // FIXME: should be an error
-        self.module_def = md_external_module(@external_module(this, crate_id));
+        let external_module = @external_module(this, crate_id, path);
+        self.module_def = md_external_module(external_module);
     }
 
     #[doc="Records a type definition."]
@@ -579,7 +591,7 @@ class resolver {
                         let atom = (*self.atom_table).intern(name);
                         let child = (*parent_node).add_child(parent_node,
                                                              atom);
-                        (*child).define_external_module(child, node_id);
+                        (*child).define_external_module(child, node_id, []);
                     }
                     none {
                         /* Ignore. */
@@ -746,7 +758,7 @@ class resolver {
                 rr_indeterminate {
                     resolution_result = rr_indeterminate;
                 }
-                rr_success(containing_module) {
+                rr_success(md_local_module(containing_module)) {
                     // Attempt to resolve the import.
                     alt *import_directive.subclass {
                         ids_single(target, source) {
@@ -762,6 +774,26 @@ class resolver {
                                                          containing_module);
                         }
                     }
+                }
+                rr_success(md_external_module(containing_module)) {
+                    alt *import_directive.subclass {
+                        ids_single(target, source) {
+                            resolution_result =
+                                self.resolve_single_external_import(
+                                    local_module,
+                                    containing_module,
+                                    target,
+                                    source);
+                        }
+                        ids_glob {
+                            #debug("(resolving import for module) TODO: \
+                                    external globs");
+                            resolution_result = rr_failed;
+                        }
+                    }
+                }
+                rr_success(md_none) {
+                    fail "md_none unexpected here";
                 }
             }
         }
@@ -1027,26 +1059,82 @@ class resolver {
         ret rr_success(());
     }
 
+    fn resolve_single_external_import(local_module: @local_module,
+                                      containing_module: @external_module,
+                                      target: atom, source: atom)
+            -> resolve_result<()> {
+
+        #debug("(resolving single external import) resolving import '%s' = \
+                '%s::%s' in '%s'",
+               (*self.atom_table).atom_to_str(target),
+               (*self.atom_table).atoms_to_str(containing_module.path),
+               (*self.atom_table).atom_to_str(source),
+               self.module_to_str(local_module));
+
+        alt self.resolve_all_names_in_external_module(containing_module,
+                                                      source) {
+            rr_failed { ret rr_failed; }
+            rr_indeterminate { ret rr_indeterminate; }
+            rr_success(child_graph_node) {
+                assert child_graph_node.module_def != md_none ||
+                       child_graph_node.value_def != none ||
+                       child_graph_node.type_def != none;
+
+                let mut import_resolution;
+                alt local_module.import_resolutions.find(target) {
+                    none {
+                        fail "(resolving single external import) reduced \
+                              graph construction or glob importing should \
+                              have created the import resolution name by now";
+                    }
+                    some(existing_import_resolution) {
+                        import_resolution = existing_import_resolution;
+                    }
+                }
+
+                // Write in the import results.
+                if child_graph_node.module_def != md_none {
+                    import_resolution.module_target = some(child_graph_node);
+                }
+                if !child_graph_node.value_def.is_none() {
+                    import_resolution.value_target = some(child_graph_node);
+                }
+                if !child_graph_node.type_def.is_none() {
+                    import_resolution.type_target = some(child_graph_node);
+                }
+
+                #debug("(resolving single external import) success");
+                ret rr_success(());
+            }
+        }
+    }
+
+    fn resolve_glob_external_import(local_module: @local_module,
+                                    containing_module: @external_module)
+            -> resolve_result<()> {
+        fail;
+    }
+
     #[doc="
         Attempts to resolve the module part of an import directive rooted at
         the given module.
     "]
     fn resolve_module_path_for_import(local_module: @local_module,
                                       module_path: @dvec<atom>)
-            -> resolve_result<@local_module> {
+            -> resolve_result<module_def> {
 
         let module_path_len = (*module_path).len();
         assert module_path_len > 0u;
 
         #debug("(resolving module path for import) processing '%s' rooted at \
                '%s'",
-               (*self.atom_table).atoms_to_str(module_path),
+               (*self.atom_table).atoms_to_str((*module_path).get()),
                self.module_to_str(local_module));
 
         // The first element of the module path must be in the current scope
         // chain.
         let first_element = (*module_path).get_elt(0u);
-        let mut search_module;
+        let mut search_module_def;
         alt self.resolve_module_in_lexical_scope(local_module, first_element) {
             rr_failed {
                 #error("(resolving module path for import) !!! unresolved \
@@ -1059,8 +1147,8 @@ class resolver {
                         bailing");
                 ret rr_indeterminate;
             }
-            rr_success(resulting_module) {
-                search_module = resulting_module;
+            rr_success(resulting_module_def) {
+                search_module_def = resulting_module_def;
             }
         }
 
@@ -1070,7 +1158,8 @@ class resolver {
         let mut index = 1u;
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module, name, ns_module) {
+            alt self.resolve_name_in_module(search_module_def, name,
+                                            ns_module) {
                 rr_failed {
                     #debug("!!! (resolving module path for import) module \
                            resolution failed: %s",
@@ -1084,16 +1173,16 @@ class resolver {
                     ret rr_indeterminate;
                 }
                 rr_success(graph_node) {
-                    alt (*graph_node).get_local_module_if_available() {
-                        none {
+                    alt graph_node.module_def {
+                        md_none {
                             // Not a module.
                             #debug("!!! (resolving module path for import) \
                                    not a module: %s",
                                    (*self.atom_table).atom_to_str(name));
                             ret rr_failed;
                         }
-                        some(resulting_module) {
-                            search_module = resulting_module;
+                        md_local_module(*) | md_external_module(*) {
+                            search_module_def = graph_node.module_def;
                         }
                     }
                 }
@@ -1103,7 +1192,7 @@ class resolver {
         }
 
         #debug("(resolving module path for import) resolved module");
-        ret rr_success(search_module);
+        ret rr_success(search_module_def);
     }
 
     fn resolve_item_in_lexical_scope(local_module: @local_module, name: atom,
@@ -1162,7 +1251,8 @@ class resolver {
             }
 
             // Resolve the name in the parent module.
-            alt self.resolve_name_in_module(search_module, name, namespace) {
+            alt self.resolve_name_in_local_module(search_module, name,
+                                                  namespace) {
                 rr_failed {
                     // Continue up the search chain.
                 }
@@ -1182,19 +1272,18 @@ class resolver {
     }
 
     fn resolve_module_in_lexical_scope(local_module: @local_module, name: atom)
-            -> resolve_result<@local_module> {
+            -> resolve_result<module_def> {
 
         alt self.resolve_item_in_lexical_scope(local_module, name, ns_module) {
             rr_success(graph_node) {
-                alt (*graph_node).get_local_module_if_available() {
-                    some(target_module_node) {
-                        #debug("(resolving module in lexical scope) found");
-                        ret rr_success(target_module_node);
-                    }
-                    none {
+                alt graph_node.module_def {
+                    md_none {
                         #error("!!! (resolving module in lexical scope) module
                                 wasn't actually a module!");
                         ret rr_failed;
+                    }
+                    md_local_module(*) | md_external_module(*) {
+                        ret rr_success(graph_node.module_def);
                     }
                 }
             }
@@ -1216,18 +1305,35 @@ class resolver {
         given namespace. If successful, returns the reduced graph node
         corresponding to the name.
     "]
-    fn resolve_name_in_module(local_module: @local_module, name: atom,
+    fn resolve_name_in_module(module_def: module_def, name: atom,
                               namespace: namespace)
             -> resolve_result<@graph_node> {
 
-        #debug("(resolving name in module) resolving '%s' in '%s'",
+        alt module_def {
+            md_none { fail "(resolving name in module) unexpected md_none"; }
+            md_local_module(local_module) {
+                ret self.resolve_name_in_local_module(local_module, name,
+                                                      namespace);
+            }
+            md_external_module(external_module) {
+                ret self.resolve_name_in_external_module(external_module,
+                                                         name, namespace);
+            }
+        }
+    }
+
+    fn resolve_name_in_local_module(local_module: @local_module, name: atom,
+                                    namespace: namespace)
+            -> resolve_result<@graph_node> {
+
+        #debug("(resolving name in local module) resolving '%s' in '%s'",
                (*self.atom_table).atom_to_str(name),
                self.module_to_str(local_module));
 
         // First, check the direct children of the module.
         alt local_module.children.find(name) {
             some(child_node) if (*child_node).defined_in_namespace(namespace) {
-                #debug("(resolving name in module) found node as child");
+                #debug("(resolving name in local module) found node as child");
                 ret rr_success(child_node);
             }
             some(_) | none {
@@ -1238,7 +1344,8 @@ class resolver {
         // Next, check the module's imports. If the module has a glob, then
         // we bail out; we don't know its imports.
         if local_module.glob_count > 0u {
-            #debug("(resolving name in module) module has glob; bailing out");
+            #debug("(resolving name in local module) module has glob; bailing \
+                    out");
             ret rr_indeterminate;
         }
 
@@ -1246,15 +1353,15 @@ class resolver {
         alt local_module.import_resolutions.find(name) {
             some(import_resolution) {
                 if import_resolution.outstanding_references != 0u {
-                    #debug("(resolving name in module) import unresolved; \
-                            bailing out");
+                    #debug("(resolving name in local module) import \
+                            unresolved; bailing out");
                     ret rr_indeterminate;
                 }
 
                 alt (*import_resolution).target_for_namespace(namespace) {
                     none { /* Continue. */ }
                     some(target) {
-                        #debug("(resolving name in module) resolved to \
+                        #debug("(resolving name in local module) resolved to \
                                 import");
                         ret rr_success(target);
                     }
@@ -1266,7 +1373,7 @@ class resolver {
         }
 
         // We're out of luck.
-        #debug("(resolving name in module) failed to resolve %s",
+        #debug("(resolving name in local module) failed to resolve %s",
                (*self.atom_table).atom_to_str(name));
         ret rr_failed;
     }
@@ -1389,6 +1496,135 @@ class resolver {
         ret rr_success(());
     }
 
+    fn resolve_name_in_external_module(parent_module: @external_module,
+                                       name: atom, namespace: namespace)
+            -> resolve_result<@graph_node> {
+
+        #debug("(resolving name in external module) resolving '%s' in crate \
+                ID %d, subpath '%s'",
+               (*self.atom_table).atom_to_str(name),
+               parent_module.crate_id,
+               (*self.atom_table).atoms_to_str(parent_module.path));
+
+        alt self.resolve_all_names_in_external_module(parent_module, name) {
+            rr_success(child_graph_node)
+                    if (*child_graph_node).defined_in_namespace(namespace) {
+                // We successfully resolved this name, and we know that it
+                // exists in the right namespace.
+                #debug("(resolving name in external module) success");
+                ret rr_success(child_graph_node);
+            }
+            rr_indeterminate {
+                ret rr_indeterminate;
+            }
+            rr_success(*) | rr_failed {
+                #debug("(resolving name in external module) failed");
+                ret rr_failed;
+            }
+        }
+    }
+
+    #[doc="
+        Returns the graph node corresponding to the supplied name in the given
+        module. This does not take namespaces into account.
+    "]
+    fn resolve_all_names_in_external_module(parent_module: @external_module,
+                                            name: atom)
+            -> resolve_result<@graph_node> {
+
+        // Check to see whether we already built the graph node for this child.
+        alt parent_module.children.find(name) {
+            some(some(child_node)) {
+                // We already successfully resolved this name; return the
+                // cached result.
+                #debug("(resolving all names in external module) success \
+                        (cached)");
+                ret rr_success(child_node);
+            }
+            some(_) {
+                // Either we know that the name doesn't exist at all, or we've
+                // built the graph node for this name and we know that it has
+                // no definition.
+                #debug("(resolving all names in external module) failed \
+                        (cached)");
+                ret rr_failed;
+            }
+            none {
+                // We haven't built the graph node for this child yet. Continue
+                // on.
+            }
+        }
+
+        // To build the graph node, we need to perform a lookup in the external
+        // crate metadata. For that, we need the full path as a list of strings
+        // (not as a list of atoms).
+        let mut idents = [];
+        for parent_module.path.each {
+            |atom|
+            idents += [(*self.atom_table).atom_to_str(atom)];
+        }
+        idents += [(*self.atom_table).atom_to_str(name)];
+
+        // Run the search and build up the graph node.
+        let mut result_graph_node = none;
+        for lookup_defs(self.session.cstore, parent_module.crate_id,
+                        idents).each {
+            |def|
+
+            // Create a new graph node if necessary, or reuse the existing one.
+            let mut existing_graph_node;
+            alt result_graph_node {
+                some(graph_node) { existing_graph_node = graph_node; }
+                none {
+                    existing_graph_node =
+                        @graph_node(some(parent_module.parent_graph_node));
+                    result_graph_node = some(existing_graph_node);
+                }
+            }
+
+            // Insert the item into the appropriate namespace.
+            alt def {
+                def_mod(*) | def_native_mod(*) {
+                    // Module namespace.
+                    let new_external_module =
+                        @external_module(existing_graph_node,
+                                         parent_module.crate_id,
+                                         parent_module.path + [name]);
+                    existing_graph_node.module_def =
+                        md_external_module(new_external_module);
+                }
+                def_variant(*) | def_fn(*) | def_const(*) {
+                    // Value namespace.
+                    existing_graph_node.value_def = some(def);
+                }
+                def_ty_param(*) | def_class(*) | def_ty(*) | def_use(*) {
+                    // Type namespace.
+                    existing_graph_node.type_def = some(def);
+                }
+                def_self(*) | def_prim_ty(*) | def_binding(*) | def_arg(*) |
+                def_local(*) | def_upvar(*) | def_region(*) {
+                    fail "(resolving external import) found unexpected def";
+                }
+            }
+        }
+
+        // Insert the resulting graph node as a child of the external module
+        // node.
+        parent_module.children.insert(name, result_graph_node);
+
+        // Return success or failure.
+        alt result_graph_node {
+            some(child_node) {
+                #debug("(resolving all names in external module) success");
+                ret rr_success(child_node);
+            }
+            _ {
+                #debug("(resolving all names in external module) failed");
+                ret rr_failed;
+            }
+        }
+    }
+
     fn report_unresolved_imports(graph_node: @graph_node) {
         let mut local_module;
         alt (*graph_node).get_local_module_if_available() {
@@ -1404,7 +1640,7 @@ class resolver {
             let module_path = local_module.imports.get_elt(index).module_path;
             #error("!!! unresolved import in %s: %s",
                    self.module_to_str(local_module),
-                   (*self.atom_table).atoms_to_str(module_path));
+                   (*self.atom_table).atoms_to_str((*module_path).get()));
         }
 
         // Descend into children.
