@@ -1,6 +1,7 @@
 import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
+import metadata::decoder::{doi_def, doi_impl};
 import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
@@ -28,8 +29,8 @@ type def_map = hashmap<node_id, def>;
 type impl_map = hashmap<node_id, iscopes>;
 
 // Implementation resolution stuff
-type method_info = { did: def_id, n_tps: uint, ident: ident};
-type _impl = { did: def_id, ident: ident, methods: [@method_info]};
+type method_info = { did: def_id, n_tps: uint, ident: ident };
+type _impl = { did: def_id, ident: ident, methods: [@method_info] };
 type iscope = @[@_impl];
 type iscopes = @list<iscope>;
 
@@ -41,7 +42,8 @@ enum pattern_binding_mode {
 enum namespace {
     ns_module,
     ns_type,
-    ns_value
+    ns_value,
+    ns_impl
 }
 
 enum namespace_result {
@@ -171,6 +173,7 @@ class import_resolution {
             ns_module { ret self.module_target; }
             ns_type   { ret self.type_target;   }
             ns_value  { ret self.value_target;  }
+            ns_impl   { fail "TODO";            }
         }
     }
 }
@@ -332,6 +335,7 @@ class graph_node {
             ns_module { ret self.module_def != md_none; }
             ns_type   { ret self.type_def != none;      }
             ns_value  { ret self.value_def != none;     }
+            ns_impl   { fail "TODO";                    }
         }
     }
 
@@ -684,48 +688,58 @@ class resolver {
             let child_graph_node =
                 (*parent_graph_node).add_child(parent_graph_node, atom);
 
-            alt path_entry.def {
-                def_mod(def_id) | def_native_mod(def_id) {
-                    alt child_graph_node.module_def {
-                        md_none {
-                            #debug("(building reduced graph for external \
-                                    crate) building module %s", final_ident);
-                            (*child_graph_node).
-                                define_external_module(child_graph_node,
-                                                       some(def_id));
+            alt path_entry.def_or_impl {
+                doi_def(def) {
+                    alt def {
+                        def_mod(def_id) | def_native_mod(def_id) {
+                            alt child_graph_node.module_def {
+                                md_none {
+                                    #debug("(building reduced graph for \
+                                            external crate) building module \
+                                            %s", final_ident);
+                                    (*child_graph_node).
+                                        define_external_module
+                                            (child_graph_node, some(def_id));
+                                }
+                                md_external_module(external_module) {
+                                    #debug("(building reduced graph for \
+                                            external crate) filling in def id \
+                                            for %s",
+                                            final_ident);
+                                    external_module.def_id = some(def_id);
+                                }
+                                md_local_module(_) {
+                                    fail "unexpected local module";
+                                }
+                            }
                         }
-                        md_external_module(external_module) {
+                        def_fn(def_id, _) | def_const(def_id) |
+                        def_variant(_, def_id) {
                             #debug("(building reduced graph for external \
-                                    crate) filling in def id for %s",
+                                    crate) building value %s", final_ident);
+                            (*child_graph_node).define_value(def);
+                        }
+                        def_ty(def_id) {
+                            #debug("(building reduced graph for external \
+                                    crate) building type %s", final_ident);
+                            (*child_graph_node).define_type(def);
+                        }
+                        def_class(def_id) {
+                            #debug("(building reduced graph for external \
+                                    crate) building value and type %s",
                                     final_ident);
-                            external_module.def_id = some(def_id);
+                            (*child_graph_node).define_value(def);
+                            (*child_graph_node).define_type(def);
                         }
-                        md_local_module(_) {
-                            fail "unexpected local module";
+                        def_self(*) | def_arg(*) | def_local(*) |
+                        def_prim_ty(*) | def_ty_param(*) | def_binding(*) |
+                        def_use(*) | def_upvar(*) | def_region(*) {
+                            fail #fmt("didn't expect %?", def);
                         }
                     }
                 }
-                def_fn(def_id, _) | def_const(def_id) |
-                def_variant(_, def_id) {
-                    #debug("(building reduced graph for external crate) \
-                            building value %s", final_ident);
-                    (*child_graph_node).define_value(path_entry.def);
-                }
-                def_ty(def_id) {
-                    #debug("(building reduced graph for external crate) \
-                            building type %s", final_ident);
-                    (*child_graph_node).define_type(path_entry.def);
-                }
-                def_class(def_id) {
-                    #debug("(building reduced graph for external crate) \
-                            building value and type %s", final_ident);
-                    (*child_graph_node).define_value(path_entry.def);
-                    (*child_graph_node).define_type(path_entry.def);
-                }
-                def_self(*) | def_arg(*) | def_local(*) | def_prim_ty(*) |
-                def_ty_param(*) | def_binding(*) | def_use(*) | def_upvar(*) |
-                def_region(*) {
-                    fail #fmt("didn't expect %?", path_entry.def);
+                doi_impl(*) {
+                    fail "impls TODO";
                 }
             }
         }

@@ -37,6 +37,9 @@ export get_crate_vers;
 export get_impls_for_mod;
 export get_iface_methods;
 export get_crate_module_paths;
+export def_or_impl;
+export doi_def;
+export doi_impl;
 export path_entry;
 export each_path;
 export get_item_path;
@@ -358,13 +361,23 @@ fn get_symbol(data: @[u8], id: ast::node_id) -> str {
     ret item_symbol(lookup_item(id, data));
 }
 
-class path_entry {
-    let path_string: str;
-    let def: ast::def;
+// Either a definition or an implementation; i.e. something that a name can
+// resolve to.
+enum def_or_impl {
+    doi_def(ast::def),
+    doi_impl(ast::def_id)
+}
 
-    new(path_string: str, def: ast::def) {
+// A path.
+class path_entry {
+    // The full path, separated by '::'.
+    let path_string: str;
+    // The definition or implementation that this path corresponds to.
+    let def_or_impl: def_or_impl;
+
+    new(path_string: str, def_or_impl: def_or_impl) {
         self.path_string = path_string;
-        self.def = def;
+        self.def_or_impl = def_or_impl;
     }
 }
 
@@ -430,7 +443,7 @@ fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
             none { /* Nothing to do. */ }
             some(def) {
                 #debug("(each_path) yielding item: %s", name);
-                let this_path_entry = path_entry(name, def);
+                let this_path_entry = path_entry(name, doi_def(def));
                 if (!f(this_path_entry)) {
                     break;
                 }
