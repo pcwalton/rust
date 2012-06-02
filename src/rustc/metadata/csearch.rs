@@ -22,7 +22,7 @@ export lookup_method_purity;
 export get_enum_variants;
 export get_impls_for_mod;
 export get_iface_methods;
-export get_subitem_names;
+export each_path;
 export get_type;
 export get_impl_iface;
 export get_impl_method;
@@ -82,35 +82,11 @@ fn resolve_path(cstore: cstore::cstore, cnum: ast::crate_num,
     ret result;
 }
 
-// FIXME: This is all wrong; we can't actually do what we want to do here.
-// Instead we need to eagerly create the tree items for crates. This is
-// probably more efficient anyway. --pcwalton
-#[doc="
-    Given the path to an item and a crate ID, returns the names of the item's
-    immediate children.
-"]
-fn get_subitem_names(cstore: cstore::cstore, cnum: ast::crate_num,
-                     path: [ast::ident])
-        -> [ast::ident] {
+#[doc="Iterates over all the paths in the given crate."]
+fn each_path(cstore: cstore::cstore, cnum: ast::crate_num,
+             f: fn(decoder::path_entry) -> bool) {
     let crate_data = cstore::get_crate_data(cstore, cnum);
-
-    // An empty path indicates that the root of the crate should be searched.
-    if path.len() == 0u {
-        ret decoder::get_subitem_names(crate_data, none);
-    }
-
-    for lookup_defs(cstore, cnum, path).each {
-        |def|
-        alt def {
-            ast::def_mod(def_id) | ast::def_native_mod(def_id) {
-                assert def_id.crate == cnum;
-                ret decoder::get_subitem_names(crate_data, some(def_id.node));
-            }
-            _ { /* Continue. */ }
-        }
-    }
-
-    ret [];
+    decoder::each_path(crate_data, f);
 }
 
 fn get_item_path(tcx: ty::ctxt, def: ast::def_id) -> ast_map::path {

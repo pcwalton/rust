@@ -37,7 +37,8 @@ export get_crate_vers;
 export get_impls_for_mod;
 export get_iface_methods;
 export get_crate_module_paths;
-export get_subitem_names;
+export path_entry;
+export each_path;
 export get_item_path;
 export maybe_find_item; // sketchy
 export item_type; // sketchy
@@ -117,6 +118,7 @@ fn item_parent_item(d: ebml::doc) -> option<ast::def_id> {
     found
 }
 
+// FIXME: This has nothing to do with classes.
 fn class_member_id(d: ebml::doc, cdata: cmd) -> ast::def_id {
     let tagdoc = ebml::get_doc(d, tag_def_id);
     ret translate_def_id(cdata, parse_def_id(ebml::doc_data(tagdoc)));
@@ -257,12 +259,9 @@ fn lookup_item_name(data: @[u8], id: ast::node_id) -> ast::ident {
     item_name(lookup_item(id, data))
 }
 
-fn lookup_def(cnum: ast::crate_num, data: @[u8], did_: ast::def_id) ->
-   ast::def {
-    let item = lookup_item(did_.node, data);
+fn item_to_def(item: ebml::doc, did: ast::def_id, cnum: ast::crate_num)
+        -> ast::def {
     let fam_ch = item_family(item);
-    let did = {crate: cnum, node: did_.node};
-    // We treat references to enums as references to types.
     alt check fam_ch {
       'c' { ast::def_const(did) }
       'C' { ast::def_class(did) }
@@ -280,6 +279,14 @@ fn lookup_def(cnum: ast::crate_num, data: @[u8], did_: ast::def_id) ->
       }
       'I' { ast::def_ty(did) }
     }
+}
+
+fn lookup_def(cnum: ast::crate_num, data: @[u8], did_: ast::def_id) ->
+   ast::def {
+    let item = lookup_item(did_.node, data);
+    let did = {crate: cnum, node: did_.node};
+    // We treat references to enums as references to types.
+    ret item_to_def(item, did, cnum);
 }
 
 fn get_type(cdata: cmd, id: ast::node_id, tcx: ty::ctxt)
@@ -351,30 +358,85 @@ fn get_symbol(data: @[u8], id: ast::node_id) -> str {
     ret item_symbol(lookup_item(id, data));
 }
 
-#[doc="
-    Given the ID of an item, returns the names of its immediate children.
-    If the path supplied is empty, returns the names of the items at the top
-    level of the crate.
-"]
-fn get_subitem_names(cdata: cmd, node_id: option<ast::node_id>)
-        -> [ast::ident] {
+class path_entry {
+    let path_string: str;
+    let def: ast::def;
 
-    let mut outer_item;
-    alt node_id {
-        none {
-            // Search from the root of the crate.
-            let items = ebml::get_doc(ebml::doc(cdata.data), tag_items);
-            let items_data = ebml::get_doc(items, tag_items_data);
-
-    let outer_item = lookup_item(node_id, cdata.data);
-
-    let mut result = [];
-    ebml::tagged_docs(outer_item, tag_items_data_item) {
-        |inner_item|
-        let name = ebml::get_doc(inner_item, tag_paths_data_name);
-        result += [str::from_bytes(ebml::doc_data(name))];
+    new(path_string: str, def: ast::def) {
+        self.path_string = path_string;
+        self.def = def;
     }
-    ret result;
+}
+
+type worklist_entry = {
+    name: str,
+    tag: uint,
+    doc: ebml::doc
+};
+
+#[doc="Iterates over all the paths in the given crate."]
+fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
+    let root = ebml::doc(cdata.data);
+    let outer_paths = ebml::get_doc(root, tag_paths);
+    let inner_paths = ebml::get_doc(outer_paths, tag_paths);
+    let items = ebml::get_doc(root, tag_items);
+
+    let mut worklist = [];
+    ebml::docs(inner_paths) {
+        |tag, doc|
+        worklist += [{ name: "", tag: tag, doc: doc }];
+    }
+
+    let mut i = 0u;
+    while i < worklist.len() {
+        let { name: prefix, tag: tag, doc: doc } = worklist[i];
+        i += 1u;
+
+        if tag != tag_paths_data_mod && tag != tag_paths_data_item {
+            cont;
+        }
+
+        let name = prefix + item_name(doc);
+
+        // Add all subdocuments to the worklist.
+        ebml::docs(doc) {
+            |tag, subdoc|
+            if tag != tag_paths_data_name && tag != tag_def_id {
+                worklist += [{ name: name + "::", tag: tag, doc: subdoc }];
+            }
+        }
+
+        let def_id = class_member_id(doc, cdata);   // Extract the def id.
+
+        // Construct the def for this item.
+        let mut def;
+        if tag == tag_paths_data_item {
+            alt maybe_find_item(def_id.node, items) {
+                none {
+                    #debug("(each_path) couldn't find item %d, name %s",
+                            def_id.node, name);
+                    def = none;
+                }
+                some(item_doc) {
+                    def = some(item_to_def(item_doc, def_id, cdata.cnum));
+                }
+            }
+        } else {
+            def = some(ast::def_mod(def_id));
+        }
+
+        // Hand the information off to the iteratee.
+        alt def {
+            none { /* Nothing to do. */ }
+            some(def) {
+                #debug("(each_path) yielding item: %s", name);
+                let this_path_entry = path_entry(name, def);
+                if (!f(this_path_entry)) {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn get_item_path(cdata: cmd, id: ast::node_id) -> ast_map::path {
