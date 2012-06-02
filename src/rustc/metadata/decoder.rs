@@ -1,7 +1,7 @@
 // Decoding metadata from a single crate's metadata
 
 import std::{ebml, map};
-import std::map::hashmap;
+import std::map::{hashmap, str_hash};
 import io::writer_util;
 import syntax::{ast, ast_util};
 import syntax::attr;
@@ -262,25 +262,27 @@ fn lookup_item_name(data: @[u8], id: ast::node_id) -> ast::ident {
     item_name(lookup_item(id, data))
 }
 
-fn item_to_def(item: ebml::doc, did: ast::def_id, cnum: ast::crate_num)
-        -> ast::def {
+fn item_to_def_or_impl(item: ebml::doc, did: ast::def_id, cnum: ast::crate_num)
+        -> def_or_impl {
     let fam_ch = item_family(item);
-    alt check fam_ch {
-      'c' { ast::def_const(did) }
-      'C' { ast::def_class(did) }
-      'u' { ast::def_fn(did, ast::unsafe_fn) }
-      'f' { ast::def_fn(did, ast::impure_fn) }
-      'p' { ast::def_fn(did, ast::pure_fn) }
-      'y' { ast::def_ty(did) }
-      't' { ast::def_ty(did) }
-      'm' { ast::def_mod(did) }
-      'n' { ast::def_native_mod(did) }
+    alt fam_ch {
+      'c' { doi_def(ast::def_const(did)) }
+      'C' { doi_def(ast::def_class(did)) }
+      'u' { doi_def(ast::def_fn(did, ast::unsafe_fn)) }
+      'f' { doi_def(ast::def_fn(did, ast::impure_fn)) }
+      'p' { doi_def(ast::def_fn(did, ast::pure_fn)) }
+      'y' { doi_def(ast::def_ty(did)) }
+      't' { doi_def(ast::def_ty(did)) }
+      'm' { doi_def(ast::def_mod(did)) }
+      'n' { doi_def(ast::def_native_mod(did)) }
       'v' {
         let mut tid = option::get(item_parent_item(item));
         tid = {crate: cnum, node: tid.node};
-        ast::def_variant(tid, did)
+        doi_def(ast::def_variant(tid, did))
       }
-      'I' { ast::def_ty(did) }
+      'I' { doi_def(ast::def_ty(did)) }
+      'i' { doi_impl(did) }
+      ch { fail #fmt("unexpected family code: '%c'", ch) }
     }
 }
 
@@ -289,7 +291,7 @@ fn lookup_def(cnum: ast::crate_num, data: @[u8], did_: ast::def_id) ->
     let item = lookup_item(did_.node, data);
     let did = {crate: cnum, node: did_.node};
     // We treat references to enums as references to types.
-    ret item_to_def(item, did, cnum);
+    ret def_or_impl_to_def(item_to_def_or_impl(item, did, cnum));
 }
 
 fn get_type(cdata: cmd, id: ast::node_id, tcx: ty::ctxt)
@@ -368,6 +370,13 @@ enum def_or_impl {
     doi_impl(ast::def_id)
 }
 
+fn def_or_impl_to_def(def_or_impl: def_or_impl) -> ast::def {
+    alt def_or_impl {
+        doi_def(def) { ret def; }
+        doi_impl(*) { fail "found impl in def_or_impl_to_def"; }
+    }
+}
+
 // A path.
 class path_entry {
     // The full path, separated by '::'.
@@ -381,71 +390,87 @@ class path_entry {
     }
 }
 
-type worklist_entry = {
-    name: str,
-    tag: uint,
-    doc: ebml::doc
-};
-
 #[doc="Iterates over all the paths in the given crate."]
 fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
     let root = ebml::doc(cdata.data);
-    let outer_paths = ebml::get_doc(root, tag_paths);
-    let inner_paths = ebml::get_doc(outer_paths, tag_paths);
     let items = ebml::get_doc(root, tag_items);
+    let items_data = ebml::get_doc(items, tag_items_data);
 
-    let mut worklist = [];
-    ebml::docs(inner_paths) {
-        |tag, doc|
-        worklist += [{ name: "", tag: tag, doc: doc }];
+    let mut broken = false;
+
+    // First, go through all the explicit items.
+    let explicit_item_paths: hashmap<str,()> = str_hash();
+    ebml::tagged_docs(items_data, tag_items_data_item) {
+        |item_doc|
+
+        if !broken {
+            let name = ast_map::path_to_str_with_sep(item_path(item_doc),
+                                                     "::");
+            if name != "" {
+                // Extract the def ID.
+                let def_id = class_member_id(item_doc, cdata);
+
+                // Record that we've seen this item, so we don't emit it again.
+                explicit_item_paths.insert(name, ());
+
+                // Construct the def for this item.
+                let def_or_impl = item_to_def_or_impl(item_doc, def_id,
+                                                      cdata.cnum);
+
+                // Hand the information off to the iteratee.
+                #debug("(each_path) yielding explicit item: %s", name);
+                let this_path_entry = path_entry(name, def_or_impl);
+                if (!f(this_path_entry)) {
+                    broken = true;      // FIXME: This is awful.
+                }
+            }
+        }
     }
 
-    let mut i = 0u;
-    while i < worklist.len() {
-        let { name: prefix, tag: tag, doc: doc } = worklist[i];
-        i += 1u;
+    // If broken, stop here.
+    if broken {
+        ret;
+    }
 
-        if tag != tag_paths_data_mod && tag != tag_paths_data_item {
-            cont;
-        }
+    // Next, go through all the paths. We will find items that we didn't know
+    // about before (reexports in particular).
+    let outer_paths = ebml::get_doc(root, tag_paths);
+    let inner_paths = ebml::get_doc(outer_paths, tag_paths);
+    ebml::tagged_docs(inner_paths, tag_paths_data_item) {
+        |path_doc|
 
-        let name = prefix + item_name(doc);
-
-        // Add all subdocuments to the worklist.
-        ebml::docs(doc) {
-            |tag, subdoc|
-            if tag != tag_paths_data_name && tag != tag_def_id {
-                worklist += [{ name: name + "::", tag: tag, doc: subdoc }];
-            }
-        }
-
-        let def_id = class_member_id(doc, cdata);   // Extract the def id.
-
-        // Construct the def for this item.
-        let mut def;
-        if tag == tag_paths_data_item {
-            alt maybe_find_item(def_id.node, items) {
+        if !broken {
+            let path = item_name(path_doc);
+            alt explicit_item_paths.find(path) {
+                some(()) {
+                    /* We already reported this item. Continue. */
+                }
                 none {
-                    #debug("(each_path) couldn't find item %d, name %s",
-                            def_id.node, name);
-                    def = none;
-                }
-                some(item_doc) {
-                    def = some(item_to_def(item_doc, def_id, cdata.cnum));
-                }
-            }
-        } else {
-            def = some(ast::def_mod(def_id));
-        }
+                    // Extract the def ID.
+                    let def_id = class_member_id(path_doc, cdata);
 
-        // Hand the information off to the iteratee.
-        alt def {
-            none { /* Nothing to do. */ }
-            some(def) {
-                #debug("(each_path) yielding item: %s", name);
-                let this_path_entry = path_entry(name, doi_def(def));
-                if (!f(this_path_entry)) {
-                    break;
+                    // Get the item.
+                    alt maybe_find_item(def_id.node, items) {
+                        none {
+                            #debug("(each_path) ignoring implicit item: %s",
+                                    path);
+                        }
+                        some(item_doc) {
+                            // Construct the def for this item.
+                            let def_or_impl =
+                                item_to_def_or_impl(item_doc, def_id,
+                                                    cdata.cnum);
+
+                            // Hand the information off to the iteratee.
+                            #debug("(each_path) yielding implicit item: %s",
+                                    path);
+                            let this_path_entry = path_entry(path,
+                                                             def_or_impl);
+                            if (!f(this_path_entry)) {
+                                broken = true;      // FIXME: This is awful.
+                            }
+                        }
+                    }
                 }
             }
         }

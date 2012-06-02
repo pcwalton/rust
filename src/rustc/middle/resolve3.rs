@@ -159,6 +159,7 @@ class import_resolution {
     let mut module_target: option<@graph_node>;
     let mut value_target: option<@graph_node>;
     let mut type_target: option<@graph_node>;
+    let mut impl_target: option<@graph_node>;
 
     new() {
         self.outstanding_references = 0u;
@@ -166,6 +167,7 @@ class import_resolution {
         self.module_target = none;
         self.value_target = none;
         self.type_target = none;
+        self.impl_target = none;
     }
 
     fn target_for_namespace(namespace: namespace) -> option<@graph_node> {
@@ -173,7 +175,7 @@ class import_resolution {
             ns_module { ret self.module_target; }
             ns_type   { ret self.type_target;   }
             ns_value  { ret self.value_target;  }
-            ns_impl   { fail "TODO";            }
+            ns_impl   { ret self.impl_target;   }
         }
     }
 }
@@ -238,6 +240,7 @@ class graph_node {
     let mut module_def: module_def;     // Meaning in the module namespace.
     let mut type_def: option<def>;      // Meaning in the type namespace.
     let mut value_def: option<def>;     // Meaning in the value namespace.
+    let mut impl_defs: [def_id];        // Meaning in the impl namespace.
 
     new(parent_node: option<@graph_node>) {
         // FIXME: As above, this is needed to work around an ICE.
@@ -253,6 +256,7 @@ class graph_node {
         self.module_def = md_none;
         self.type_def = none;
         self.value_def = none;
+        self.impl_defs = [];
     }
 
     #[doc="Records a local module definition."]
@@ -279,6 +283,11 @@ class graph_node {
     #[doc="Records a value definition."]
     fn define_value(def: def) {
         self.value_def = some(def);
+    }
+
+    #[doc="Records an impl definition."]
+    fn define_impl(def_id: def_id) {
+        self.impl_defs += [def_id];
     }
 
     #[doc="Returns the local module node if applicable."]
@@ -335,7 +344,7 @@ class graph_node {
             ns_module { ret self.module_def != md_none; }
             ns_type   { ret self.type_def != none;      }
             ns_value  { ret self.value_def != none;     }
-            ns_impl   { fail "TODO";                    }
+            ns_impl   { ret self.impl_defs.len() >= 0u; }
         }
     }
 
@@ -533,10 +542,10 @@ class resolver {
             }
 
             item_impl(*) {
-                // TODO
+                (*child).define_impl(local_def(item.id));
             }
 
-            item_iface(*) { /* Ignore. */ }
+            item_iface(*) { /* TODO */ }
         }
     }
 
@@ -738,8 +747,10 @@ class resolver {
                         }
                     }
                 }
-                doi_impl(*) {
-                    fail "impls TODO";
+                doi_impl(def_id) {
+                    #debug("(building reduced graph for external crate) \
+                            building impl %s", final_ident);
+                    (*child_graph_node).define_impl(def_id);
                 }
             }
         }
@@ -974,10 +985,14 @@ class resolver {
                              target: atom, source: atom)
             -> resolve_result<()> {
 
-        // We need to resolve all three namespaces for this to succeed.
+        // We need to resolve all four namespaces for this to succeed.
+        //
+        // FIXME: See if there's some way of handling namespaces in a more
+        // generic way. We have four of them; it seems worth doing...
         let mut module_result = nsr_unbound;
         let mut value_result = nsr_unbound;
         let mut type_result = nsr_unbound;
+        let mut impl_result = nsr_unbound;
 
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
@@ -992,12 +1007,16 @@ class resolver {
                 if (*child_graph_node).defined_in_namespace(ns_type) {
                     type_result = nsr_bound(child_graph_node);
                 }
+                if (*child_graph_node).defined_in_namespace(ns_impl) {
+                    impl_result = nsr_bound(child_graph_node);
+                }
             }
         }
 
-        // If we didn't find all three results, search imports.
-        alt (module_result, value_result, type_result) {
-            (nsr_bound(_), nsr_bound(_), nsr_bound(_)) {
+        // Unless we managed to find a result in all four namespaces
+        // (exceedingly unlikely), search imports as well.
+        alt (module_result, value_result, type_result, impl_result) {
+            (nsr_bound(_), nsr_bound(_), nsr_bound(_), nsr_bound(_)) {
                 // Continue.
             }
             _ {
@@ -1026,6 +1045,9 @@ class resolver {
                         }
                         if type_result == nsr_unknown {
                             type_result = nsr_unbound;
+                        }
+                        if impl_result == nsr_unknown {
+                            impl_result = nsr_unbound;
                         }
                     }
                     some(import_resolution)
@@ -1057,6 +1079,10 @@ class resolver {
                         if type_result == nsr_unknown {
                             type_result = get_binding(import_resolution,
                                                       ns_value);
+                        }
+                        if impl_result == nsr_unknown {
+                            impl_result = get_binding(import_resolution,
+                                                      ns_impl);
                         }
                     }
                     some(_) {
@@ -1093,6 +1119,13 @@ class resolver {
             }
             nsr_unbound { /* Continue. */ }
             nsr_unknown { fail "type result should be known at this point"; }
+        }
+        alt impl_result {
+            nsr_bound(binding) {
+                import_resolution.impl_target = some(binding);
+            }
+            nsr_unbound { /* Continue. */ }
+            nsr_unknown { fail "impl result should be known at this point"; }
         }
 
         assert import_resolution.outstanding_references >= 1u;
@@ -1140,6 +1173,9 @@ class resolver {
                         target_import_resolution.value_target;
                     new_import_resolution.type_target =
                         target_import_resolution.type_target;
+                    new_import_resolution.impl_target =
+                        target_import_resolution.impl_target;
+
                     local_module.import_resolutions.insert(atom,
                             new_import_resolution);
                 }
@@ -1165,6 +1201,13 @@ class resolver {
                         some(type_target) {
                             dest_import_resolution.type_target =
                                 some(type_target);
+                        }
+                    }
+                    alt target_import_resolution.impl_target {
+                        none { /* Continue. */ }
+                        some(impl_target) {
+                            dest_import_resolution.impl_target =
+                                some(impl_target);
                         }
                     }
                 }
@@ -1198,6 +1241,9 @@ class resolver {
             if (*graph_node).defined_in_namespace(ns_type) {
                 dest_import_resolution.type_target = some(graph_node);
             }
+            if (*graph_node).defined_in_namespace(ns_impl) {
+                dest_import_resolution.impl_target = some(graph_node);
+            }
         }
 
         #debug("(resolving glob import) successfully resolved import");
@@ -1213,14 +1259,15 @@ class resolver {
         #debug("(resolving single external import) resolving import '%s' = \
                 '%s::%s' in '%s'",
                (*self.atom_table).atom_to_str(target),
-               (*self.atom_table).atom_to_str(source),
                self.graph_node_to_str(containing_module.parent_graph_node),
+               (*self.atom_table).atom_to_str(source),
                self.graph_node_to_str(local_module.parent_graph_node));
 
-        // We need to resolve all three namespaces for this to succeed.
+        // We need to resolve all four namespaces for this to succeed.
         let mut module_result = none;
         let mut value_result = none;
         let mut type_result = none;
+        let mut impl_result = none;
 
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
@@ -1235,12 +1282,15 @@ class resolver {
                 if (*child_graph_node).defined_in_namespace(ns_type) {
                     type_result = some(child_graph_node);
                 }
+                if (*child_graph_node).defined_in_namespace(ns_impl) {
+                    impl_result = some(child_graph_node);
+                }
             }
         }
 
         // If no namespaces were resolved, that's an error.
         if module_result.is_none() && value_result.is_none() &&
-                type_result.is_none() {
+                type_result.is_none() && impl_result.is_none() {
             #debug("!!! (resolving single external import) failed");
             ret rr_failed;
         }
@@ -1265,6 +1315,12 @@ class resolver {
             none { /* Continue. */ }
             some(binding) {
                 import_resolution.type_target = some(binding);
+            }
+        }
+        alt impl_result {
+            none { /* Continue. */ }
+            some(binding) {
+                import_resolution.impl_target = some(binding);
             }
         }
 
@@ -1308,6 +1364,9 @@ class resolver {
             }
             if (*graph_node).defined_in_namespace(ns_type) {
                 dest_import_resolution.type_target = some(graph_node);
+            }
+            if (*graph_node).defined_in_namespace(ns_impl) {
+                dest_import_resolution.impl_target = some(graph_node);
             }
         }
 
@@ -1670,9 +1729,47 @@ class resolver {
             }
         }
 
+        //
+        // NB: This one results in effects that may be somewhat surprising. It
+        // means that this:
+        //
+        // mod A {
+        //     impl foo for ... { ... }
+        //     mod B {
+        //         impl foo for ... { ... }
+        //         import bar = foo;
+        //         ...
+        //     }
+        // }
+        //
+        // results in only A::B::foo being aliased to A::B::bar, not A::foo
+        // *and* A::B::foo being aliased to A::B::bar.
+        //
+
+        let mut impl_result;
+        #debug("(resolving one-level naming result) searching for impl");
+        alt self.resolve_item_in_lexical_scope(local_module, source_name,
+                                               ns_impl) {
+            rr_failed {
+                #debug("(resolving one-level renaming import) didn't find \
+                        impl result");
+                impl_result = none;
+            }
+            rr_indeterminate {
+                #debug("(resolving one-level renaming import) impl result is \
+                        indeterminate; bailing");
+                ret rr_indeterminate;
+            }
+            rr_success(graph_node) {
+                #debug("(resolving one-level renaming import) impl result \
+                        found");
+                impl_result = some(graph_node);
+            }
+        }
+
         // If nothing at all was found, that's an error.
         if module_result.is_none() && value_result.is_none() &&
-                type_result.is_none() {
+                type_result.is_none() && impl_result.is_none() {
             #error("!!! (resolving one-level renaming import) couldn't find \
                     anything with that name");
             ret rr_failed;
@@ -1689,6 +1786,7 @@ class resolver {
                 import_resolution.module_target = module_result;
                 import_resolution.value_target = value_result;
                 import_resolution.type_target = type_result;
+                import_resolution.impl_target = impl_result;
             }
         }
 
@@ -1919,7 +2017,7 @@ class resolver {
                         md_local_module(local_module) {
                             for local_module.children.each {
                                 |name, child_node|
-                                if box::ptr_eq(child_node, parent_node) {
+                                if box::ptr_eq(child_node, graph_node) {
                                     atoms.push(name);
                                     break;
                                 }
@@ -1930,7 +2028,7 @@ class resolver {
                         md_external_module(external_module) {
                             for external_module.children.each {
                                 |name, child_node|
-                                if box::ptr_eq(child_node, parent_node) {
+                                if box::ptr_eq(child_node, graph_node) {
                                     atoms.push(name);
                                     break;
                                 }
