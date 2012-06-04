@@ -1825,9 +1825,9 @@ class resolver {
             }
         }
 
+        let index = local_module.resolved_import_count;
         let import_count = local_module.imports.len();
-        uint::range(local_module.resolved_import_count, import_count) {
-            |index|
+        if index != import_count {
             let module_path = local_module.imports.get_elt(index).module_path;
             #error("!!! unresolved import in %s: %s",
                    self.graph_node_to_str(local_module.parent_graph_node),
