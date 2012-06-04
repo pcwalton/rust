@@ -985,6 +985,13 @@ class resolver {
                              target: atom, source: atom)
             -> resolve_result<()> {
 
+        #debug("(resolving single import) resolving '%s' = '%s' inside '%s' \
+                from '%s'",
+               (*self.atom_table).atom_to_str(target),
+               (*self.atom_table).atom_to_str(source),
+               self.graph_node_to_str(containing_module.parent_graph_node),
+               self.graph_node_to_str(local_module.parent_graph_node));
+
         // We need to resolve all four namespaces for this to succeed.
         //
         // FIXME: See if there's some way of handling namespaces in a more
@@ -1787,6 +1794,9 @@ class resolver {
                 import_resolution.value_target = value_result;
                 import_resolution.type_target = type_result;
                 import_resolution.impl_target = impl_result;
+
+                assert import_resolution.outstanding_references >= 1u;
+                import_resolution.outstanding_references -= 1u;
             }
         }
 
