@@ -1001,10 +1001,10 @@ class resolver {
         //
         // FIXME: See if there's some way of handling namespaces in a more
         // generic way. We have four of them; it seems worth doing...
-        let mut module_result = nsr_unbound;
-        let mut value_result = nsr_unbound;
-        let mut type_result = nsr_unbound;
-        let mut impl_result = nsr_unbound;
+        let mut module_result = nsr_unknown;
+        let mut value_result = nsr_unknown;
+        let mut type_result = nsr_unknown;
+        let mut impl_result = nsr_unknown;
 
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
@@ -1118,6 +1118,9 @@ class resolver {
             }
             nsr_unbound {
                 #debug("(resolving single import) didn't find module binding");
+
+                #debug("(resolving single import) dumping containing module:");
+                self.dump_local_module(containing_module);
             }
             nsr_unknown { fail "module result should be known at this point"; }
         }
@@ -1177,7 +1180,7 @@ class resolver {
         for containing_module.import_resolutions.each {
             |atom, target_import_resolution|
 
-            #error("(resolving glob import) writing module resolution \
+            #debug("(resolving glob import) writing module resolution \
                     %? into '%s'",
                    target_import_resolution.module_target.is_none(),
                    self.graph_node_to_str(local_module.parent_graph_node));
@@ -1428,6 +1431,9 @@ class resolver {
                 #error("(resolving module path for import) !!! unresolved \
                         name: %s",
                        (*self.atom_table).atom_to_str(first_element));
+
+                self.dump_local_module(local_module);
+
                 ret rr_failed;
             }
             rr_indeterminate {
@@ -2111,6 +2117,59 @@ class resolver {
         }
 
         ret string;
+    }
+
+    fn dump_local_module(local_module: @local_module) {
+        #debug("Dump of module '%s':",
+               self.graph_node_to_str(local_module.parent_graph_node));
+
+        #debug("Children:");
+        for local_module.children.each {
+            |name, _child|
+
+            #debug("* %s", (*self.atom_table).atom_to_str(name));
+        }
+
+        #debug("Import resolutions:");
+        for local_module.import_resolutions.each {
+            |name, import_resolution|
+
+            let mut module_repr;
+            alt (*import_resolution).target_for_namespace(ns_module) {
+                none { module_repr = ""; }
+                some(target) {
+                    module_repr = " module:" + self.graph_node_to_str(target);
+                }
+            }
+
+            let mut value_repr;
+            alt (*import_resolution).target_for_namespace(ns_value) {
+                none { value_repr = ""; }
+                some(target) {
+                    value_repr = " value:" + self.graph_node_to_str(target);
+                }
+            }
+
+            let mut type_repr;
+            alt (*import_resolution).target_for_namespace(ns_type) {
+                none { type_repr = ""; }
+                some(target) {
+                    type_repr = " type:" + self.graph_node_to_str(target);
+                }
+            }
+
+            let mut impl_repr;
+            alt (*import_resolution).target_for_namespace(ns_impl) {
+                none { impl_repr = ""; }
+                some(target) {
+                    impl_repr = " impl:" + self.graph_node_to_str(target);
+                }
+            }
+
+            #debug("* %s:%s%s%s%s",
+                   (*self.atom_table).atom_to_str(name),
+                   module_repr, value_repr, type_repr, impl_repr);
+        }
     }
 }
 
