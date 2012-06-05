@@ -37,9 +37,10 @@ export get_crate_vers;
 export get_impls_for_mod;
 export get_iface_methods;
 export get_crate_module_paths;
-export def_or_impl;
-export doi_def;
-export doi_impl;
+export def_like;
+export dl_def;
+export dl_impl;
+export dl_field;
 export path_entry;
 export each_path;
 export get_item_path;
@@ -262,26 +263,27 @@ fn lookup_item_name(data: @[u8], id: ast::node_id) -> ast::ident {
     item_name(lookup_item(id, data))
 }
 
-fn item_to_def_or_impl(item: ebml::doc, did: ast::def_id, cnum: ast::crate_num)
-        -> def_or_impl {
+fn item_to_def_like(item: ebml::doc, did: ast::def_id, cnum: ast::crate_num)
+        -> def_like {
     let fam_ch = item_family(item);
     alt fam_ch {
-      'c' { doi_def(ast::def_const(did)) }
-      'C' { doi_def(ast::def_class(did)) }
-      'u' { doi_def(ast::def_fn(did, ast::unsafe_fn)) }
-      'f' { doi_def(ast::def_fn(did, ast::impure_fn)) }
-      'p' { doi_def(ast::def_fn(did, ast::pure_fn)) }
-      'y' { doi_def(ast::def_ty(did)) }
-      't' { doi_def(ast::def_ty(did)) }
-      'm' { doi_def(ast::def_mod(did)) }
-      'n' { doi_def(ast::def_native_mod(did)) }
+      'c' { dl_def(ast::def_const(did)) }
+      'C' { dl_def(ast::def_class(did)) }
+      'u' { dl_def(ast::def_fn(did, ast::unsafe_fn)) }
+      'f' { dl_def(ast::def_fn(did, ast::impure_fn)) }
+      'p' { dl_def(ast::def_fn(did, ast::pure_fn)) }
+      'y' { dl_def(ast::def_ty(did)) }
+      't' { dl_def(ast::def_ty(did)) }
+      'm' { dl_def(ast::def_mod(did)) }
+      'n' { dl_def(ast::def_native_mod(did)) }
       'v' {
         let mut tid = option::get(item_parent_item(item));
         tid = {crate: cnum, node: tid.node};
-        doi_def(ast::def_variant(tid, did))
+        dl_def(ast::def_variant(tid, did))
       }
-      'I' { doi_def(ast::def_ty(did)) }
-      'i' { doi_impl(did) }
+      'I' { dl_def(ast::def_ty(did)) }
+      'i' { dl_impl(did) }
+      'g' | 'j' { dl_field }
       ch { fail #fmt("unexpected family code: '%c'", ch) }
     }
 }
@@ -291,7 +293,7 @@ fn lookup_def(cnum: ast::crate_num, data: @[u8], did_: ast::def_id) ->
     let item = lookup_item(did_.node, data);
     let did = {crate: cnum, node: did_.node};
     // We treat references to enums as references to types.
-    ret def_or_impl_to_def(item_to_def_or_impl(item, did, cnum));
+    ret def_like_to_def(item_to_def_like(item, did, cnum));
 }
 
 fn get_type(cdata: cmd, id: ast::node_id, tcx: ty::ctxt)
@@ -363,17 +365,18 @@ fn get_symbol(data: @[u8], id: ast::node_id) -> str {
     ret item_symbol(lookup_item(id, data));
 }
 
-// Either a definition or an implementation; i.e. something that a name can
-// resolve to.
-enum def_or_impl {
-    doi_def(ast::def),
-    doi_impl(ast::def_id)
+// Something that a name can resolve to.
+enum def_like {
+    dl_def(ast::def),
+    dl_impl(ast::def_id),
+    dl_field
 }
 
-fn def_or_impl_to_def(def_or_impl: def_or_impl) -> ast::def {
-    alt def_or_impl {
-        doi_def(def) { ret def; }
-        doi_impl(*) { fail "found impl in def_or_impl_to_def"; }
+fn def_like_to_def(def_like: def_like) -> ast::def {
+    alt def_like {
+        dl_def(def) { ret def; }
+        dl_impl(*) { fail "found impl in def_like_to_def"; }
+        dl_field { fail "found field in def_like_to_def"; }
     }
 }
 
@@ -381,12 +384,12 @@ fn def_or_impl_to_def(def_or_impl: def_or_impl) -> ast::def {
 class path_entry {
     // The full path, separated by '::'.
     let path_string: str;
-    // The definition or implementation that this path corresponds to.
-    let def_or_impl: def_or_impl;
+    // The definition, implementation, or field that this path corresponds to.
+    let def_like: def_like;
 
-    new(path_string: str, def_or_impl: def_or_impl) {
+    new(path_string: str, def_like: def_like) {
         self.path_string = path_string;
-        self.def_or_impl = def_or_impl;
+        self.def_like = def_like;
     }
 }
 
@@ -414,12 +417,11 @@ fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
                 explicit_item_paths.insert(name, ());
 
                 // Construct the def for this item.
-                let def_or_impl = item_to_def_or_impl(item_doc, def_id,
-                                                      cdata.cnum);
+                #debug("(each_path) yielding explicit item: %s", name);
+                let def_like = item_to_def_like(item_doc, def_id, cdata.cnum);
 
                 // Hand the information off to the iteratee.
-                #debug("(each_path) yielding explicit item: %s", name);
-                let this_path_entry = path_entry(name, def_or_impl);
+                let this_path_entry = path_entry(name, def_like);
                 if (!f(this_path_entry)) {
                     broken = true;      // FIXME: This is awful.
                 }
@@ -457,15 +459,13 @@ fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
                         }
                         some(item_doc) {
                             // Construct the def for this item.
-                            let def_or_impl =
-                                item_to_def_or_impl(item_doc, def_id,
-                                                    cdata.cnum);
+                            let def_like = item_to_def_like(item_doc, def_id,
+                                                            cdata.cnum);
 
                             // Hand the information off to the iteratee.
                             #debug("(each_path) yielding implicit item: %s",
                                     path);
-                            let this_path_entry = path_entry(path,
-                                                             def_or_impl);
+                            let this_path_entry = path_entry(path, def_like);
                             if (!f(this_path_entry)) {
                                 broken = true;      // FIXME: This is awful.
                             }

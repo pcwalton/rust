@@ -1,7 +1,7 @@
 import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
-import metadata::decoder::{doi_def, doi_impl};
+import metadata::decoder::{dl_def, dl_field, dl_impl};
 import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
@@ -697,8 +697,8 @@ class resolver {
             let child_graph_node =
                 (*parent_graph_node).add_child(parent_graph_node, atom);
 
-            alt path_entry.def_or_impl {
-                doi_def(def) {
+            alt path_entry.def_like {
+                dl_def(def) {
                     alt def {
                         def_mod(def_id) | def_native_mod(def_id) {
                             alt child_graph_node.module_def {
@@ -747,10 +747,14 @@ class resolver {
                         }
                     }
                 }
-                doi_impl(def_id) {
+                dl_impl(def_id) {
                     #debug("(building reduced graph for external crate) \
                             building impl %s", final_ident);
                     (*child_graph_node).define_impl(def_id);
+                }
+                dl_field {
+                    #debug("(building reduced graph for external crate) \
+                            ignoring field %s", final_ident);
                 }
             }
         }
