@@ -896,10 +896,15 @@ class resolver {
             -> resolve_result<()> {
 
         let mut resolution_result;
+        let module_path = import_directive.module_path;
+
+        #debug("(resolving import for module) resolving import '%s::...' in \
+                '%s'",
+               (*self.atom_table).atoms_to_str((*module_path).get()),
+               self.graph_node_to_str(local_module.parent_graph_node));
 
         // One-level renaming imports of the form `import foo = bar;` are
         // handled specially.
-        let module_path = import_directive.module_path;
         if (*module_path).len() == 0u {
             resolution_result =
                 self.resolve_one_level_renaming_import(local_module,
@@ -985,11 +990,11 @@ class resolver {
                              target: atom, source: atom)
             -> resolve_result<()> {
 
-        #debug("(resolving single import) resolving '%s' = '%s' inside '%s' \
-                from '%s'",
+        #debug("(resolving single import) resolving '%s' = '%s::%s' from \
+                '%s'",
                (*self.atom_table).atom_to_str(target),
-               (*self.atom_table).atom_to_str(source),
                self.graph_node_to_str(containing_module.parent_graph_node),
+               (*self.atom_table).atom_to_str(source),
                self.graph_node_to_str(local_module.parent_graph_node));
 
         // We need to resolve all four namespaces for this to succeed.
@@ -1108,9 +1113,12 @@ class resolver {
 
         alt module_result {
             nsr_bound(binding) {
+                #debug("(resolving single import) found module binding");
                 import_resolution.module_target = some(binding);
             }
-            nsr_unbound { /* Continue. */ }
+            nsr_unbound {
+                #debug("(resolving single import) didn't find module binding");
+            }
             nsr_unknown { fail "module result should be known at this point"; }
         }
         alt value_result {
@@ -1168,6 +1176,11 @@ class resolver {
         // Add all resolved imports from the containing module.
         for containing_module.import_resolutions.each {
             |atom, target_import_resolution|
+
+            #error("(resolving glob import) writing module resolution \
+                    %? into '%s'",
+                   target_import_resolution.module_target.is_none(),
+                   self.graph_node_to_str(local_module.parent_graph_node));
 
             // Here we merge two import resolutions.
             alt local_module.import_resolutions.find(atom) {
@@ -1237,6 +1250,11 @@ class resolver {
                     dest_import_resolution = existing_import_resolution;
                 }
             }
+
+
+            #error("(resolving glob import) writing module resolution \
+                    '%s'",
+                   self.graph_node_to_str(local_module.parent_graph_node));
 
             // Merge the child item into the import resolution.
             if (*graph_node).defined_in_namespace(ns_module) {
@@ -1309,6 +1327,10 @@ class resolver {
         alt module_result {
             none { /* Continue. */ }
             some(binding) {
+                #error("(resolving glob import) writing module resolution \
+                        '%s'",
+                       self.graph_node_to_str(local_module.parent_graph_node));
+
                 import_resolution.module_target = some(binding);
             }
         }
@@ -1464,6 +1486,13 @@ class resolver {
     fn resolve_item_in_lexical_scope(local_module: @local_module, name: atom,
                                      namespace: namespace)
             -> resolve_result<@graph_node> {
+
+        #debug("(resolving item in lexical scope) resolving '%s' in namespace \
+                %? in '%s'",
+               (*self.atom_table).atom_to_str(name),
+               namespace,
+               self.graph_node_to_str(local_module.parent_graph_node));
+
         // The current module node is handled specially. First, check for
         // its immediate children.
         alt local_module.children.find(name) {
@@ -1481,7 +1510,12 @@ class resolver {
             none { /* Not found; continue. */ }
             some(import_resolution) {
                 alt (*import_resolution).target_for_namespace(namespace) {
-                    none { /* Not found; continue. */ }
+                    none {
+                        /* Not found; continue. */
+                        #debug("(resolving item in lexical scope) found \
+                                import resolution, but not in namespace %?",
+                               namespace);
+                    }
                     some(target_graph_node) {
                         ret rr_success(target_graph_node);
                     }
@@ -1666,9 +1700,10 @@ class resolver {
         }
 
         #debug("(resolving one-level naming result) resolving import '%s' = \
-                '%s'",
+                '%s' in '%s'",
                 (*self.atom_table).atom_to_str(target_name),
-                (*self.atom_table).atom_to_str(source_name));
+                (*self.atom_table).atom_to_str(source_name),
+                self.graph_node_to_str(local_module.parent_graph_node));
 
         // Find the matching items in the lexical scope chain for every
         // namespace. If any of them come back indeterminate, this entire
@@ -1790,6 +1825,12 @@ class resolver {
                       import resolution name by now";
             }
             some(import_resolution) {
+                #error("(resolving one-level renaming import) writing module \
+                        result %? for '%s' into '%s'",
+                       module_result.is_none(),
+                       (*self.atom_table).atom_to_str(target_name),
+                       self.graph_node_to_str(local_module.parent_graph_node));
+
                 import_resolution.module_target = module_result;
                 import_resolution.value_target = value_result;
                 import_resolution.type_target = type_result;
