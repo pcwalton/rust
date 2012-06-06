@@ -53,10 +53,19 @@ enum namespace_result {
 }
 
 type namespace_bindings = hashmap<str,@dvec<binding>>;
+
 type resolve_visitor = vt<()>;
 
 resource auto_scope(scopes: @dvec<uint>) {
     (*scopes).pop();
+}
+
+record AutoScope {
+    scopes: @dvec<uint>
+}
+
+fn(*AutoScope) Drop::drop() {
+    self.scopes.pop();
 }
 
 class binding {
@@ -406,13 +415,14 @@ class resolver {
     // The number of imports that are currently unresolved.
     let mut unresolved_imports: uint;
 
-    let module_namespace: namespace_bindings;
-    let type_namespace: namespace_bindings;
-    let value_namespace: namespace_bindings;
-
-    let scope_ids: hashmap<node_id,uint>;
     let mut next_scope_id: uint;
     let scopes: @dvec<uint>;
+
+    // A mapping from a local name to the set of bindings for that name.
+    let mut names: hashmap<atom,name_bindings>;
+
+    // The graph node that represents the current scope.
+    let mut current_graph_node: @graph_node;
 
     let def_map: def_map;
     let impl_map: impl_map;
@@ -429,13 +439,12 @@ class resolver {
 
         self.unresolved_imports = 0u;
 
-        self.module_namespace = str_hash();
-        self.type_namespace = str_hash();
-        self.value_namespace = str_hash();
-
-        self.scope_ids = int_hash();
         self.next_scope_id = 0u;
         self.scopes = @dvec();
+
+        self.names = atom_hashmap();
+
+        self.current_graph_node = graph_root;
 
         self.def_map = int_hash();
         self.impl_map = int_hash();
@@ -450,6 +459,27 @@ class resolver {
     fn new_scope() -> auto_scope {
         (*self.scopes).push(self.new_scope_id());
         ret auto_scope(self.scopes);
+    }
+
+    #[doc="
+        Binds the supplied name in the supplied namespace to the given node ID
+        in any crate.
+    "]
+    fn record_global_name(namespace: namespace_bindings, name: str,
+                          id: def_id) {
+        let mut bindings;
+        alt namespace.find(name) {
+            none {
+                bindings = @dvec();
+                namespace.insert(name, bindings);
+            }
+            some(existing_bindings) {
+                bindings = existing_bindings;
+            }
+        }
+
+        let binding = binding((*self.scopes).last(), id);
+        (*bindings).push(binding);
     }
 
     #[doc="
@@ -1905,30 +1935,37 @@ class resolver {
     //
     // AST resolution
     //
-    // We proceed by building up a list of scopes. Each scope is simply a hash
-    // table. When we find a binding in an outer scope, we cache it in the
-    // innermost scope.
+    // We proceed by building up a list of scopes. Each scope is simply an
+    // integer key. We associate identifiers with their namespaces and scopes
+    // in one large hash table.
     //
 
-    #[doc="
-        Binds the supplied name in the supplied namespace to the given node ID
-        in any crate.
-    "]
-    fn record_global_name(namespace: namespace_bindings, name: str,
-                          id: def_id) {
-        let mut bindings;
-        alt namespace.find(name) {
-            none {
-                bindings = @dvec();
-                namespace.insert(name, bindings);
-            }
-            some(existing_bindings) {
-                bindings = existing_bindings;
+    fn with_scope(name: option<atom>, f: fn()) {
+        let orig_graph_node = self.current_graph_node;
+        alt name {
+            none { /* Nothing to do. */ }
+            some(name) {
+                alt (*orig_graph_node).get_local_module_if_available() {
+                    none {
+                        #debug("!!! (with scope) no local module");
+                    }
+                    some(local_module) {
+                        alt local_module.children.find(name) {
+                            none {
+                                #debug("!!! (with scope) no child found");
+                            }
+                            some(child_node) {
+                                self.current_graph_node = child_node;
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        let binding = binding((*self.scopes).last(), id);
-        (*bindings).push(binding);
+        f();
+
+        self.current_graph_node = orig_graph_node;
     }
 
     fn resolve_crate() {
@@ -1950,69 +1987,66 @@ class resolver {
     }
 
     fn resolve_item(item: @item, visitor: resolve_visitor) {
-        alt item.node {
-            item_enum(*) | item_ty(*) {
-                let _scope = self.new_scope();
-                visit_item(item, (), visitor);
-            }
-            item_impl(_, _, _, _, methods) {
-                // Create a new scope for the impl-wide type parameters.
-                let _scope = self.new_scope();
+        let atom = (*self.atom_table).intern(item.ident);
+        self.with_scope(some(atom)) {
+            ||
 
-                for methods.each {
-                    |method|
-                    // We also need a new scope for the method-specific type
-                    // parameters.
-                    let _scope = self.new_scope();
-                    visit_fn(fk_method(method.ident, method.tps, method),
-                             method.decl, method.body, method.span, method.id,
-                             (), visitor);
+            alt item.node {
+                item_enum(*) | item_ty(*) {
+                    visit_item(item, (), visitor);
                 }
-            }
-            item_iface(_, _, methods) {
-                // Create a new scope for the interface-wide type parameters.
-                let _scope = self.new_scope();
-
-                for methods.each {
-                    |method|
-                    // We also need a new scope for the method-specific type
-                    // parameters.
-                    let _scope = self.new_scope();
-                    visit_ty(method.decl.output, (), visitor);
+                item_impl(_, _, _, _, methods) {
+                    // Create a new scope for the impl-wide type parameters.
+                    for methods.each {
+                        |method|
+                        // We also need a new scope for the method-specific
+                        // type parameters.
+                        visit_fn(fk_method(method.ident, method.tps, method),
+                                 method.decl, method.body, method.span,
+                                 method.id,
+                                 (), visitor);
+                    }
                 }
-            }
-            item_class(*) {
-                // Create a new scope for the class-wide type parameters.
-                // FIXME: Handle methods properly.
-                visit_item(item, (), visitor);
-            }
-            item_mod(module) {
-                let _scope = self.new_scope();
-                self.resolve_module(module, item.span, item.ident, item.id,
-                                    visitor);
-            }
-            item_native_mod(native_module) {
-                for native_module.items.each {
-                    |native_item|
-                    alt native_item.node {
-                        native_item_fn(*) {
-                            let _scope = self.new_scope();
-                            visit_native_item(native_item, (), visitor);
+                item_iface(_, _, methods) {
+                    // Create a new scope for the interface-wide type parameters.
+                    for methods.each {
+                        |method|
+                        // We also need a new scope for the method-specific type
+                        // parameters.
+                        visit_ty(method.decl.output, (), visitor);
+                    }
+                }
+                item_class(*) {
+                    // Create a new scope for the class-wide type parameters.
+                    // FIXME: Handle methods properly.
+                    visit_item(item, (), visitor);
+                }
+                item_mod(module) {
+                    self.resolve_module(module, item.span, item.ident, item.id,
+                                        visitor);
+                }
+                item_native_mod(native_module) {
+                    for native_module.items.each {
+                        |native_item|
+                        alt native_item.node {
+                            native_item_fn(*) {
+                                visit_native_item(native_item, (), visitor);
+                            }
                         }
                     }
                 }
+                item_res(*) | item_fn(*) | item_const(*) {
+                    visit_item(item, (), visitor);
+                }
             }
-            item_res(*) | item_fn(*) | item_const(*) {
-                visit_item(item, (), visitor);
-            }
-        }
+
+        self.leave_scope();
     }
 
     fn resolve_module(module: _mod, span: span, name: ident, id: node_id,
                       visitor: resolve_visitor) {
         self.record_local_name(self.module_namespace, name, id);
 
-        let _scope = self.new_scope();
         visit_mod(module, span, id, (), visitor);
     }
 
@@ -2027,7 +2061,6 @@ class resolver {
     }
 
     fn resolve_block(block: blk, visitor: resolve_visitor) {
-        let _scope = self.new_scope();
         visit_block(block, (), visitor);
     }
 
