@@ -7,17 +7,18 @@ import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
 import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
 import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
-import syntax::ast::{expr_path, ident, item, item_class, item_const};
+import syntax::ast::{expr_path, fn_decl, ident, item, item_class, item_const};
 import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
 import syntax::ast::{item_native_mod, item_res, item_ty, native_item_fn};
-import syntax::ast::{node_id, pat, pat_ident, view_item, view_item_export};
-import syntax::ast::{view_item_import, view_item_use, view_path_glob};
-import syntax::ast::{view_path_list, view_path_simple};
+import syntax::ast::{node_id, pat, pat_ident, ty_param, view_item};
+import syntax::ast::{view_item_export, view_item_import, view_item_use};
+import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
-import syntax::visit::{visit_crate, visit_expr_opt, visit_fn, visit_item};
-import syntax::visit::{visit_mod, visit_native_item, visit_ty, vt};
+import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
+import syntax::visit::{visit_item, visit_mod, visit_native_item, visit_ty};
+import syntax::visit::{vt};
 import dvec::{dvec, extensions};
 import std::list::list;
 import std::map::{hashmap, int_hash, str_hash};
@@ -417,17 +418,15 @@ class name_binding {
     }
 }
 
-class name_bindings {
-    let module_bindings: @dvec<@name_binding>;
-    let type_bindings: @dvec<@name_binding>;
-    let value_bindings: @dvec<@name_binding>;
-    let impl_bindings: @dvec<@name_binding>;
+#[doc="
+    One local scope. In Rust, local scopes can only contain value bindings.
+    Therefore, we don't have to worry about the other namespaces here.
+"]
+class rib {
+    let bindings: hashmap<atom,def_like>;
 
     new() {
-        self.module_bindings = @dvec();
-        self.type_bindings = @dvec();
-        self.value_bindings = @dvec();
-        self.impl_bindings = @dvec();
+        self.bindings = atom_hashmap();
     }
 }
 
@@ -444,14 +443,10 @@ class resolver {
     // The number of imports that are currently unresolved.
     let mut unresolved_imports: uint;
 
-    let mut next_scope_id: uint;
-    let scopes: @dvec<uint>;
-
-    // A mapping from a local name to the set of bindings for that name.
-    let mut names: hashmap<atom,@name_bindings>;
-
-    // The graph node that represents the current scope.
+    // The graph node that represents the current item scope.
     let mut current_graph_node: @graph_node;
+    // The current set of local scopes, for values.
+    let value_ribs: @dvec<@rib>;
 
     let def_map: def_map;
     let impl_map: impl_map;
@@ -468,26 +463,11 @@ class resolver {
 
         self.unresolved_imports = 0u;
 
-        self.next_scope_id = 0u;
-        self.scopes = @dvec();
-
-        self.names = atom_hashmap();
-
         self.current_graph_node = self.graph_root;
+        self.value_ribs = @dvec();
 
         self.def_map = int_hash();
         self.impl_map = int_hash();
-    }
-
-    fn new_scope_id() -> uint {
-        let id = self.next_scope_id;
-        self.next_scope_id += 1u;
-        ret id;
-    }
-
-    fn new_scope() -> auto_scope {
-        (*self.scopes).push(self.new_scope_id());
-        ret auto_scope(self.scopes);
     }
 
     fn resolve(this: @resolver) {
@@ -1521,6 +1501,7 @@ class resolver {
         ret rr_success(search_module_def);
     }
 
+    // FIXME: Merge me with resolve_item_in_lexical_scope_of_graph_node.
     fn resolve_item_in_lexical_scope(local_module: @local_module, name: atom,
                                      namespace: namespace)
             -> resolve_result<@graph_node> {
@@ -1604,6 +1585,30 @@ class resolver {
                 rr_success(graph_node) {
                     // We found the module.
                     ret rr_success(graph_node);
+                }
+            }
+        }
+    }
+
+    fn resolve_item_in_lexical_scope_of_graph_node(graph_node: @graph_node,
+                                                   name: atom,
+                                                   namespace: namespace)
+            -> resolve_result<@graph_node> {
+
+        alt (*graph_node).get_local_module_if_available() {
+            some(local_module) {
+                ret self.resolve_item_in_lexical_scope(local_module, name,
+                                                       namespace);
+            }
+            none {
+                alt graph_node.parent_node {
+                    none {
+                        fail "root node had no module definition?!";
+                    }
+                    some(gnh_graph_node(parent_node)) {
+                        ret self.resolve_item_in_lexical_scope_of_graph_node
+                            (parent_node, name, namespace);
+                    }
                 }
             }
         }
@@ -1930,20 +1935,10 @@ class resolver {
         }
     }
 
-    //
-    // AST resolution
-    //
-    // We proceed by building up a list of scopes. Each scope is simply an
-    // integer key. We associate identifiers with their namespaces and scopes
-    // in one large hash table.
-    //
+    // AST resolution: We simply build up a list of scopes.
 
     fn with_scope(name: option<atom>, f: fn()) {
         let orig_graph_node = self.current_graph_node;
-
-        // Create a new scope ID.
-        (*self.scopes).push(self.next_scope_id);
-        self.next_scope_id += 1u;
 
         // Move down in the graph.
         alt name {
@@ -1960,7 +1955,6 @@ class resolver {
                             }
                             some(child_node) {
                                 self.current_graph_node = child_node;
-                                self.populate_scope(local_module);
                             }
                         }
                     }
@@ -1970,105 +1964,27 @@ class resolver {
 
         f();
 
-        (*self.scopes).pop();
         self.current_graph_node = orig_graph_node;
     }
 
-    fn populate_scope(local_module: @local_module) {
-        // First, populate the scope with imports. (Since children override
-        // imports, we must do this first.)
-        for local_module.import_resolutions.each {
-            |atom, import_resolution|
-
-            self.maybe_bind_import_resolution(atom, import_resolution,
-                                              ns_module);
-            self.maybe_bind_import_resolution(atom, import_resolution,
-                                              ns_type);
-            self.maybe_bind_import_resolution(atom, import_resolution,
-                                              ns_value);
-            self.maybe_bind_import_resolution(atom, import_resolution,
-                                              ns_impl);
-        }
-
-        // TODO
-    }
-
-    fn maybe_bind_import_resolution(atom: atom,
-                                    import_resolution: @import_resolution,
-                                    namespace: namespace) {
-        alt (*import_resolution).target_for_namespace(namespace) {
-            none {
-                // Nothing to do.
-            }
-            some(target_graph_node) {
-                alt namespace {
-                    ns_module {
-                        if (*target_graph_node).
-                                defined_in_namespace(ns_module) {
-                            self.add_binding(atom, namespace,
-                                             dl_def(def_mod({
-                                                crate: 0,
-                                                node: 0
-                                             })));
-                        }
-                    }
-                    ns_type {
-                        alt target_graph_node.type_def {
-                            none { /* Nothing to do. */ }
-                            some(def) {
-                                self.add_binding(atom, namespace, dl_def(def));
-                            }
-                        }
-                    }
-                    ns_value {
-                        alt target_graph_node.value_def {
-                            none { /* Nothing to do. */ }
-                            some(def) {
-                                self.add_binding(atom, namespace, dl_def(def));
-                            }
-                        }
-                    }
-                    ns_impl {
-                        for target_graph_node.impl_defs.each {
-                            |def_id|
-                            self.add_binding(atom, namespace, dl_impl(def_id));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn add_binding(name: atom, namespace: namespace, def_like: def_like) {
-        let mut these_name_bindings;
-        alt self.names.find(name) {
-            none {
-                these_name_bindings = @name_bindings();
-                self.names.insert(name, these_name_bindings);
-            }
-            some(existing_name_bindings) {
-                these_name_bindings = existing_name_bindings;
+    fn search_ribs(ribs: @dvec<@rib>, name: atom) -> option<def_like> {
+        // FIXME: This should not use a while loop.
+        // TODO: Try caching?
+        let mut i = (*ribs).len();
+        while i != 0u {
+            i -= 1u;
+            let rib = (*ribs).get_elt(i);
+            alt rib.bindings.find(name) {
+                some(def_like) { ret some(def_like); }
+                none { /* Continue. */ }
             }
         }
 
-        let new_binding = @name_binding((*self.scopes).last(), def_like);
-        alt namespace {
-            ns_module {
-                (*these_name_bindings.module_bindings).push(new_binding);
-            }
-            ns_type {
-                (*these_name_bindings.type_bindings).push(new_binding);
-            }
-            ns_value {
-                (*these_name_bindings.value_bindings).push(new_binding);
-            }
-            ns_impl {
-                (*these_name_bindings.impl_bindings).push(new_binding);
-            }
-        }
+        ret none;
     }
 
     fn resolve_crate() unsafe {
+        #debug("(resolving crate) starting");
         // FIXME: This is awful!
         let this = ptr::addr_of(self);
         visit_crate(*self.crate, (), mk_vt(@{
@@ -2083,6 +1999,10 @@ class resolver {
             visit_block: {
                 |block, _context, visitor|
                 (*this).resolve_block(block, visitor);
+            },
+            visit_expr: {
+                |expr, _context, visitor|
+                (*this).resolve_expr(expr, visitor);
             }
             with *default_visitor()
         }));
@@ -2092,6 +2012,8 @@ class resolver {
         let atom = (*self.atom_table).intern(@copy item.ident);
         self.with_scope(some(atom)) {
             ||
+
+            #debug("(resolving item) resolving %s", copy item.ident);
 
             alt item.node {
                 item_enum(*) | item_ty(*) {
@@ -2113,8 +2035,8 @@ class resolver {
                     // Create a new scope for the interface-wide type parameters.
                     for methods.each {
                         |method|
-                        // We also need a new scope for the method-specific type
-                        // parameters.
+                        // We also need a new scope for the method-specific
+                        // type parameters.
                         visit_ty(method.decl.output, (), visitor);
                     }
                 }
@@ -2137,18 +2059,45 @@ class resolver {
                         }
                     }
                 }
-                item_res(*) | item_fn(*) | item_const(*) {
+                item_fn(fn_decl, ty_params, block) {
+                    self.resolve_function(fn_decl, ty_params, block, visitor);
+                }
+                item_res(*) | item_const(*) {
                     visit_item(item, (), visitor);
                 }
             }
         }
     }
 
-    fn resolve_module(module: _mod, span: span, name: ident, id: node_id,
-                      visitor: resolve_visitor) {
-        self.add_binding((*self.atom_table).intern(@copy name), ns_module,
-                         dl_def(def_mod({ crate: 0, node: id })));
+    fn resolve_function(fn_decl: fn_decl, _ty_params: [ty_param], block: blk,
+                        visitor: resolve_visitor) {
+        // Create a rib for the function.
+        let function_rib = @rib();
+        (*self.value_ribs).push(function_rib);
 
+        // Add each argument to the rib.
+        for fn_decl.inputs.each {
+            |argument|
+
+            let name = (*self.atom_table).intern(@copy argument.ident);
+            let def_like = dl_def(def_arg(argument.id, argument.mode));
+            (*function_rib).bindings.insert(name, def_like);
+
+            #debug("(resolving function) recorded argument '%s'",
+                   *(*self.atom_table).atom_to_str(name));
+        }
+
+        // Note: We don't call resolve_block() because that would create a
+        // useless extra rib for the outermost function block.
+        visit_block(block, (), visitor);
+
+        #debug("(resolving function) leaving function");
+
+        (*self.value_ribs).pop();
+    }
+
+    fn resolve_module(module: _mod, span: span, _name: ident, id: node_id,
+                      visitor: resolve_visitor) {
         visit_mod(module, span, id, (), visitor);
     }
 
@@ -2163,7 +2112,13 @@ class resolver {
     }
 
     fn resolve_block(block: blk, visitor: resolve_visitor) {
+        #debug("(resolving block) entering block");
+        (*self.value_ribs).push(@rib());
+
         visit_block(block, (), visitor);
+
+        (*self.value_ribs).pop();
+        #debug("(resolving block) leaving block");
     }
 
     fn resolve_pattern(pattern: @pat, _mode: pattern_binding_mode) {
@@ -2182,8 +2137,8 @@ class resolver {
 
                     let atom =
                         (*self.atom_table).intern(@copy path.idents[0]);
-                    self.add_binding(atom, ns_value,
-                                     dl_def(def_local(pattern.id, false)));
+                    let def_like = dl_def(def_local(pattern.id, false));
+                    (*self.value_ribs).last().bindings.insert(atom, def_like);
                 }
                 _ {
                     /* Nothing to do. FIXME: Handle more cases. */
@@ -2192,9 +2147,70 @@ class resolver {
         }
     }
 
-    fn resolve_expr(expr: @expr, _visitor: resolve_visitor) {
+    fn resolve_expr(expr: @expr, visitor: resolve_visitor) {
         alt expr.node {
-            _ { /* TODO */ }
+            // The interpretation of paths depends on whether the path has
+            // multiple elements in it or not.
+            expr_path(path) if path.idents.len() == 1u {
+                // This is a local path in the value namespace. Walk through
+                // scopes looking for it.
+
+                let name = (*self.atom_table).intern(@copy path.idents[0]);
+
+                // First, check the local set of ribs.
+                let mut result_def;
+                alt self.search_ribs(self.value_ribs, name) {
+                    some(dl_def(def)) {
+                        #debug("(resolving expr) resolved '%s' to local",
+                               *(*self.atom_table).atom_to_str(name));
+                        result_def = some(def);
+                    }
+                    some(dl_field) | some(dl_impl(_)) | none {
+                        // Otherwise, check the items.
+                        alt self.resolve_item_in_lexical_scope_of_graph_node
+                                (self.current_graph_node, name, ns_value) {
+                            rr_success(result_graph_node) {
+                                alt result_graph_node.value_def {
+                                    none {
+                                        fail "resolved name in value namespace
+                                              to a graph node with no value
+                                              def?!";
+                                    }
+                                    some(def) {
+                                        #debug("(resolving expr) resolved '%s'
+                                                to item",
+                                               *(*self.atom_table).
+                                                atom_to_str(name));
+                                        result_def = some(def);
+                                    }
+                                }
+                            }
+                            rr_indeterminate {
+                                fail "unexpected indeterminate result";
+                            }
+                            rr_failed {
+                                result_def = none;
+                            }
+                        }
+                    }
+                }
+
+                alt result_def {
+                    some(def) {
+                        // Write the result into the def map.
+                        self.def_map.insert(expr.id, def);
+                    }
+                    none {
+                        /*self.session.span_warn
+                            (expr.span,
+                             #fmt("use of undeclared identifier '%s'",
+                                  *(*self.atom_table).atom_to_str(name)));*/
+                    }
+                }
+            }
+            _ {
+                visit_expr(expr, (), visitor);
+            }
         }
     }
 
