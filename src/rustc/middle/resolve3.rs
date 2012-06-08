@@ -1155,9 +1155,6 @@ class resolver {
             }
             nsr_unbound {
                 #debug("(resolving single import) didn't find module binding");
-
-                #debug("(resolving single import) dumping containing module:");
-                self.dump_local_module(containing_module);
             }
             nsr_unknown { fail "module result should be known at this point"; }
         }
@@ -1468,8 +1465,6 @@ class resolver {
                 #error("(resolving module path for import) !!! unresolved \
                         name: %s",
                        *(*self.atom_table).atom_to_str(first_element));
-
-                self.dump_local_module(local_module);
 
                 ret rr_failed;
             }
