@@ -1,7 +1,7 @@
 import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
-import metadata::decoder::{dl_def, dl_field, dl_impl};
+import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
 import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
@@ -60,14 +60,6 @@ resource auto_scope(scopes: @dvec<uint>) {
     (*scopes).pop();
 }
 
-record AutoScope {
-    scopes: @dvec<uint>
-}
-
-fn(*AutoScope) Drop::drop() {
-    self.scopes.pop();
-}
-
 class binding {
     let scope_id: uint;
     let def_id: def_id;
@@ -78,30 +70,25 @@ class binding {
     }
 }
 
-class atom {
-    let id: uint;
+// FIXME (issue 2550): Should be a class but then it becomes not implicitly
+// copyable due to a kind bug.
+type atom = uint;
 
-    new(id: uint) {
-        self.id = id;
-    }
-
-    fn eq(other: atom) -> bool {
-        self.id == other.id
-    }
-}
+fn atom(n: uint) -> atom { ret n; }
 
 class atom_table {
-    let atoms: hashmap<str,atom>;
-    let strings: dvec<str>;
+    let atoms: hashmap<@str,atom>;
+    let strings: dvec<@str>;
     let mut atom_count: uint;
 
     new() {
-        self.atoms = str_hash();
+        self.atoms = hashmap::<@str,atom>({ |x| str::hash(*x) },
+                                          { |x, y| str::eq(*x, *y) });
         self.strings = dvec();
         self.atom_count = 0u;
     }
 
-    fn intern(string: str) -> atom {
+    fn intern(string: @str) -> atom {
         alt self.atoms.find(string) {
             none { /* fall through */ }
             some(atom) { ret atom; }
@@ -115,19 +102,37 @@ class atom_table {
         ret atom;
     }
 
-    fn atom_to_str(atom: atom) -> str {
-        ret self.strings.get_elt(atom.id);
+    fn atom_to_str(atom: atom) -> @str {
+        ret self.strings.get_elt(atom);
     }
 
-    fn atoms_to_strs(atoms: [atom]) -> [str] {
-        ret atoms.map {
+    fn atoms_to_strs(atoms: [atom], f: fn(@str) -> bool) {
+        for atoms.each {
             |atom|
-            self.atom_to_str(atom)
-        };
+            if !f(self.atom_to_str(atom)) {
+                ret;
+            }
+        }
     }
 
-    fn atoms_to_str(atoms: [atom]) -> str {
-        ret str::connect(self.atoms_to_strs(atoms), "::");
+    fn atoms_to_str(atoms: [atom]) -> @str {
+        // FIXME: str::connect should do this
+        let mut result = "";
+        let mut first = true;
+        for self.atoms_to_strs(atoms) {
+            |string|
+
+            if first {
+                first = false;
+            } else {
+                result += "::";
+            }
+
+            result += *string;
+        }
+
+        // FIXME: Shouldn't copy here. Need string builder.
+        ret @result;
     }
 }
 
@@ -139,7 +144,7 @@ enum module_def {
 
 #[doc="Creates a hash table of atoms."]
 fn atom_hashmap<V:copy>() -> hashmap<atom,V> {
-    ret hashmap::<atom,V>({ |a| a.id }, { |a, b| a.eq(b) });
+    ret hashmap::<atom,V>({ |a| a }, { |a, b| a == b });
 }
 
 #[doc="Contains data for specific types of import directives."]
@@ -402,6 +407,30 @@ enum resolve_result<T> {
     rr_success(T)       // Successfully resolved the import.
 }
 
+class name_binding {
+    let scope: uint;
+    let def_like: def_like;
+
+    new(scope: uint, def_like: def_like) {
+        self.scope = scope;
+        self.def_like = def_like;
+    }
+}
+
+class name_bindings {
+    let module_bindings: @dvec<@name_binding>;
+    let type_bindings: @dvec<@name_binding>;
+    let value_bindings: @dvec<@name_binding>;
+    let impl_bindings: @dvec<@name_binding>;
+
+    new() {
+        self.module_bindings = @dvec();
+        self.type_bindings = @dvec();
+        self.value_bindings = @dvec();
+        self.impl_bindings = @dvec();
+    }
+}
+
 #[doc="The main resolver class."]
 class resolver {
     let session: session;
@@ -419,7 +448,7 @@ class resolver {
     let scopes: @dvec<uint>;
 
     // A mapping from a local name to the set of bindings for that name.
-    let mut names: hashmap<atom,name_bindings>;
+    let mut names: hashmap<atom,@name_bindings>;
 
     // The graph node that represents the current scope.
     let mut current_graph_node: @graph_node;
@@ -444,7 +473,7 @@ class resolver {
 
         self.names = atom_hashmap();
 
-        self.current_graph_node = graph_root;
+        self.current_graph_node = self.graph_root;
 
         self.def_map = int_hash();
         self.impl_map = int_hash();
@@ -459,36 +488,6 @@ class resolver {
     fn new_scope() -> auto_scope {
         (*self.scopes).push(self.new_scope_id());
         ret auto_scope(self.scopes);
-    }
-
-    #[doc="
-        Binds the supplied name in the supplied namespace to the given node ID
-        in any crate.
-    "]
-    fn record_global_name(namespace: namespace_bindings, name: str,
-                          id: def_id) {
-        let mut bindings;
-        alt namespace.find(name) {
-            none {
-                bindings = @dvec();
-                namespace.insert(name, bindings);
-            }
-            some(existing_bindings) {
-                bindings = existing_bindings;
-            }
-        }
-
-        let binding = binding((*self.scopes).last(), id);
-        (*bindings).push(binding);
-    }
-
-    #[doc="
-        Binds the supplied name in the supplied namespace to the given node ID
-        in this crate.
-    "]
-    fn record_local_name(namespace: namespace_bindings, name: str,
-                         id: node_id) {
-        ret self.record_global_name(namespace, name, local_def(id));
     }
 
     fn resolve(this: @resolver) {
@@ -525,7 +524,8 @@ class resolver {
     #[doc="Constructs the reduced graph for one item."]
     fn build_reduced_graph_for_item(item: @item, &&parent_node: @graph_node,
                                     &&visitor: vt<@graph_node>) {
-        let atom = (*self.atom_table).intern(item.ident);
+        let atom =
+            (*self.atom_table).intern(@/* FIXME: bad */ copy item.ident);
         let child = (*parent_node).add_child(parent_node, atom);
 
         alt item.node {
@@ -605,7 +605,8 @@ class resolver {
                                 |i, ident|
                                 if i != path_len - 1u {
                                     let atom =
-                                        (*self.atom_table).intern(ident);
+                                        (*self.atom_table).intern
+                                            (@copy ident);
                                     (*module_path).push(atom);
                                 }
                             }
@@ -615,7 +616,8 @@ class resolver {
                         view_path_list(module_ident_path, _, _) {
                             for module_ident_path.idents.each {
                                 |ident|
-                                let atom = (*self.atom_table).intern(ident);
+                                let atom =
+                                    (*self.atom_table).intern(@copy ident);
                                 (*module_path).push(atom);
                             }
                         }
@@ -626,10 +628,10 @@ class resolver {
                     alt view_path.node {
                         view_path_simple(binding, full_path, _) {
                             let target_atom =
-                                (*self.atom_table).intern(binding);
+                                (*self.atom_table).intern(@copy binding);
                             let source_atom =
-                                (*self.atom_table).intern(full_path.
-                                                       idents.last());
+                                (*self.atom_table).intern
+                                    (@copy full_path.idents.last());
                             let subclass = @ids_single(target_atom,
                                                        source_atom);
                             self.build_import_directive(local_module,
@@ -640,7 +642,8 @@ class resolver {
                             for source_idents.each {
                                 |source_ident|
                                 let name = source_ident.node.name;
-                                let atom = (*self.atom_table).intern(name);
+                                let atom =
+                                    (*self.atom_table).intern(@copy name);
                                 let subclass = @ids_single(atom, atom);
                                 self.build_import_directive(local_module,
                                                             module_path,
@@ -659,7 +662,7 @@ class resolver {
             view_item_use(name, _, node_id) {
                 alt find_use_stmt_cnum(self.session.cstore, node_id) {
                     some(crate_id) {
-                        let atom = (*self.atom_table).intern(name);
+                        let atom = (*self.atom_table).intern(@copy name);
                         let child = (*parent_node).add_child(parent_node,
                                                              atom);
                         let def_id = { crate: crate_id, node: 0 };
@@ -697,7 +700,7 @@ class resolver {
                 |ident|
 
                 // Create or reuse a graph node for the child.
-                let atom = (*self.atom_table).intern(ident);
+                let atom = (*self.atom_table).intern(@copy ident);
                 let parent_graph_node = current_module_node.parent_graph_node;
                 let child_graph_node =
                     (*parent_graph_node).add_child(parent_graph_node, atom);
@@ -722,7 +725,7 @@ class resolver {
             }
 
             // Add the new child item.
-            let atom = (*self.atom_table).intern(final_ident);
+            let atom = (*self.atom_table).intern(@copy final_ident);
             let parent_graph_node = current_module_node.parent_graph_node;
             let child_graph_node =
                 (*parent_graph_node).add_child(parent_graph_node, atom);
@@ -934,7 +937,7 @@ class resolver {
 
         #debug("(resolving import for module) resolving import '%s::...' in \
                 '%s'",
-               (*self.atom_table).atoms_to_str((*module_path).get()),
+               *(*self.atom_table).atoms_to_str((*module_path).get()),
                self.graph_node_to_str(local_module.parent_graph_node));
 
         // One-level renaming imports of the form `import foo = bar;` are
@@ -1026,9 +1029,9 @@ class resolver {
 
         #debug("(resolving single import) resolving '%s' = '%s::%s' from \
                 '%s'",
-               (*self.atom_table).atom_to_str(target),
+               *(*self.atom_table).atom_to_str(target),
                self.graph_node_to_str(containing_module.parent_graph_node),
-               (*self.atom_table).atom_to_str(source),
+               *(*self.atom_table).atom_to_str(source),
                self.graph_node_to_str(local_module.parent_graph_node));
 
         // We need to resolve all four namespaces for this to succeed.
@@ -1320,9 +1323,9 @@ class resolver {
 
         #debug("(resolving single external import) resolving import '%s' = \
                 '%s::%s' in '%s'",
-               (*self.atom_table).atom_to_str(target),
+               *(*self.atom_table).atom_to_str(target),
                self.graph_node_to_str(containing_module.parent_graph_node),
-               (*self.atom_table).atom_to_str(source),
+               *(*self.atom_table).atom_to_str(source),
                self.graph_node_to_str(local_module.parent_graph_node));
 
         // We need to resolve all four namespaces for this to succeed.
@@ -1453,7 +1456,7 @@ class resolver {
 
         #debug("(resolving module path for import) processing '%s' rooted at \
                '%s'",
-               (*self.atom_table).atoms_to_str((*module_path).get()),
+               *(*self.atom_table).atoms_to_str((*module_path).get()),
                self.graph_node_to_str(local_module.parent_graph_node));
 
         // The first element of the module path must be in the current scope
@@ -1464,7 +1467,7 @@ class resolver {
             rr_failed {
                 #error("(resolving module path for import) !!! unresolved \
                         name: %s",
-                       (*self.atom_table).atom_to_str(first_element));
+                       *(*self.atom_table).atom_to_str(first_element));
 
                 self.dump_local_module(local_module);
 
@@ -1491,13 +1494,13 @@ class resolver {
                 rr_failed {
                     #debug("!!! (resolving module path for import) module \
                            resolution failed: %s",
-                           (*self.atom_table).atom_to_str(name));
+                           *(*self.atom_table).atom_to_str(name));
                     ret rr_failed;
                 }
                 rr_indeterminate {
                     #debug("(resolving module path for import) module \
                            resolution is indeterminate: %s",
-                           (*self.atom_table).atom_to_str(name));
+                           *(*self.atom_table).atom_to_str(name));
                     ret rr_indeterminate;
                 }
                 rr_success(graph_node) {
@@ -1506,7 +1509,7 @@ class resolver {
                             // Not a module.
                             #debug("!!! (resolving module path for import) \
                                    not a module: %s",
-                                   (*self.atom_table).atom_to_str(name));
+                                   *(*self.atom_table).atom_to_str(name));
                             ret rr_failed;
                         }
                         md_local_module(*) | md_external_module(*) {
@@ -1529,7 +1532,7 @@ class resolver {
 
         #debug("(resolving item in lexical scope) resolving '%s' in namespace \
                 %? in '%s'",
-               (*self.atom_table).atom_to_str(name),
+               *(*self.atom_table).atom_to_str(name),
                namespace,
                self.graph_node_to_str(local_module.parent_graph_node));
 
@@ -1667,7 +1670,7 @@ class resolver {
             -> resolve_result<@graph_node> {
 
         #debug("(resolving name in local module) resolving '%s' in '%s'",
-               (*self.atom_table).atom_to_str(name),
+               *(*self.atom_table).atom_to_str(name),
                self.graph_node_to_str(local_module.parent_graph_node));
 
         // First, check the direct children of the module.
@@ -1714,7 +1717,7 @@ class resolver {
 
         // We're out of luck.
         #debug("(resolving name in local module) failed to resolve %s",
-               (*self.atom_table).atom_to_str(name));
+               *(*self.atom_table).atom_to_str(name));
         ret rr_failed;
     }
 
@@ -1741,8 +1744,8 @@ class resolver {
 
         #debug("(resolving one-level naming result) resolving import '%s' = \
                 '%s' in '%s'",
-                (*self.atom_table).atom_to_str(target_name),
-                (*self.atom_table).atom_to_str(source_name),
+                *(*self.atom_table).atom_to_str(target_name),
+                *(*self.atom_table).atom_to_str(source_name),
                 self.graph_node_to_str(local_module.parent_graph_node));
 
         // Find the matching items in the lexical scope chain for every
@@ -1868,7 +1871,7 @@ class resolver {
                 #error("(resolving one-level renaming import) writing module \
                         result %? for '%s' into '%s'",
                        module_result.is_none(),
-                       (*self.atom_table).atom_to_str(target_name),
+                       *(*self.atom_table).atom_to_str(target_name),
                        self.graph_node_to_str(local_module.parent_graph_node));
 
                 import_resolution.module_target = module_result;
@@ -1890,7 +1893,7 @@ class resolver {
             -> resolve_result<@graph_node> {
         #debug("(resolving name in external module) resolving '%s' in \
                 external",
-                (*self.atom_table).atom_to_str(name));
+                *(*self.atom_table).atom_to_str(name));
 
         alt parent_module.children.find(name) {
             some(child_node) if (*child_node).defined_in_namespace(namespace) {
@@ -1922,7 +1925,7 @@ class resolver {
             let module_path = local_module.imports.get_elt(index).module_path;
             #error("!!! unresolved import in %s: %s",
                    self.graph_node_to_str(local_module.parent_graph_node),
-                   (*self.atom_table).atoms_to_str((*module_path).get()));
+                   *(*self.atom_table).atoms_to_str((*module_path).get()));
         }
 
         // Descend into children.
@@ -1942,6 +1945,12 @@ class resolver {
 
     fn with_scope(name: option<atom>, f: fn()) {
         let orig_graph_node = self.current_graph_node;
+
+        // Create a new scope ID.
+        (*self.scopes).push(self.next_scope_id);
+        self.next_scope_id += 1u;
+
+        // Move down in the graph.
         alt name {
             none { /* Nothing to do. */ }
             some(name) {
@@ -1956,6 +1965,7 @@ class resolver {
                             }
                             some(child_node) {
                                 self.current_graph_node = child_node;
+                                self.populate_scope(local_module);
                             }
                         }
                     }
@@ -1965,29 +1975,126 @@ class resolver {
 
         f();
 
+        (*self.scopes).pop();
         self.current_graph_node = orig_graph_node;
     }
 
-    fn resolve_crate() {
+    fn populate_scope(local_module: @local_module) {
+        // First, populate the scope with imports. (Since children override
+        // imports, we must do this first.)
+        for local_module.import_resolutions.each {
+            |atom, import_resolution|
+
+            self.maybe_bind_import_resolution(atom, import_resolution,
+                                              ns_module);
+            self.maybe_bind_import_resolution(atom, import_resolution,
+                                              ns_type);
+            self.maybe_bind_import_resolution(atom, import_resolution,
+                                              ns_value);
+            self.maybe_bind_import_resolution(atom, import_resolution,
+                                              ns_impl);
+        }
+
+        // TODO
+    }
+
+    fn maybe_bind_import_resolution(atom: atom,
+                                    import_resolution: @import_resolution,
+                                    namespace: namespace) {
+        alt (*import_resolution).target_for_namespace(namespace) {
+            none {
+                // Nothing to do.
+            }
+            some(target_graph_node) {
+                alt namespace {
+                    ns_module {
+                        if (*target_graph_node).
+                                defined_in_namespace(ns_module) {
+                            self.add_binding(atom, namespace,
+                                             dl_def(def_mod({
+                                                crate: 0,
+                                                node: 0
+                                             })));
+                        }
+                    }
+                    ns_type {
+                        alt target_graph_node.type_def {
+                            none { /* Nothing to do. */ }
+                            some(def) {
+                                self.add_binding(atom, namespace, dl_def(def));
+                            }
+                        }
+                    }
+                    ns_value {
+                        alt target_graph_node.value_def {
+                            none { /* Nothing to do. */ }
+                            some(def) {
+                                self.add_binding(atom, namespace, dl_def(def));
+                            }
+                        }
+                    }
+                    ns_impl {
+                        for target_graph_node.impl_defs.each {
+                            |def_id|
+                            self.add_binding(atom, namespace, dl_impl(def_id));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn add_binding(name: atom, namespace: namespace, def_like: def_like) {
+        let mut these_name_bindings;
+        alt self.names.find(name) {
+            none {
+                these_name_bindings = @name_bindings();
+                self.names.insert(name, these_name_bindings);
+            }
+            some(existing_name_bindings) {
+                these_name_bindings = existing_name_bindings;
+            }
+        }
+
+        let new_binding = @name_binding((*self.scopes).last(), def_like);
+        alt namespace {
+            ns_module {
+                (*these_name_bindings.module_bindings).push(new_binding);
+            }
+            ns_type {
+                (*these_name_bindings.type_bindings).push(new_binding);
+            }
+            ns_value {
+                (*these_name_bindings.value_bindings).push(new_binding);
+            }
+            ns_impl {
+                (*these_name_bindings.impl_bindings).push(new_binding);
+            }
+        }
+    }
+
+    fn resolve_crate() unsafe {
+        // FIXME: This is awful!
+        let this = ptr::addr_of(self);
         visit_crate(*self.crate, (), mk_vt(@{
             visit_item: {
                 |item, _context, visitor|
-                self.resolve_item(item, visitor);
+                (*this).resolve_item(item, visitor);
             },
             visit_arm: {
                 |arm, _context, visitor|
-                self.resolve_arm(arm, visitor);
+                (*this).resolve_arm(arm, visitor);
             },
             visit_block: {
                 |block, _context, visitor|
-                self.resolve_block(block, visitor);
+                (*this).resolve_block(block, visitor);
             }
             with *default_visitor()
         }));
     }
 
     fn resolve_item(item: @item, visitor: resolve_visitor) {
-        let atom = (*self.atom_table).intern(item.ident);
+        let atom = (*self.atom_table).intern(@copy item.ident);
         self.with_scope(some(atom)) {
             ||
 
@@ -2039,13 +2146,13 @@ class resolver {
                     visit_item(item, (), visitor);
                 }
             }
-
-        self.leave_scope();
+        }
     }
 
     fn resolve_module(module: _mod, span: span, name: ident, id: node_id,
                       visitor: resolve_visitor) {
-        self.record_local_name(self.module_namespace, name, id);
+        self.add_binding((*self.atom_table).intern(@copy name), ns_module,
+                         dl_def(def_mod({ crate: 0, node: id })));
 
         visit_mod(module, span, id, (), visitor);
     }
@@ -2078,8 +2185,10 @@ class resolver {
                     // such a variant is simply disallowed (since it's rarely
                     // what you want).
 
-                    self.record_local_name(self.value_namespace,
-                                           path.idents[0], pattern.id);
+                    let atom =
+                        (*self.atom_table).intern(@copy path.idents[0]);
+                    self.add_binding(atom, ns_value,
+                                     dl_def(def_local(pattern.id, false)));
                 }
                 _ {
                     /* Nothing to do. FIXME: Handle more cases. */
@@ -2145,7 +2254,7 @@ class resolver {
             if i < atoms.len() - 1u {
                 string += "::";
             }
-            string += (*self.atom_table).atom_to_str(atoms.get_elt(i));
+            string += *(*self.atom_table).atom_to_str(atoms.get_elt(i));
 
             if i == 0u {
                 break;
@@ -2164,7 +2273,7 @@ class resolver {
         for local_module.children.each {
             |name, _child|
 
-            #debug("* %s", (*self.atom_table).atom_to_str(name));
+            #debug("* %s", *(*self.atom_table).atom_to_str(name));
         }
 
         #debug("Import resolutions:");
@@ -2204,7 +2313,7 @@ class resolver {
             }
 
             #debug("* %s:%s%s%s%s",
-                   (*self.atom_table).atom_to_str(name),
+                   *(*self.atom_table).atom_to_str(name),
                    module_repr, value_repr, type_repr, impl_repr);
         }
     }
