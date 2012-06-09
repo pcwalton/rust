@@ -213,25 +213,6 @@ class local_module {
     let children: hashmap<atom,@graph_node>;
     let imports: dvec<@import_directive>;
 
-    //
-    // The anonymous children of this node. Anonymous children are pseudo-
-    // modules that are implicitly created around items contained within
-    // blocks.
-    //
-    // For example, if we have this:
-    //
-    //  fn f() {
-    //      fn g() {
-    //          ...
-    //      }
-    //  }
-    //
-    // There will be an anonymous module created around `g` with the ID of the
-    // entry block for `f`.
-    //
-
-    let anonymous_children: hashmap<node_id,@graph_node>;
-
     // The status of resolving each import in this module.
     let import_resolutions: hashmap<atom,@import_resolution>;
 
@@ -246,8 +227,6 @@ class local_module {
 
         self.children = atom_hashmap();
         self.imports = dvec();
-
-        self.anonymous_children = int_hash();
 
         self.import_resolutions = atom_hashmap();
         self.glob_count = 0u;
@@ -289,6 +268,25 @@ class graph_node {
     let mut value_def: option<def>;     // Meaning in the value namespace.
     let mut impl_defs: [def_id];        // Meaning in the impl namespace.
 
+    //
+    // The anonymous children of this node. Anonymous children are pseudo-
+    // modules that are implicitly created around items contained within
+    // blocks.
+    //
+    // For example, if we have this:
+    //
+    //  fn f() {
+    //      fn g() {
+    //          ...
+    //      }
+    //  }
+    //
+    // There will be an anonymous module created around `g` with the ID of the
+    // entry block for `f`.
+    //
+
+    let anonymous_children: hashmap<node_id,@graph_node>;
+
     new(parent_node: option<@graph_node>) {
         // FIXME: As above, this is needed to work around an ICE.
         alt parent_node {
@@ -304,6 +302,8 @@ class graph_node {
         self.type_def = none;
         self.value_def = none;
         self.impl_defs = [];
+
+        self.anonymous_children = int_hash();
     }
 
     #[doc="Records a local module definition."]
@@ -394,44 +394,6 @@ class graph_node {
             ns_impl   { ret self.impl_defs.len() >= 0u; }
         }
     }
-
-    // FIXME: Shouldn't have a this parameter. Use an impl instead. Thought
-    // this might have been the cause of an ICE, but I don't think it is.
-    #[doc="
-        Adds a new child item to the module definition of this node and returns
-        it.
-
-        If this node does not have a module definition, fails.
-    "]
-    fn add_child(this: @graph_node, atom: atom) -> @graph_node {
-        alt self.module_def {
-            md_none { fail "Can't add a child to a non-module definition!"; }
-            md_external_module(external_module) {
-                alt external_module.children.find(atom) {
-                    none {
-                        let child = @graph_node(some(this));
-                        external_module.children.insert(atom, child);
-                        ret child;
-                    }
-                    some(child) {
-                        ret child;
-                    }
-                }
-            }
-            md_local_module(local_module) {
-                alt local_module.children.find(atom) {
-                    none {
-                        let child = @graph_node(some(this));
-                        local_module.children.insert(atom, child);
-                        ret child;
-                    }
-                    some(child) {
-                        ret child;
-                    }
-                }
-            }
-        }
-    }
 }
 
 enum resolve_result<T> {
@@ -460,6 +422,12 @@ class rib {
     new() {
         self.bindings = atom_hashmap();
     }
+}
+
+#[doc="The context that we thread through while building the reduced graph."]
+enum ReducedGraphParent {
+    GraphNodeParent(@graph_node),
+    BlockParent(@graph_node, node_id)
 }
 
 #[doc="The main resolver class."]
@@ -524,37 +492,112 @@ class resolver {
 
     #[doc="Constructs the reduced graph for the entire crate."]
     fn build_reduced_graph(this: @resolver) {
-        visit_crate(*self.crate, self.graph_root, mk_vt(@{
+        let initial_parent = GraphNodeParent(self.graph_root);
+        visit_crate(*self.crate, initial_parent, mk_vt(@{
             visit_item: {
-                |item, parent_node, visitor|
-                (*this).build_reduced_graph_for_item(item, parent_node,
-                                                     visitor)
+                |item, context, visitor|
+                (*this).build_reduced_graph_for_item(item, context, visitor)
             },
             visit_view_item: {
-                |view_item, parent_node, visitor|
-                (*this).build_reduced_graph_for_view_item(view_item,
-                                                          parent_node,
+                |view_item, context, visitor|
+                (*this).build_reduced_graph_for_view_item(view_item, context,
                                                           visitor)
+            },
+            visit_block: {
+                |block, context, visitor|
+                (*this).build_reduced_graph_for_block(block, context,
+                                                      visitor);
             }
             with *default_visitor()
         }));
     }
 
+    fn get_or_create_enclosing_graph_node(reduced_graph_parent:
+                                          ReducedGraphParent)
+            -> @graph_node {
+
+        alt reduced_graph_parent {
+            GraphNodeParent(graph_node) { ret graph_node; }
+            BlockParent(enclosing_graph_node, node_id) {
+                alt enclosing_graph_node.anonymous_children.find(node_id) {
+                    none {
+                        let child = @graph_node(some(enclosing_graph_node));
+                        (*child).define_local_module(child);
+                        enclosing_graph_node.anonymous_children.
+                            insert(node_id, child);
+                        ret child;
+                    }
+                    some(child) {
+                        ret child;
+                    }
+                }
+            }
+        }
+    }
+
+    #[doc="
+        Adds a new child item to the module definition of the parent node and
+        returns it. Or, if we're inside a block, creates an anonymous module
+        corresponding to the innermost block ID instead.
+
+        If this node does not have a module definition and we are not inside
+        a block, fails.
+    "]
+    fn add_child(name: atom, reduced_graph_parent: ReducedGraphParent)
+            -> @graph_node {
+
+        let enclosing_graph_node =
+            self.get_or_create_enclosing_graph_node(reduced_graph_parent);
+        alt enclosing_graph_node.module_def {
+            md_none {
+                fail "Can't add a child to a graph node without a \
+                      module definition!";
+            }
+            md_external_module(external_module) {
+                alt external_module.children.find(name) {
+                    none {
+                        let child = @graph_node(some(enclosing_graph_node));
+                        external_module.children.insert(name, child);
+                        ret child;
+                    }
+                    some(child) {
+                        ret child;
+                    }
+                }
+            }
+            md_local_module(local_module) {
+                alt local_module.children.find(name) {
+                    none {
+                        let child = @graph_node(some(enclosing_graph_node));
+                        local_module.children.insert(name, child);
+                        ret child;
+                    }
+                    some(child) {
+                        ret child;
+                    }
+                }
+            }
+        }
+    }
+
     #[doc="Constructs the reduced graph for one item."]
-    fn build_reduced_graph_for_item(item: @item, &&parent_node: @graph_node,
-                                    &&visitor: vt<@graph_node>) {
+    fn build_reduced_graph_for_item(item: @item,
+                                    parent: ReducedGraphParent,
+                                    &&visitor: vt<ReducedGraphParent>) {
+
         let atom =
             (*self.atom_table).intern(@/* FIXME: bad */ copy item.ident);
-        let child = (*parent_node).add_child(parent_node, atom);
+        let child = self.add_child(atom, parent);
 
         alt item.node {
             item_mod(module) {
                 (*child).define_local_module(child);
-                visit_mod(module, item.span, item.id, child, visitor);
+                visit_mod(module, item.span, item.id, GraphNodeParent(child),
+                          visitor);
             }
             item_native_mod(native_module) {
                 (*child).define_local_module(child);
-                visit_item(item, child, visitor);
+                visit_item(item, GraphNodeParent(child), visitor);
             }
 
             // These items live in the value namespace.
@@ -564,6 +607,7 @@ class resolver {
             item_fn(decl, _, _) {
                 let def = def_fn(local_def(item.id), decl.purity);
                 (*child).define_value(def);
+                visit_item(item, GraphNodeParent(child), visitor);
             }
 
             // These items live in the type namespace.
@@ -579,7 +623,7 @@ class resolver {
                     |variant|
                     self.build_reduced_graph_for_variant(variant,
                                                          local_def(item.id),
-                                                         parent_node,
+                                                         parent,
                                                          visitor);
                 }
             }
@@ -588,6 +632,8 @@ class resolver {
                 let value_def = def_fn(local_def(item.id), purity);
                 (*child).define_value(value_def);
                 (*child).define_type(def_ty(local_def(item.id)));
+
+                visit_item(item, GraphNodeParent(child), visitor);
             }
             item_class(_, _, _, ctor, _, _) {
                 (*child).define_type(def_ty(local_def(item.id)));
@@ -595,10 +641,13 @@ class resolver {
                 let purity = ctor.node.dec.purity;
                 let ctor_def = def_fn(local_def(ctor.node.id), purity);
                 (*child).define_value(ctor_def);
+
+                visit_item(item, GraphNodeParent(child), visitor);
             }
 
             item_impl(*) {
                 (*child).define_impl(local_def(item.id));
+                visit_item(item, GraphNodeParent(child), visitor);
             }
 
             item_iface(*) { /* TODO */ }
@@ -609,24 +658,26 @@ class resolver {
         Constructs the reduced graph for one variant. Variants exist in the
         type namespace.
     "]
-    fn build_reduced_graph_for_variant(variant: variant, item_id: def_id,
-                                       parent_node: @graph_node,
-                                       &&_visitor: vt<@graph_node>) {
+    fn build_reduced_graph_for_variant(variant: variant,
+                                       item_id: def_id,
+                                       parent: ReducedGraphParent,
+                                       &&_visitor: vt<ReducedGraphParent>) {
+
         let atom = (*self.atom_table).intern(@/* FIXME: bad */ copy
                                              variant.node.name);
-        let child = (*parent_node).add_child(parent_node, atom);
+        let child = self.add_child(atom, parent);
 
         (*child).define_value(def_variant(item_id,
                                           local_def(variant.node.id)));
     }
 
     #[doc="
-        Constructs the reduced graph for one 'view item'. View items consist of
-        imports and use directives.
+        Constructs the reduced graph for one 'view item'. View items consist
+        of imports and use directives.
     "]
     fn build_reduced_graph_for_view_item(view_item: @view_item,
-                                         &&parent_node: @graph_node,
-                                         &&_visitor: vt<@graph_node>) {
+                                         parent: ReducedGraphParent,
+                                         &&_visitor: vt<ReducedGraphParent>) {
         alt view_item.node {
             view_item_import(view_paths) {
                 for view_paths.each {
@@ -665,7 +716,9 @@ class resolver {
                     }
 
                     // Build up the import directives.
-                    let local_module = (*parent_node).get_local_module();
+                    let enclosing_module =
+                        self.get_or_create_enclosing_graph_node(parent);
+                    let local_module = (*enclosing_module).get_local_module();
                     alt view_path.node {
                         view_path_simple(binding, full_path, _) {
                             let target_atom =
@@ -704,8 +757,8 @@ class resolver {
                 alt find_use_stmt_cnum(self.session.cstore, node_id) {
                     some(crate_id) {
                         let atom = (*self.atom_table).intern(@copy name);
-                        let child = (*parent_node).add_child(parent_node,
-                                                             atom);
+                        let child = self.add_child(atom, parent);
+
                         let def_id = { crate: crate_id, node: 0 };
                         let external_module =
                             (*child).define_external_module(child,
@@ -719,6 +772,23 @@ class resolver {
                 }
             }
         }
+    }
+
+    fn build_reduced_graph_for_block(block: blk,
+                                     parent: ReducedGraphParent,
+                                     &&visitor: vt<ReducedGraphParent>) {
+
+        let mut new_parent;
+        alt parent {
+            GraphNodeParent(graph_node) {
+                new_parent = BlockParent(graph_node, block.node.id);
+            }
+            BlockParent(graph_node, _) {
+                new_parent = BlockParent(graph_node, block.node.id);
+            }
+        }
+
+        visit_block(block, new_parent, visitor);
     }
 
     #[doc="
@@ -744,7 +814,7 @@ class resolver {
                 let atom = (*self.atom_table).intern(@copy ident);
                 let parent_graph_node = current_module_node.parent_graph_node;
                 let child_graph_node =
-                    (*parent_graph_node).add_child(parent_graph_node, atom);
+                    self.add_child(atom, GraphNodeParent(parent_graph_node));
 
                 // Define or reuse the module node.
                 alt child_graph_node.module_def {
@@ -769,7 +839,7 @@ class resolver {
             let atom = (*self.atom_table).intern(@copy final_ident);
             let parent_graph_node = current_module_node.parent_graph_node;
             let child_graph_node =
-                (*parent_graph_node).add_child(parent_graph_node, atom);
+                self.add_child(atom, GraphNodeParent(parent_graph_node));
 
             alt path_entry.def_like {
                 dl_def(def) {
@@ -838,6 +908,7 @@ class resolver {
     fn build_import_directive(local_module: @local_module,
                               module_path: @dvec<atom>,
                               subclass: @import_directive_subclass) {
+
         let directive = @import_directive(module_path, subclass);
         local_module.imports.push(directive);
 
