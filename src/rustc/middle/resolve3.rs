@@ -447,7 +447,7 @@ class resolver {
     let mut current_graph_node: @graph_node;
 
     // The current set of local scopes, for values.
-    // FIXME: Reuse ribs to avoid allocation.
+    // TODO: Reuse ribs to avoid allocation.
     let value_ribs: @dvec<@rib>;
 
     // The atom for the keyword "self".
