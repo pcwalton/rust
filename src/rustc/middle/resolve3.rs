@@ -213,6 +213,25 @@ class local_module {
     let children: hashmap<atom,@graph_node>;
     let imports: dvec<@import_directive>;
 
+    //
+    // The anonymous children of this node. Anonymous children are pseudo-
+    // modules that are implicitly created around items contained within
+    // blocks.
+    //
+    // For example, if we have this:
+    //
+    //  fn f() {
+    //      fn g() {
+    //          ...
+    //      }
+    //  }
+    //
+    // There will be an anonymous module created around `g` with the ID of the
+    // entry block for `f`.
+    //
+
+    let anonymous_children: hashmap<node_id,@graph_node>;
+
     // The status of resolving each import in this module.
     let import_resolutions: hashmap<atom,@import_resolution>;
 
@@ -227,6 +246,8 @@ class local_module {
 
         self.children = atom_hashmap();
         self.imports = dvec();
+
+        self.anonymous_children = int_hash();
 
         self.import_resolutions = atom_hashmap();
         self.glob_count = 0u;
