@@ -9,10 +9,11 @@ import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
 import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
 import syntax::ast::{expr_path, fn_decl, ident, item, item_class, item_const};
 import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
-import syntax::ast::{item_native_mod, item_res, item_ty, native_item_fn};
-import syntax::ast::{node_id, pat, pat_ident, ty_param, view_item};
-import syntax::ast::{view_item_export, view_item_import, view_item_use};
-import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
+import syntax::ast::{item_native_mod, item_res, item_ty, local};
+import syntax::ast::{native_item_fn, node_id, pat, pat_ident, ty_param};
+import syntax::ast::{variant, view_item, view_item_export, view_item_import};
+import syntax::ast::{view_item_use, view_path_glob, view_path_list};
+import syntax::ast::{view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
@@ -51,6 +52,16 @@ enum namespace_result {
     nsr_unknown,
     nsr_unbound,
     nsr_bound(@graph_node)
+}
+
+enum mutability {
+    mutable,
+    immutable
+}
+
+enum self_binding {
+    has_self_binding(node_id),
+    no_self_binding
 }
 
 type namespace_bindings = hashmap<str,@dvec<binding>>;
@@ -445,8 +456,13 @@ class resolver {
 
     // The graph node that represents the current item scope.
     let mut current_graph_node: @graph_node;
+
     // The current set of local scopes, for values.
+    // FIXME: Reuse ribs to avoid allocation.
     let value_ribs: @dvec<@rib>;
+
+    // The atom for the keyword "self".
+    let self_atom: atom;
 
     let def_map: def_map;
     let impl_map: impl_map;
@@ -465,6 +481,8 @@ class resolver {
 
         self.current_graph_node = self.graph_root;
         self.value_ribs = @dvec();
+
+        self.self_atom = (*self.atom_table).intern(@"self");
 
         self.def_map = int_hash();
         self.impl_map = int_hash();
@@ -533,9 +551,16 @@ class resolver {
             }
 
             // These items live in both the type and value namespaces.
-            item_enum(_variants, _, _) {
+            item_enum(variants, _, _) {
                 (*child).define_type(def_ty(local_def(item.id)));
-                // TODO: Variants.
+
+                for variants.each {
+                    |variant|
+                    self.build_reduced_graph_for_variant(variant,
+                                                         local_def(item.id),
+                                                         parent_node,
+                                                         visitor);
+                }
             }
             item_res(decl, _, _, _, _, _) {
                 let purity = decl.purity;
@@ -557,6 +582,21 @@ class resolver {
 
             item_iface(*) { /* TODO */ }
         }
+    }
+
+    #[doc="
+        Constructs the reduced graph for one variant. Variants exist in the
+        type namespace.
+    "]
+    fn build_reduced_graph_for_variant(variant: variant, item_id: def_id,
+                                       parent_node: @graph_node,
+                                       &&_visitor: vt<@graph_node>) {
+        let atom = (*self.atom_table).intern(@/* FIXME: bad */ copy
+                                             variant.node.name);
+        let child = (*parent_node).add_child(parent_node, atom);
+
+        (*child).define_value(def_variant(item_id,
+                                          local_def(variant.node.id)));
     }
 
     #[doc="
@@ -2003,6 +2043,10 @@ class resolver {
             visit_expr: {
                 |expr, _context, visitor|
                 (*this).resolve_expr(expr, visitor);
+            },
+            visit_local: {
+                |local, _context, visitor|
+                (*this).resolve_local(local, visitor);
             }
             with *default_visitor()
         }));
@@ -2025,10 +2069,10 @@ class resolver {
                         |method|
                         // We also need a new scope for the method-specific
                         // type parameters.
-                        visit_fn(fk_method(method.ident, method.tps, method),
-                                 method.decl, method.body, method.span,
-                                 method.id,
-                                 (), visitor);
+                        self.resolve_function(method.decl, some(method.tps),
+                                              method.body,
+                                              has_self_binding(item.id),
+                                              visitor);
                     }
                 }
                 item_iface(_, _, methods) {
@@ -2060,7 +2104,8 @@ class resolver {
                     }
                 }
                 item_fn(fn_decl, ty_params, block) {
-                    self.resolve_function(fn_decl, ty_params, block, visitor);
+                    self.resolve_function(fn_decl, some(ty_params), block,
+                                          no_self_binding, visitor);
                 }
                 item_res(*) | item_const(*) {
                     visit_item(item, (), visitor);
@@ -2069,11 +2114,21 @@ class resolver {
         }
     }
 
-    fn resolve_function(fn_decl: fn_decl, _ty_params: [ty_param], block: blk,
+    fn resolve_function(fn_decl: fn_decl, _ty_params: option<[ty_param]>,
+                        block: blk, self_binding: self_binding,
                         visitor: resolve_visitor) {
         // Create a rib for the function.
         let function_rib = @rib();
         (*self.value_ribs).push(function_rib);
+
+        // Add self to the rib, if necessary.
+        alt self_binding {
+            no_self_binding { /* Nothing to do. */ }
+            has_self_binding(self_node_id) {
+                let def_like = dl_def(def_self(self_node_id));
+                (*function_rib).bindings.insert(self.self_atom, def_like);
+            }
+        }
 
         // Add each argument to the rib.
         for fn_decl.inputs.each {
@@ -2101,10 +2156,21 @@ class resolver {
         visit_mod(module, span, id, (), visitor);
     }
 
+    fn resolve_local(local: @local, _visitor: resolve_visitor) {
+        let mut mutability;
+        if local.node.is_mutbl {
+            mutability = mutable;
+        } else {
+            mutability = immutable;
+        };
+
+        self.resolve_pattern(local.node.pat, pbm_irrefutable, mutability);
+    }
+
     fn resolve_arm(arm: arm, visitor: resolve_visitor) {
         for arm.pats.each {
             |pattern|
-            self.resolve_pattern(pattern, pbm_refutable);
+            self.resolve_pattern(pattern, pbm_refutable, immutable);
         }
 
         visit_expr_opt(arm.guard, (), visitor);
@@ -2121,7 +2187,8 @@ class resolver {
         #debug("(resolving block) leaving block");
     }
 
-    fn resolve_pattern(pattern: @pat, _mode: pattern_binding_mode) {
+    fn resolve_pattern(pattern: @pat, _mode: pattern_binding_mode,
+                       mutability: mutability) {
         walk_pat(pattern) {
             |pattern|
             alt pattern.node {
@@ -2135,9 +2202,13 @@ class resolver {
                     // such a variant is simply disallowed (since it's rarely
                     // what you want).
 
+                    #debug("(resolving pattern) binding '%s'",
+                           path.idents[0]);
+
                     let atom =
                         (*self.atom_table).intern(@copy path.idents[0]);
-                    let def_like = dl_def(def_local(pattern.id, false));
+                    let is_mutable = mutability == mutable;
+                    let def_like = dl_def(def_local(pattern.id, is_mutable));
                     (*self.value_ribs).last().bindings.insert(atom, def_like);
                 }
                 _ {
@@ -2208,6 +2279,12 @@ class resolver {
                     }
                 }
             }
+
+            expr_fn(_, fn_decl, block, _) | expr_fn_block(fn_decl, block, _) {
+                self.resolve_function(fn_decl, none, block, no_self_binding,
+                                      visitor);
+            }
+
             _ {
                 visit_expr(expr, (), visitor);
             }
