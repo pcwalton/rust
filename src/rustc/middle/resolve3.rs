@@ -25,88 +25,104 @@ import std::list::list;
 import std::map::{hashmap, int_hash, str_hash};
 import str::split_str;
 import vec::pop;
-import ast_map_t = syntax::ast_map::map;
+import ASTMap = syntax::ast_map::map;
 
-type def_map = hashmap<node_id, def>;
-type impl_map = hashmap<node_id, iscopes>;
+type DefMap = hashmap<node_id, def>;
 
 // Implementation resolution stuff
-type method_info = { did: def_id, n_tps: uint, ident: ident };
-type _impl = { did: def_id, ident: ident, methods: [@method_info] };
-type iscope = @[@_impl];
-type iscopes = @list<iscope>;
+type MethodInfo = { did: def_id, n_tps: uint, ident: ident };
+type Impl = { did: def_id, ident: ident, methods: [@MethodInfo] };
+type ImplScope = @[@Impl];
+type ImplScopes = @list<ImplScope>;
+type ImplMap = hashmap<node_id, ImplScopes>;
 
-enum pattern_binding_mode {
-    pbm_refutable,
-    pbm_irrefutable
+enum PatternBindingMode {
+    RefutableMode,
+    IrrefutableMode
 }
 
-enum namespace {
-    ns_module,
-    ns_type,
-    ns_value,
-    ns_impl
+enum Namespace {
+    ModuleNamespace,
+    TypeNamespace,
+    ValueNamespace,
+    ImplNamespace
 }
 
-enum namespace_result {
-    nsr_unknown,
-    nsr_unbound,
-    nsr_bound(@graph_node)
+enum NamespaceResult {
+    UnknownResult,
+    UnboundResult,
+    BoundResult(@NameBindings)
 }
 
-enum mutability {
-    mutable,
-    immutable
+enum Mutability {
+    Mutable,
+    Immutable
 }
 
-enum self_binding {
-    has_self_binding(node_id),
-    no_self_binding
+enum SelfBinding {
+    HasSelfBinding(node_id),
+    NoSelfBinding
 }
 
-type namespace_bindings = hashmap<str,@dvec<binding>>;
+type ResolveVisitor = vt<()>;
 
-type resolve_visitor = vt<()>;
-
-resource auto_scope(scopes: @dvec<uint>) {
-    (*scopes).pop();
+enum ModuleDef {
+    NoModuleDef,                            // Does not define a module.
+    LocalModuleDef(@LocalModule),           // Defines a local module.
+    ExternalModuleDef(@ExternalModule)      // Defines an external module.
 }
 
-class binding {
-    let scope_id: uint;
-    let def_id: def_id;
+#[doc="Contains data for specific types of import directives."]
+enum ImportDirectiveSubclass {
+    SingleImport(Atom /* target */, Atom /* source */),
+    GlobImport
+}
 
-    new(scope_id: uint, def_id: def_id) {
-        self.scope_id = scope_id;
-        self.def_id = def_id;
-    }
+#[doc="The context that we thread through while building the reduced graph."]
+enum ReducedGraphParent {
+    GraphNodeParent(@NameBindings),
+    BlockParent(@NameBindings, node_id)
+}
+
+enum ResolveResult<T> {
+    Failed,         // Failed to resolve the name.
+    Indeterminate,  // Couldn't determine due to unresolved globs.
+    Success(T)      // Successfully resolved the import.
+}
+
+// FIXME: This is needed to work around an ICE with classes that refer to
+// themselves.
+enum NameBindingsWrapper {
+    WrappedNameBindings(@NameBindings)
 }
 
 // FIXME (issue 2550): Should be a class but then it becomes not implicitly
 // copyable due to a kind bug.
-type atom = uint;
+type Atom = uint;
 
-fn atom(n: uint) -> atom { ret n; }
+fn Atom(n: uint) -> Atom {
+    ret n;
+}
 
-class atom_table {
-    let atoms: hashmap<@str,atom>;
+class AtomTable {
+    let atoms: hashmap<@str,Atom>;
     let strings: dvec<@str>;
     let mut atom_count: uint;
 
     new() {
-        self.atoms = hashmap::<@str,atom>({ |x| str::hash(*x) },
+        self.atoms = hashmap::<@str,Atom>({ |x| str::hash(*x) },
                                           { |x, y| str::eq(*x, *y) });
         self.strings = dvec();
         self.atom_count = 0u;
     }
 
-    fn intern(string: @str) -> atom {
+    fn intern(string: @str) -> Atom {
         alt self.atoms.find(string) {
             none { /* fall through */ }
             some(atom) { ret atom; }
         }
 
-        let atom = atom(self.atom_count);
+        let atom = Atom(self.atom_count);
         self.atom_count += 1u;
         self.atoms.insert(string, atom);
         self.strings.push(string);
@@ -114,11 +130,11 @@ class atom_table {
         ret atom;
     }
 
-    fn atom_to_str(atom: atom) -> @str {
+    fn atom_to_str(atom: Atom) -> @str {
         ret self.strings.get_elt(atom);
     }
 
-    fn atoms_to_strs(atoms: [atom], f: fn(@str) -> bool) {
+    fn atoms_to_strs(atoms: [Atom], f: fn(@str) -> bool) {
         for atoms.each {
             |atom|
             if !f(self.atom_to_str(atom)) {
@@ -127,7 +143,7 @@ class atom_table {
         }
     }
 
-    fn atoms_to_str(atoms: [atom]) -> @str {
+    fn atoms_to_str(atoms: [Atom]) -> @str {
         // FIXME: str::connect should do this
         let mut result = "";
         let mut first = true;
@@ -148,44 +164,44 @@ class atom_table {
     }
 }
 
-enum module_def {
-    md_none,                                // Does not define a module.
-    md_local_module(@local_module),         // Defines a local module.
-    md_external_module(@external_module)    // Defines an external module.
-}
-
 #[doc="Creates a hash table of atoms."]
-fn atom_hashmap<V:copy>() -> hashmap<atom,V> {
-    ret hashmap::<atom,V>({ |a| a }, { |a, b| a == b });
+fn atom_hashmap<V:copy>() -> hashmap<Atom,V> {
+    ret hashmap::<Atom,V>({ |a| a }, { |a, b| a == b });
 }
 
-#[doc="Contains data for specific types of import directives."]
-enum import_directive_subclass {
-    ids_single(atom /* target */, atom /* source */),
-    ids_glob
+#[doc="
+    One local scope. In Rust, local scopes can only contain value bindings.
+    Therefore, we don't have to worry about the other namespaces here.
+"]
+class Rib {
+    let bindings: hashmap<Atom,def_like>;
+
+    new() {
+        self.bindings = atom_hashmap();
+    }
 }
 
 #[doc="One import directive."]
-class import_directive {
-    let module_path: @dvec<atom>;
-    let subclass: @import_directive_subclass;
+class ImportDirective {
+    let module_path: @dvec<Atom>;
+    let subclass: @ImportDirectiveSubclass;
 
-    new(module_path: @dvec<atom>, subclass: @import_directive_subclass) {
+    new(module_path: @dvec<Atom>, subclass: @ImportDirectiveSubclass) {
         self.module_path = module_path;
         self.subclass = subclass;
     }
 }
 
-class import_resolution {
+class ImportResolution {
     // The number of outstanding references to this name. When this reaches
     // zero, outside modules can count on the targets being correct. Before
     // then, all bets are off; future imports could override this name.
     let mut outstanding_references: uint;
 
-    let mut module_target: option<@graph_node>;
-    let mut value_target: option<@graph_node>;
-    let mut type_target: option<@graph_node>;
-    let mut impl_target: option<@graph_node>;
+    let mut module_target: option<@NameBindings>;
+    let mut value_target: option<@NameBindings>;
+    let mut type_target: option<@NameBindings>;
+    let mut impl_target: option<@NameBindings>;
 
     new() {
         self.outstanding_references = 0u;
@@ -196,25 +212,25 @@ class import_resolution {
         self.impl_target = none;
     }
 
-    fn target_for_namespace(namespace: namespace) -> option<@graph_node> {
+    fn target_for_namespace(namespace: Namespace) -> option<@NameBindings> {
         alt namespace {
-            ns_module { ret self.module_target; }
-            ns_type   { ret self.type_target;   }
-            ns_value  { ret self.value_target;  }
-            ns_impl   { ret self.impl_target;   }
+            ModuleNamespace { ret self.module_target; }
+            TypeNamespace   { ret self.type_target;   }
+            ValueNamespace  { ret self.value_target;  }
+            ImplNamespace   { ret self.impl_target;   }
         }
     }
 }
 
 #[doc="One node in the tree of modules."]
-class local_module {
-    let parent_graph_node: @graph_node;
+class LocalModule {
+    let parent_name_bindings: @NameBindings;
 
-    let children: hashmap<atom,@graph_node>;
-    let imports: dvec<@import_directive>;
+    let children: hashmap<Atom,@NameBindings>;
+    let imports: dvec<@ImportDirective>;
 
     // The status of resolving each import in this module.
-    let import_resolutions: hashmap<atom,@import_resolution>;
+    let import_resolutions: hashmap<Atom,@ImportResolution>;
 
     // The number of unresolved globs that this module exports.
     let mut glob_count: uint;
@@ -222,8 +238,8 @@ class local_module {
     // The index of the import we're resolving.
     let mut resolved_import_count: uint;
 
-    new(parent_graph_node: @graph_node) {
-        self.parent_graph_node = parent_graph_node;
+    new(parent_name_bindings: @NameBindings) {
+        self.parent_name_bindings = parent_name_bindings;
 
         self.children = atom_hashmap();
         self.imports = dvec();
@@ -239,31 +255,29 @@ class local_module {
 }
 
 #[doc="An external module in the graph."]
-class external_module {
-    let parent_graph_node: @graph_node;
+class ExternalModule {
+    let parent_name_bindings: @NameBindings;
     let mut def_id: option<def_id>;
 
-    let children: hashmap<atom,@graph_node>;
+    let children: hashmap<Atom,@NameBindings>;
 
-    new(parent_graph_node: @graph_node, def_id: option<def_id>) {
-        self.parent_graph_node = parent_graph_node;
+    new(parent_name_bindings: @NameBindings, def_id: option<def_id>) {
+        self.parent_name_bindings = parent_name_bindings;
         self.def_id = def_id;
 
         self.children = atom_hashmap();
     }
 }
 
-// FIXME: This is needed to work around an ICE with classes that refer to
-// themselves.
-enum graph_node_holder {
-    gnh_graph_node(@graph_node)
-}
-
-class graph_node {
+#[doc="
+    Records the definitions (at most one for each namespace) that a name is
+    bound to.
+"]
+class NameBindings {
     // The parent of this node.
-    let parent_node: option<graph_node_holder>;
+    let parent_node: option<NameBindingsWrapper>;
 
-    let mut module_def: module_def;     // Meaning in the module namespace.
+    let mut module_def: ModuleDef;      // Meaning in the module namespace.
     let mut type_def: option<def>;      // Meaning in the type namespace.
     let mut value_def: option<def>;     // Meaning in the value namespace.
     let mut impl_defs: [def_id];        // Meaning in the impl namespace.
@@ -285,20 +299,20 @@ class graph_node {
     // entry block for `f`.
     //
 
-    let anonymous_children: hashmap<node_id,@graph_node>;
+    let anonymous_children: hashmap<node_id,@NameBindings>;
 
-    new(parent_node: option<@graph_node>) {
+    new(parent_name_bindings: option<@NameBindings>) {
         // FIXME: As above, this is needed to work around an ICE.
-        alt parent_node {
+        alt parent_name_bindings {
             none {
                 self.parent_node = none;
             }
-            some(graph_node) {
-                self.parent_node = some(gnh_graph_node(graph_node));
+            some(name_bindings) {
+                self.parent_node = some(WrappedNameBindings(name_bindings));
             }
         }
 
-        self.module_def = md_none;
+        self.module_def = NoModuleDef;
         self.type_def = none;
         self.value_def = none;
         self.impl_defs = [];
@@ -306,19 +320,23 @@ class graph_node {
         self.anonymous_children = int_hash();
     }
 
-    #[doc="Records a local module definition."]
-    fn define_local_module(this: @graph_node) {
-        if self.module_def == md_none {
-            self.module_def = md_local_module(@local_module(this));
+    #[doc="Creates a new local module in this set of name bindings."]
+    fn define_local_module(this: @NameBindings) {
+        if self.module_def == NoModuleDef {
+            self.module_def = LocalModuleDef(@LocalModule(this));
         }
     }
 
-    #[doc="Records an external module definition with the given crate ID."]
-    fn define_external_module(this: @graph_node, def_id: option<def_id>)
-            -> @external_module {
-        assert self.module_def == md_none;  // FIXME: should be an error
-        let external_module = @external_module(this, def_id);
-        self.module_def = md_external_module(external_module);
+    #[doc="
+        Creates a new external module with the given crate ID in this set of
+        name bindings.
+    "]
+    fn define_external_module(this: @NameBindings, def_id: option<def_id>)
+                           -> @ExternalModule {
+
+        assert self.module_def == NoModuleDef;  // FIXME: should be an error
+        let external_module = @ExternalModule(this, def_id);
+        self.module_def = ExternalModuleDef(external_module);
         ret external_module;
     }
 
@@ -338,11 +356,11 @@ class graph_node {
     }
 
     #[doc="Returns the local module node if applicable."]
-    fn get_local_module_if_available() -> option<@local_module> {
+    fn get_local_module_if_available() -> option<@LocalModule> {
         alt self.module_def {
-            md_none                       { ret none;               }
-            md_local_module(local_module) { ret some(local_module); }
-            md_external_module(*)         { ret none;               }
+            NoModuleDef                     { ret none;               }
+            LocalModuleDef(local_module)    { ret some(local_module); }
+            ExternalModuleDef(*)            { ret none;               }
         }
     }
 
@@ -350,16 +368,16 @@ class graph_node {
         Returns the local module node. Fails if this node does not have a
         local module definition.
     "]
-    fn get_local_module() -> @local_module {
+    fn get_local_module() -> @LocalModule {
         alt self.module_def {
-            md_none {
+            NoModuleDef {
                 fail "get_local_module called on a node with no module \
                       definition!";
             }
-            md_local_module(local_module) {
+            LocalModuleDef(local_module) {
                 ret local_module;
             }
-            md_external_module(*) {
+            ExternalModuleDef(*) {
                 fail "get_local_module called on a node with an external \
                       module definition!";
             }
@@ -370,105 +388,71 @@ class graph_node {
         Returns the external module node. Fails if this node does not have an
         external module definition.
     "]
-    fn get_external_module() -> @external_module {
+    fn get_external_module() -> @ExternalModule {
         alt self.module_def {
-            md_none {
+            NoModuleDef {
                 fail "get_external_module called on a node with no module \
                       definition!";
             }
-            md_local_module(*) {
+            LocalModuleDef(*) {
                 fail "get_external_module called on a node with a local \
                       module definition!";
             }
-            md_external_module(external_module) {
+            ExternalModuleDef(external_module) {
                 ret external_module;
             }
         }
     }
 
-    fn defined_in_namespace(namespace: namespace) -> bool {
+    fn defined_in_namespace(namespace: Namespace) -> bool {
         alt namespace {
-            ns_module { ret self.module_def != md_none; }
-            ns_type   { ret self.type_def != none;      }
-            ns_value  { ret self.value_def != none;     }
-            ns_impl   { ret self.impl_defs.len() >= 0u; }
+            ModuleNamespace { ret self.module_def != NoModuleDef; }
+            TypeNamespace   { ret self.type_def != none;          }
+            ValueNamespace  { ret self.value_def != none;         }
+            ImplNamespace   { ret self.impl_defs.len() >= 0u;     }
         }
     }
 }
 
-enum resolve_result<T> {
-    rr_failed,          // Failed to resolve the name.
-    rr_indeterminate,   // Couldn't determine due to unresolved globs.
-    rr_success(T)       // Successfully resolved the import.
-}
-
-class name_binding {
-    let scope: uint;
-    let def_like: def_like;
-
-    new(scope: uint, def_like: def_like) {
-        self.scope = scope;
-        self.def_like = def_like;
-    }
-}
-
-#[doc="
-    One local scope. In Rust, local scopes can only contain value bindings.
-    Therefore, we don't have to worry about the other namespaces here.
-"]
-class rib {
-    let bindings: hashmap<atom,def_like>;
-
-    new() {
-        self.bindings = atom_hashmap();
-    }
-}
-
-#[doc="The context that we thread through while building the reduced graph."]
-enum ReducedGraphParent {
-    GraphNodeParent(@graph_node),
-    BlockParent(@graph_node, node_id)
-}
-
 #[doc="The main resolver class."]
-class resolver {
+class Resolver {
     let session: session;
-    let ast_map: ast_map_t;
+    let ast_map: ASTMap;
     let crate: @crate;
 
-    let atom_table: @atom_table;
+    let atom_table: @AtomTable;
 
-    let graph_root: @graph_node;
+    let graph_root: @NameBindings;
 
     // The number of imports that are currently unresolved.
     let mut unresolved_imports: uint;
 
     // The graph node that represents the current item scope.
-    let mut current_graph_node: @graph_node;
+    let mut current_name_bindings: @NameBindings;
 
     // The current set of local scopes, for values.
     // TODO: Reuse ribs to avoid allocation.
-    let value_ribs: @dvec<@rib>;
+    let value_ribs: @dvec<@Rib>;
 
     // The atom for the keyword "self".
-    let self_atom: atom;
+    let self_atom: Atom;
 
-    let def_map: def_map;
-    let impl_map: impl_map;
+    let def_map: DefMap;
+    let impl_map: ImplMap;
 
-    new(session: session, ast_map: ast_map_t, crate: @crate) {
+    new(session: session, ast_map: ASTMap, crate: @crate) {
         self.session = session;
         self.ast_map = ast_map;
         self.crate = crate;
 
-        self.atom_table = @atom_table();
+        self.atom_table = @AtomTable();
 
-        self.graph_root = @graph_node(none);
+        self.graph_root = @NameBindings(none);
         (*self.graph_root).define_local_module(self.graph_root);
 
         self.unresolved_imports = 0u;
 
-        self.current_graph_node = self.graph_root;
+        self.current_name_bindings = self.graph_root;
         self.value_ribs = @dvec();
 
         self.self_atom = (*self.atom_table).intern(@"self");
@@ -477,7 +461,7 @@ class resolver {
         self.impl_map = int_hash();
     }
 
-    fn resolve(this: @resolver) {
+    fn resolve(this: @Resolver) {
         self.build_reduced_graph(this);
         self.resolve_imports();
         self.resolve_crate();
@@ -491,7 +475,7 @@ class resolver {
     //
 
     #[doc="Constructs the reduced graph for the entire crate."]
-    fn build_reduced_graph(this: @resolver) {
+    fn build_reduced_graph(this: @Resolver) {
         let initial_parent = GraphNodeParent(self.graph_root);
         visit_crate(*self.crate, initial_parent, mk_vt(@{
             visit_item: {
@@ -512,18 +496,20 @@ class resolver {
         }));
     }
 
-    fn get_or_create_enclosing_graph_node(reduced_graph_parent:
-                                          ReducedGraphParent)
-            -> @graph_node {
+    // FIXME: This is totally wrong.
+    fn get_or_create_enclosing_name_bindings(reduced_graph_parent:
+                                             ReducedGraphParent)
+            -> @NameBindings {
 
         alt reduced_graph_parent {
-            GraphNodeParent(graph_node) { ret graph_node; }
-            BlockParent(enclosing_graph_node, node_id) {
-                alt enclosing_graph_node.anonymous_children.find(node_id) {
+            GraphNodeParent(name_bindings) { ret name_bindings; }
+            BlockParent(enclosing_name_bindings, node_id) {
+                alt enclosing_name_bindings.anonymous_children.find(node_id) {
                     none {
-                        let child = @graph_node(some(enclosing_graph_node));
+                        let child =
+                            @NameBindings(some(enclosing_name_bindings));
                         (*child).define_local_module(child);
-                        enclosing_graph_node.anonymous_children.
+                        enclosing_name_bindings.anonymous_children.
                             insert(node_id, child);
                         ret child;
                     }
@@ -543,20 +529,22 @@ class resolver {
         If this node does not have a module definition and we are not inside
         a block, fails.
     "]
-    fn add_child(name: atom, reduced_graph_parent: ReducedGraphParent)
-            -> @graph_node {
+    fn add_child(name: Atom,
+                 reduced_graph_parent: ReducedGraphParent)
+              -> @NameBindings {
 
-        let enclosing_graph_node =
-            self.get_or_create_enclosing_graph_node(reduced_graph_parent);
-        alt enclosing_graph_node.module_def {
-            md_none {
+        let enclosing_name_bindings =
+            self.get_or_create_enclosing_name_bindings(reduced_graph_parent);
+        alt enclosing_name_bindings.module_def {
+            NoModuleDef {
                 fail "Can't add a child to a graph node without a \
                       module definition!";
             }
-            md_external_module(external_module) {
+            ExternalModuleDef(external_module) {
                 alt external_module.children.find(name) {
                     none {
-                        let child = @graph_node(some(enclosing_graph_node));
+                        let child =
+                            @NameBindings(some(enclosing_name_bindings));
                         external_module.children.insert(name, child);
                         ret child;
                     }
@@ -565,10 +553,11 @@ class resolver {
                     }
                 }
             }
-            md_local_module(local_module) {
+            LocalModuleDef(local_module) {
                 alt local_module.children.find(name) {
                     none {
-                        let child = @graph_node(some(enclosing_graph_node));
+                        let child =
+                            @NameBindings(some(enclosing_name_bindings));
                         local_module.children.insert(name, child);
                         ret child;
                     }
@@ -717,7 +706,7 @@ class resolver {
 
                     // Build up the import directives.
                     let enclosing_module =
-                        self.get_or_create_enclosing_graph_node(parent);
+                        self.get_or_create_enclosing_name_bindings(parent);
                     let local_module = (*enclosing_module).get_local_module();
                     alt view_path.node {
                         view_path_simple(binding, full_path, _) {
@@ -726,8 +715,8 @@ class resolver {
                             let source_atom =
                                 (*self.atom_table).intern
                                     (@copy full_path.idents.last());
-                            let subclass = @ids_single(target_atom,
-                                                       source_atom);
+                            let subclass = @SingleImport(target_atom,
+                                                         source_atom);
                             self.build_import_directive(local_module,
                                                         module_path,
                                                         subclass);
@@ -738,7 +727,7 @@ class resolver {
                                 let name = source_ident.node.name;
                                 let atom =
                                     (*self.atom_table).intern(@copy name);
-                                let subclass = @ids_single(atom, atom);
+                                let subclass = @SingleImport(atom, atom);
                                 self.build_import_directive(local_module,
                                                             module_path,
                                                             subclass);
@@ -747,7 +736,7 @@ class resolver {
                         view_path_glob(_, _) {
                             self.build_import_directive(local_module,
                                                         module_path,
-                                                        @ids_glob);
+                                                        @GlobImport);
                         }
                     }
                 }
@@ -780,11 +769,11 @@ class resolver {
 
         let mut new_parent;
         alt parent {
-            GraphNodeParent(graph_node) {
-                new_parent = BlockParent(graph_node, block.node.id);
+            GraphNodeParent(name_bindings) {
+                new_parent = BlockParent(name_bindings, block.node.id);
             }
-            BlockParent(graph_node, _) {
-                new_parent = BlockParent(graph_node, block.node.id);
+            BlockParent(name_bindings, _) {
+                new_parent = BlockParent(name_bindings, block.node.id);
             }
         }
 
@@ -795,7 +784,7 @@ class resolver {
         Builds the reduced graph rooted at the 'use' directive for an external
         crate.
     "]
-    fn build_reduced_graph_for_external_crate(root: @external_module) {
+    fn build_reduced_graph_for_external_crate(root: @ExternalModule) {
         for each_path(self.session.cstore, root.def_id.get().crate) {
             |path_entry|
             #debug("(building reduced graph for external crate) found path \
@@ -812,24 +801,27 @@ class resolver {
 
                 // Create or reuse a graph node for the child.
                 let atom = (*self.atom_table).intern(@copy ident);
-                let parent_graph_node = current_module_node.parent_graph_node;
-                let child_graph_node =
-                    self.add_child(atom, GraphNodeParent(parent_graph_node));
+                let parent_name_bindings =
+                    current_module_node.parent_name_bindings;
+                let child_name_bindings =
+                    self.add_child(atom,
+                                   GraphNodeParent(parent_name_bindings));
 
                 // Define or reuse the module node.
-                alt child_graph_node.module_def {
-                    md_none {
+                alt child_name_bindings.module_def {
+                    NoModuleDef {
                         #debug("(building reduced graph for external crate) \
                                 autovivifying %s", ident);
                         current_module_node =
-                            (*child_graph_node).
-                                define_external_module(child_graph_node, none);
+                            (*child_name_bindings).
+                                define_external_module(child_name_bindings,
+                                                       none);
                     }
-                    md_external_module(_) {
+                    ExternalModuleDef(_) {
                         current_module_node =
-                            (*child_graph_node).get_external_module();
+                            (*child_name_bindings).get_external_module();
                     }
-                    md_local_module(_) {
+                    LocalModuleDef(_) {
                         fail "unexpected local module";
                     }
                 }
@@ -837,31 +829,33 @@ class resolver {
 
             // Add the new child item.
             let atom = (*self.atom_table).intern(@copy final_ident);
-            let parent_graph_node = current_module_node.parent_graph_node;
-            let child_graph_node =
-                self.add_child(atom, GraphNodeParent(parent_graph_node));
+            let parent_name_bindings =
+                current_module_node.parent_name_bindings;
+            let child_name_bindings =
+                self.add_child(atom, GraphNodeParent(parent_name_bindings));
 
             alt path_entry.def_like {
                 dl_def(def) {
                     alt def {
                         def_mod(def_id) | def_native_mod(def_id) {
-                            alt child_graph_node.module_def {
-                                md_none {
+                            alt child_name_bindings.module_def {
+                                NoModuleDef {
                                     #debug("(building reduced graph for \
                                             external crate) building module \
                                             %s", final_ident);
-                                    (*child_graph_node).
+                                    (*child_name_bindings).
                                         define_external_module
-                                            (child_graph_node, some(def_id));
+                                            (child_name_bindings,
+                                             some(def_id));
                                 }
-                                md_external_module(external_module) {
+                                ExternalModuleDef(external_module) {
                                     #debug("(building reduced graph for \
                                             external crate) filling in def id \
                                             for %s",
                                             final_ident);
                                     external_module.def_id = some(def_id);
                                 }
-                                md_local_module(_) {
+                                LocalModuleDef(_) {
                                     fail "unexpected local module";
                                 }
                             }
@@ -870,19 +864,19 @@ class resolver {
                         def_variant(_, def_id) {
                             #debug("(building reduced graph for external \
                                     crate) building value %s", final_ident);
-                            (*child_graph_node).define_value(def);
+                            (*child_name_bindings).define_value(def);
                         }
                         def_ty(def_id) {
                             #debug("(building reduced graph for external \
                                     crate) building type %s", final_ident);
-                            (*child_graph_node).define_type(def);
+                            (*child_name_bindings).define_type(def);
                         }
                         def_class(def_id) {
                             #debug("(building reduced graph for external \
                                     crate) building value and type %s",
                                     final_ident);
-                            (*child_graph_node).define_value(def);
-                            (*child_graph_node).define_type(def);
+                            (*child_name_bindings).define_value(def);
+                            (*child_name_bindings).define_type(def);
                         }
                         def_self(*) | def_arg(*) | def_local(*) |
                         def_prim_ty(*) | def_ty_param(*) | def_binding(*) |
@@ -894,7 +888,7 @@ class resolver {
                 dl_impl(def_id) {
                     #debug("(building reduced graph for external crate) \
                             building impl %s", final_ident);
-                    (*child_graph_node).define_impl(def_id);
+                    (*child_name_bindings).define_impl(def_id);
                 }
                 dl_field {
                     #debug("(building reduced graph for external crate) \
@@ -905,23 +899,23 @@ class resolver {
     }
 
     #[doc="Creates and adds an import directive to the given module."]
-    fn build_import_directive(local_module: @local_module,
-                              module_path: @dvec<atom>,
-                              subclass: @import_directive_subclass) {
+    fn build_import_directive(local_module: @LocalModule,
+                              module_path: @dvec<Atom>,
+                              subclass: @ImportDirectiveSubclass) {
 
-        let directive = @import_directive(module_path, subclass);
+        let directive = @ImportDirective(module_path, subclass);
         local_module.imports.push(directive);
 
         // Bump the reference count on the name. Or, if this is a glob, set
         // the appropriate flag.
         alt *subclass {
-            ids_single(target, _) {
+            SingleImport(target, _) {
                 alt local_module.import_resolutions.find(target) {
                     some(resolution) {
                         resolution.outstanding_references += 1u;
                     }
                     none {
-                        let resolution = @import_resolution();
+                        let resolution = @ImportResolution();
                         resolution.outstanding_references = 1u;
                         local_module.import_resolutions.insert(target,
                                                               resolution);
@@ -929,7 +923,7 @@ class resolver {
                     }
                 }
             }
-            ids_glob {
+            GlobImport {
                 // Set the glob flag. This tells us that we don't know the
                 // module's exports ahead of time.
                 local_module.glob_count += 1u;
@@ -983,9 +977,9 @@ class resolver {
         Attempts to resolve imports for the given module and all of its
         submodules.
     "]
-    fn resolve_imports_for_module_subtree(local_module: @local_module) {
+    fn resolve_imports_for_module_subtree(local_module: @LocalModule) {
         #debug("(resolving imports for module subtree) resolving %s",
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
         self.resolve_imports_for_module(local_module);
 
         for local_module.children.each {
@@ -1000,11 +994,12 @@ class resolver {
     }
 
     #[doc="Attempts to resolve imports for the given module only."]
-    fn resolve_imports_for_module(local_module: @local_module) {
+    fn resolve_imports_for_module(local_module: @LocalModule) {
         if (*local_module).all_imports_resolved() {
             #debug("(resolving imports for module) all imports resolved for \
                    %s",
-                   self.graph_node_to_str(local_module.parent_graph_node));
+                   self.name_bindings_to_str
+                        (local_module.parent_name_bindings));
             ret;
         }
 
@@ -1014,17 +1009,17 @@ class resolver {
             let import_directive = local_module.imports.get_elt(import_index);
             alt self.resolve_import_for_module(local_module,
                                                import_directive) {
-                rr_failed {
+                Failed {
                     // We presumably emitted an error. Continue.
                     #debug("!!! (resolving imports for module) error: %s",
-                           self.graph_node_to_str(local_module.
-                                                  parent_graph_node));
+                           self.name_bindings_to_str(local_module.
+                                                     parent_name_bindings));
                 }
-                rr_indeterminate {
+                Indeterminate {
                     // Bail out. We'll come around next time.
                     break;
                 }
-                rr_success(()) {
+                Success(()) {
                     // Good. Continue.
                 }
             }
@@ -1040,9 +1035,9 @@ class resolver {
         currently-unresolved imports, or success if we know the name exists. If
         successful, the resolved bindings are written into the module.
     "]
-    fn resolve_import_for_module(local_module: @local_module,
-                                 import_directive: @import_directive)
-            -> resolve_result<()> {
+    fn resolve_import_for_module(local_module: @LocalModule,
+                                 import_directive: @ImportDirective)
+                              -> ResolveResult<()> {
 
         let mut resolution_result;
         let module_path = import_directive.module_path;
@@ -1050,7 +1045,7 @@ class resolver {
         #debug("(resolving import for module) resolving import '%s::...' in \
                 '%s'",
                *(*self.atom_table).atoms_to_str((*module_path).get()),
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
 
         // One-level renaming imports of the form `import foo = bar;` are
         // handled specially.
@@ -1062,55 +1057,56 @@ class resolver {
             // First, resolve the module path for the directive, if necessary.
             alt self.resolve_module_path_for_import(local_module,
                                                     module_path) {
-                rr_failed {
-                    resolution_result = rr_failed;
+                Failed {
+                    resolution_result = Failed;
                 }
-                rr_indeterminate {
-                    resolution_result = rr_indeterminate;
+                Indeterminate {
+                    resolution_result = Indeterminate;
                 }
-                rr_success(md_local_module(containing_module)) {
+                Success(LocalModuleDef(containing_module)) {
                     // Attempt to resolve the import.
                     alt *import_directive.subclass {
-                        ids_single(target, source) {
+                        SingleImport(target, source) {
                             resolution_result =
                                 self.resolve_single_import(local_module,
                                                            containing_module,
                                                            target,
                                                            source);
                         }
-                        ids_glob {
+                        GlobImport {
                             resolution_result =
                                 self.resolve_glob_import(local_module,
                                                          containing_module);
                         }
                     }
                 }
-                rr_success(md_external_module(containing_module)) {
+                Success(ExternalModuleDef(containing_module)) {
                     alt *import_directive.subclass {
-                        ids_single(target, source) {
+                        SingleImport(target, source) {
                             resolution_result =
-                                self.resolve_single_external_import(
-                                    local_module,
-                                    containing_module,
-                                    target,
-                                    source);
+                                self.resolve_single_external_import
+                                    (local_module,
+                                     containing_module,
+                                     target,
+                                     source);
                         }
-                        ids_glob {
+                        GlobImport {
                             resolution_result =
-                                self.resolve_glob_external_import(local_module,
-                                    containing_module);
+                                self.resolve_glob_external_import
+                                    (local_module,
+                                     containing_module);
                         }
                     }
                 }
-                rr_success(md_none) {
-                    fail "md_none unexpected here";
+                Success(NoModuleDef) {
+                    fail "NoModuleDef unexpected here";
                 }
             }
         }
 
         // Decrement the count of unresolved imports.
         alt resolution_result {
-            rr_success(()) {
+            Success(()) {
                 assert self.unresolved_imports >= 1u;
                 self.unresolved_imports -= 1u;
             }
@@ -1121,55 +1117,65 @@ class resolver {
         // the resolution result is indeterminate -- otherwise we'll stop
         // processing imports here. (See the loop in
         // resolve_imports_for_module.)
-        if resolution_result != rr_indeterminate {
+        if resolution_result != Indeterminate {
             alt *import_directive.subclass {
-                ids_glob {
+                GlobImport {
                     assert local_module.glob_count >= 1u;
                     local_module.glob_count -= 1u;
                 }
-                ids_single(*) { /* Ignore. */ }
+                SingleImport(*) { /* Ignore. */ }
             }
         }
 
         ret resolution_result;
     }
 
-    fn resolve_single_import(local_module: @local_module,
-                             containing_module: @local_module,
-                             target: atom, source: atom)
-            -> resolve_result<()> {
+    fn resolve_single_import(local_module: @LocalModule,
+                             containing_module: @LocalModule,
+                             target: Atom,
+                             source: Atom)
+                          -> ResolveResult<()> {
 
         #debug("(resolving single import) resolving '%s' = '%s::%s' from \
                 '%s'",
                *(*self.atom_table).atom_to_str(target),
-               self.graph_node_to_str(containing_module.parent_graph_node),
+               self.name_bindings_to_str
+                    (containing_module.parent_name_bindings),
                *(*self.atom_table).atom_to_str(source),
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
 
         // We need to resolve all four namespaces for this to succeed.
         //
         // FIXME: See if there's some way of handling namespaces in a more
         // generic way. We have four of them; it seems worth doing...
-        let mut module_result = nsr_unknown;
-        let mut value_result = nsr_unknown;
-        let mut type_result = nsr_unknown;
-        let mut impl_result = nsr_unknown;
+        let mut module_result = UnknownResult;
+        let mut value_result = UnknownResult;
+        let mut type_result = UnknownResult;
+        let mut impl_result = UnknownResult;
 
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
             none { /* Continue. */ }
-            some(child_graph_node) {
-                if (*child_graph_node).defined_in_namespace(ns_module) {
-                    module_result = nsr_bound(child_graph_node);
+            some(child_name_bindings) {
+                if (*child_name_bindings)
+                        .defined_in_namespace(ModuleNamespace) {
+
+                    module_result = BoundResult(child_name_bindings);
                 }
-                if (*child_graph_node).defined_in_namespace(ns_value) {
-                    value_result = nsr_bound(child_graph_node);
+                if (*child_name_bindings)
+                        .defined_in_namespace(ValueNamespace) {
+
+                    value_result = BoundResult(child_name_bindings);
                 }
-                if (*child_graph_node).defined_in_namespace(ns_type) {
-                    type_result = nsr_bound(child_graph_node);
+                if (*child_name_bindings)
+                        .defined_in_namespace(TypeNamespace) {
+
+                    type_result = BoundResult(child_name_bindings);
                 }
-                if (*child_graph_node).defined_in_namespace(ns_impl) {
-                    impl_result = nsr_bound(child_graph_node);
+                if (*child_name_bindings)
+                        .defined_in_namespace(ImplNamespace) {
+
+                    impl_result = BoundResult(child_name_bindings);
                 }
             }
         }
@@ -1177,7 +1183,7 @@ class resolver {
         // Unless we managed to find a result in all four namespaces
         // (exceedingly unlikely), search imports as well.
         alt (module_result, value_result, type_result, impl_result) {
-            (nsr_bound(_), nsr_bound(_), nsr_bound(_), nsr_bound(_)) {
+            (BoundResult(_), BoundResult(_), BoundResult(_), BoundResult(_)) {
                 // Continue.
             }
             _ {
@@ -1187,7 +1193,7 @@ class resolver {
                 if containing_module.glob_count > 0u {
                     #debug("(resolving single import) unresolved glob; \
                             bailing out");
-                    ret rr_indeterminate;
+                    ret Indeterminate;
                 }
 
                 // Now search the exported imports within the containing
@@ -1198,59 +1204,60 @@ class resolver {
                         // exported import with the name in question. We can
                         // therefore accurately report that the names are
                         // unbound.
-                        if module_result == nsr_unknown {
-                            module_result = nsr_unbound;
+                        if module_result == UnknownResult {
+                            module_result = UnboundResult;
                         }
-                        if value_result == nsr_unknown {
-                            value_result = nsr_unbound;
+                        if value_result == UnknownResult {
+                            value_result = UnboundResult;
                         }
-                        if type_result == nsr_unknown {
-                            type_result = nsr_unbound;
+                        if type_result == UnknownResult {
+                            type_result = UnboundResult;
                         }
-                        if impl_result == nsr_unknown {
-                            impl_result = nsr_unbound;
+                        if impl_result == UnknownResult {
+                            impl_result = UnboundResult;
                         }
                     }
                     some(import_resolution)
                             if import_resolution.outstanding_references == 0u {
-                        fn get_binding(import_resolution: @import_resolution,
-                                       namespace: namespace)
-                                    -> namespace_result {
+                        fn get_binding(import_resolution: @ImportResolution,
+                                       namespace: Namespace)
+                                    -> NamespaceResult {
+
                             alt (*import_resolution).
                                     target_for_namespace(namespace) {
                                 none {
-                                    ret nsr_unbound;
+                                    ret UnboundResult;
                                 }
                                 some(binding) {
-                                    ret nsr_bound(binding);
+                                    ret BoundResult(binding);
                                 }
                             }
                         }
 
                         // The name is an import which has been fully resolved.
                         // We can, therefore, just follow the import.
-                        if module_result == nsr_unknown {
+                        if module_result == UnknownResult {
                             module_result = get_binding(import_resolution,
-                                                        ns_module);
+                                                        ModuleNamespace);
                         }
-                        if value_result == nsr_unknown {
+                        if value_result == UnknownResult {
                             value_result = get_binding(import_resolution,
-                                                       ns_type);
+                                                       TypeNamespace);
                         }
-                        if type_result == nsr_unknown {
+                        if type_result == UnknownResult {
                             type_result = get_binding(import_resolution,
-                                                      ns_value);
+                                                      ValueNamespace);
                         }
-                        if impl_result == nsr_unknown {
+                        if impl_result == UnknownResult {
                             impl_result = get_binding(import_resolution,
-                                                      ns_impl);
+                                                      ImplNamespace);
                         }
                     }
                     some(_) {
                         // The import is unresolved. Bail out.
                         #debug("(resolving single import) unresolved import; \
                                 bailing out");
-                        ret rr_indeterminate;
+                        ret Indeterminate;
                     }
                 }
             }
@@ -1261,42 +1268,51 @@ class resolver {
         let import_resolution = local_module.import_resolutions.get(target);
 
         alt module_result {
-            nsr_bound(binding) {
+            BoundResult(binding) {
                 #debug("(resolving single import) found module binding");
                 import_resolution.module_target = some(binding);
             }
-            nsr_unbound {
-                #debug("(resolving single import) didn't find module binding");
+            UnboundResult {
+                #debug("(resolving single import) didn't find module \
+                        binding");
             }
-            nsr_unknown { fail "module result should be known at this point"; }
+            UnknownResult {
+                fail "module result should be known at this point";
+            }
         }
         alt value_result {
-            nsr_bound(binding) {
+            BoundResult(binding) {
                 import_resolution.value_target = some(binding);
             }
-            nsr_unbound { /* Continue. */ }
-            nsr_unknown { fail "value result should be known at this point"; }
+            UnboundResult { /* Continue. */ }
+            UnknownResult {
+                fail "value result should be known at this point";
+            }
         }
         alt type_result {
-            nsr_bound(binding) {
+            BoundResult(binding) {
                 import_resolution.type_target = some(binding);
             }
-            nsr_unbound { /* Continue. */ }
-            nsr_unknown { fail "type result should be known at this point"; }
+            UnboundResult { /* Continue. */ }
+            UnknownResult {
+                fail "type result should be known at this point";
+            }
         }
         alt impl_result {
-            nsr_bound(binding) {
+            BoundResult(binding) {
                 import_resolution.impl_target = some(binding);
             }
-            nsr_unbound { /* Continue. */ }
-            nsr_unknown { fail "impl result should be known at this point"; }
+            UnboundResult { /* Continue. */ }
+            UnknownResult {
+                fail "impl result should be known at this point";
+            }
         }
 
         assert import_resolution.outstanding_references >= 1u;
         import_resolution.outstanding_references -= 1u;
 
         #debug("(resolving single import) successfully resolved import");
-        ret rr_success(());
+        ret Success(());
     }
 
     #[doc="
@@ -1304,9 +1320,9 @@ class resolver {
         succeeds or bails out (as importing * from an empty module or a module
         that exports nothing is valid).
     "]
-    fn resolve_glob_import(local_module: @local_module,
-                           containing_module: @local_module)
-            -> resolve_result<()> {
+    fn resolve_glob_import(local_module: @LocalModule,
+                           containing_module: @LocalModule)
+                        -> ResolveResult<()> {
 
         // This function works in a highly imperative manner; it eagerly adds
         // everything it can to the list of import resolutions of the module
@@ -1317,7 +1333,7 @@ class resolver {
         if !(*containing_module).all_imports_resolved() {
             #debug("(resolving glob import) target module has unresolved \
                     imports; bailing out");
-            ret rr_indeterminate;
+            ret Indeterminate;
         }
 
         assert containing_module.glob_count == 0u;
@@ -1329,13 +1345,14 @@ class resolver {
             #debug("(resolving glob import) writing module resolution \
                     %? into '%s'",
                    target_import_resolution.module_target.is_none(),
-                   self.graph_node_to_str(local_module.parent_graph_node));
+                   self.name_bindings_to_str
+                        (local_module.parent_name_bindings));
 
             // Here we merge two import resolutions.
             alt local_module.import_resolutions.find(atom) {
                 none {
                     // Simple: just copy the old import resolution.
-                    let new_import_resolution = @import_resolution();
+                    let new_import_resolution = @ImportResolution();
                     new_import_resolution.module_target =
                         target_import_resolution.module_target;
                     new_import_resolution.value_target =
@@ -1345,8 +1362,8 @@ class resolver {
                     new_import_resolution.impl_target =
                         target_import_resolution.impl_target;
 
-                    local_module.import_resolutions.insert(atom,
-                            new_import_resolution);
+                    local_module.import_resolutions.insert
+                        (atom, new_import_resolution);
                 }
                 some(dest_import_resolution) {
                     // Merge the two import resolutions at a finer-grained
@@ -1385,15 +1402,15 @@ class resolver {
 
         // Add all children from the containing module.
         for containing_module.children.each {
-            |atom, graph_node|
+            |atom, name_bindings|
 
             let mut dest_import_resolution;
             alt local_module.import_resolutions.find(atom) {
                 none {
                     // Create a new import resolution from this child.
-                    dest_import_resolution = @import_resolution();
-                    local_module.import_resolutions.insert(atom,
-                            dest_import_resolution);
+                    dest_import_resolution = @ImportResolution();
+                    local_module.import_resolutions.insert
+                        (atom, dest_import_resolution);
                 }
                 some(existing_import_resolution) {
                     dest_import_resolution = existing_import_resolution;
@@ -1403,39 +1420,43 @@ class resolver {
 
             #error("(resolving glob import) writing module resolution \
                     '%s'",
-                   self.graph_node_to_str(local_module.parent_graph_node));
+                   self.name_bindings_to_str
+                        (local_module.parent_name_bindings));
 
             // Merge the child item into the import resolution.
-            if (*graph_node).defined_in_namespace(ns_module) {
-                dest_import_resolution.module_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(ModuleNamespace) {
+                dest_import_resolution.module_target = some(name_bindings);
             }
-            if (*graph_node).defined_in_namespace(ns_value) {
-                dest_import_resolution.value_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(ValueNamespace) {
+                dest_import_resolution.value_target = some(name_bindings);
             }
-            if (*graph_node).defined_in_namespace(ns_type) {
-                dest_import_resolution.type_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(TypeNamespace) {
+                dest_import_resolution.type_target = some(name_bindings);
             }
-            if (*graph_node).defined_in_namespace(ns_impl) {
-                dest_import_resolution.impl_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(ImplNamespace) {
+                dest_import_resolution.impl_target = some(name_bindings);
             }
         }
 
         #debug("(resolving glob import) successfully resolved import");
-        ret rr_success(());
+        ret Success(());
     }
 
     // FIXME: This duplicates code from resolve_single_import.
-    fn resolve_single_external_import(local_module: @local_module,
-                                      containing_module: @external_module,
-                                      target: atom, source: atom)
-            -> resolve_result<()> {
+    fn resolve_single_external_import(local_module: @LocalModule,
+                                      containing_module: @ExternalModule,
+                                      target: Atom,
+                                      source: Atom)
+                                   -> ResolveResult<()> {
 
         #debug("(resolving single external import) resolving import '%s' = \
                 '%s::%s' in '%s'",
                *(*self.atom_table).atom_to_str(target),
-               self.graph_node_to_str(containing_module.parent_graph_node),
+               self.name_bindings_to_str
+                    (containing_module.parent_name_bindings),
                *(*self.atom_table).atom_to_str(source),
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str
+                    (local_module.parent_name_bindings));
 
         // We need to resolve all four namespaces for this to succeed.
         let mut module_result = none;
@@ -1446,18 +1467,26 @@ class resolver {
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
             none { /* Continue. */ }
-            some(child_graph_node) {
-                if (*child_graph_node).defined_in_namespace(ns_module) {
-                    module_result = some(child_graph_node);
+            some(child_name_bindings) {
+                if (*child_name_bindings)
+                        .defined_in_namespace(ModuleNamespace) {
+
+                    module_result = some(child_name_bindings);
                 }
-                if (*child_graph_node).defined_in_namespace(ns_value) {
-                    value_result = some(child_graph_node);
+                if (*child_name_bindings)
+                        .defined_in_namespace(ValueNamespace) {
+
+                    value_result = some(child_name_bindings);
                 }
-                if (*child_graph_node).defined_in_namespace(ns_type) {
-                    type_result = some(child_graph_node);
+                if (*child_name_bindings)
+                        .defined_in_namespace(TypeNamespace) {
+
+                    type_result = some(child_name_bindings);
                 }
-                if (*child_graph_node).defined_in_namespace(ns_impl) {
-                    impl_result = some(child_graph_node);
+                if (*child_name_bindings)
+                        .defined_in_namespace(ImplNamespace) {
+
+                    impl_result = some(child_name_bindings);
                 }
             }
         }
@@ -1466,7 +1495,7 @@ class resolver {
         if module_result.is_none() && value_result.is_none() &&
                 type_result.is_none() && impl_result.is_none() {
             #debug("!!! (resolving single external import) failed");
-            ret rr_failed;
+            ret Failed;
         }
 
         // We've successfully resolved the import. Write the results in.
@@ -1478,7 +1507,8 @@ class resolver {
             some(binding) {
                 #error("(resolving glob import) writing module resolution \
                         '%s'",
-                       self.graph_node_to_str(local_module.parent_graph_node));
+                       self.name_bindings_to_str
+                            (local_module.parent_name_bindings));
 
                 import_resolution.module_target = some(binding);
             }
@@ -1506,27 +1536,27 @@ class resolver {
         import_resolution.outstanding_references -= 1u;
 
         #debug("(resolving external import) success");
-        ret rr_success(());
+        ret Success(());
     }
 
     // FIXME: This duplicates code from resolve_glob_import.
-    fn resolve_glob_external_import(local_module: @local_module,
-                                    containing_module: @external_module)
-            -> resolve_result<()> {
+    fn resolve_glob_external_import(local_module: @LocalModule,
+                                    containing_module: @ExternalModule)
+                                 -> ResolveResult<()> {
 
         #debug("(resolving glob external import) resolving");
 
         // Add all children from the containing module.
         for containing_module.children.each {
-            |atom, graph_node|
+            |atom, name_bindings|
 
             let mut dest_import_resolution;
             alt local_module.import_resolutions.find(atom) {
                 none {
                     // Create a new import resolution from this child.
-                    dest_import_resolution = @import_resolution();
-                    local_module.import_resolutions.insert(atom,
-                            dest_import_resolution);
+                    dest_import_resolution = @ImportResolution();
+                    local_module.import_resolutions.insert
+                        (atom, dest_import_resolution);
                 }
                 some(existing_import_resolution) {
                     dest_import_resolution = existing_import_resolution;
@@ -1534,31 +1564,31 @@ class resolver {
             }
 
             // Merge the child item into the import resolution.
-            if (*graph_node).defined_in_namespace(ns_module) {
-                dest_import_resolution.module_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(ModuleNamespace) {
+                dest_import_resolution.module_target = some(name_bindings);
             }
-            if (*graph_node).defined_in_namespace(ns_value) {
-                dest_import_resolution.value_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(ValueNamespace) {
+                dest_import_resolution.value_target = some(name_bindings);
             }
-            if (*graph_node).defined_in_namespace(ns_type) {
-                dest_import_resolution.type_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(TypeNamespace) {
+                dest_import_resolution.type_target = some(name_bindings);
             }
-            if (*graph_node).defined_in_namespace(ns_impl) {
-                dest_import_resolution.impl_target = some(graph_node);
+            if (*name_bindings).defined_in_namespace(ImplNamespace) {
+                dest_import_resolution.impl_target = some(name_bindings);
             }
         }
 
         #debug("(resolving external glob import) success");
-        ret rr_success(());
+        ret Success(());
     }
 
     #[doc="
         Attempts to resolve the module part of an import directive rooted at
         the given module.
     "]
-    fn resolve_module_path_for_import(local_module: @local_module,
-                                      module_path: @dvec<atom>)
-            -> resolve_result<module_def> {
+    fn resolve_module_path_for_import(local_module: @LocalModule,
+                                      module_path: @dvec<Atom>)
+                                   -> ResolveResult<ModuleDef> {
 
         let module_path_len = (*module_path).len();
         assert module_path_len > 0u;
@@ -1566,26 +1596,26 @@ class resolver {
         #debug("(resolving module path for import) processing '%s' rooted at \
                '%s'",
                *(*self.atom_table).atoms_to_str((*module_path).get()),
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
 
         // The first element of the module path must be in the current scope
         // chain.
         let first_element = (*module_path).get_elt(0u);
         let mut search_module_def;
         alt self.resolve_module_in_lexical_scope(local_module, first_element) {
-            rr_failed {
+            Failed {
                 #error("(resolving module path for import) !!! unresolved \
                         name: %s",
                        *(*self.atom_table).atom_to_str(first_element));
 
-                ret rr_failed;
+                ret Failed;
             }
-            rr_indeterminate {
+            Indeterminate {
                 #debug("(resolving module path for import) indeterminate; \
                         bailing");
-                ret rr_indeterminate;
+                ret Indeterminate;
             }
-            rr_success(resulting_module_def) {
+            Success(resulting_module_def) {
                 search_module_def = resulting_module_def;
             }
         }
@@ -1596,31 +1626,33 @@ class resolver {
         let mut index = 1u;
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module_def, name,
-                                            ns_module) {
-                rr_failed {
+            alt self.resolve_name_in_module(search_module_def,
+                                            name,
+                                            ModuleNamespace) {
+
+                Failed {
                     #debug("!!! (resolving module path for import) module \
                            resolution failed: %s",
                            *(*self.atom_table).atom_to_str(name));
-                    ret rr_failed;
+                    ret Failed;
                 }
-                rr_indeterminate {
+                Indeterminate {
                     #debug("(resolving module path for import) module \
                            resolution is indeterminate: %s",
                            *(*self.atom_table).atom_to_str(name));
-                    ret rr_indeterminate;
+                    ret Indeterminate;
                 }
-                rr_success(graph_node) {
-                    alt graph_node.module_def {
-                        md_none {
+                Success(name_bindings) {
+                    alt name_bindings.module_def {
+                        NoModuleDef {
                             // Not a module.
                             #debug("!!! (resolving module path for import) \
                                    not a module: %s",
                                    *(*self.atom_table).atom_to_str(name));
-                            ret rr_failed;
+                            ret Failed;
                         }
-                        md_local_module(*) | md_external_module(*) {
-                            search_module_def = graph_node.module_def;
+                        LocalModuleDef(*) | ExternalModuleDef(*) {
+                            search_module_def = name_bindings.module_def;
                         }
                     }
                 }
@@ -1630,25 +1662,28 @@ class resolver {
         }
 
         #debug("(resolving module path for import) resolved module");
-        ret rr_success(search_module_def);
+        ret Success(search_module_def);
     }
 
-    // FIXME: Merge me with resolve_item_in_lexical_scope_of_graph_node.
-    fn resolve_item_in_lexical_scope(local_module: @local_module, name: atom,
-                                     namespace: namespace)
-            -> resolve_result<@graph_node> {
+    // FIXME: Merge me with resolve_item_in_lexical_scope_of_name_bindings.
+    fn resolve_item_in_lexical_scope(local_module: @LocalModule,
+                                     name: Atom,
+                                     namespace: Namespace)
+                                  -> ResolveResult<@NameBindings> {
 
-        #debug("(resolving item in lexical scope) resolving '%s' in namespace \
-                %? in '%s'",
+        #debug("(resolving item in lexical scope) resolving '%s' in \
+                namespace %? in '%s'",
                *(*self.atom_table).atom_to_str(name),
                namespace,
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
 
         // The current module node is handled specially. First, check for
         // its immediate children.
         alt local_module.children.find(name) {
-            some(graph_node) if (*graph_node).defined_in_namespace(namespace) {
-                ret rr_success(graph_node);
+            some(name_bindings)
+                    if (*name_bindings).defined_in_namespace(namespace) {
+
+                ret Success(name_bindings);
             }
             some(_) | none { /* Not found; continue. */ }
         }
@@ -1667,8 +1702,8 @@ class resolver {
                                 import resolution, but not in namespace %?",
                                namespace);
                     }
-                    some(target_graph_node) {
-                        ret rr_success(target_graph_node);
+                    some(target_name_bindings) {
+                        ret Success(target_name_bindings);
                     }
                 }
             }
@@ -1678,21 +1713,21 @@ class resolver {
         let mut search_module = local_module;
         loop {
             // Go to the next parent.
-            alt search_module.parent_graph_node.parent_node {
+            alt search_module.parent_name_bindings.parent_node {
                 none {
                     // No more parents. This module was unresolved.
                     #debug("(resolving item in lexical scope) unresolved \
                             module");
-                    ret rr_failed;
+                    ret Failed;
                 }
-                some(gnh_graph_node(parent_node)) {
-                    alt (*parent_node).get_local_module_if_available() {
+                some(WrappedNameBindings(parent_bindings)) {
+                    alt (*parent_bindings).get_local_module_if_available() {
                         none {
                             // The parent is not a module. This should not
                             // happen.
                             #error("!!! (resolving item in lexical scope) \
                                     UNEXPECTED: parent is not a module");
-                            ret rr_failed;
+                            ret Failed;
                         }
                         some(parent_module_node) {
                             search_module = parent_module_node;
@@ -1702,75 +1737,85 @@ class resolver {
             }
 
             // Resolve the name in the parent module.
-            alt self.resolve_name_in_local_module(search_module, name,
+            alt self.resolve_name_in_local_module(search_module,
+                                                  name,
                                                   namespace) {
-                rr_failed {
+                Failed {
                     // Continue up the search chain.
                 }
-                rr_indeterminate {
+                Indeterminate {
                     // We couldn't see through the higher scope because of an
                     // unresolved import higher up. Bail.
                     #debug("(resolving item in lexical scope) indeterminate \
                             higher scope; bailing");
-                    ret rr_indeterminate;
+                    ret Indeterminate;
                 }
-                rr_success(graph_node) {
+                Success(name_bindings) {
                     // We found the module.
-                    ret rr_success(graph_node);
+                    ret Success(name_bindings);
                 }
             }
         }
     }
 
-    fn resolve_item_in_lexical_scope_of_graph_node(graph_node: @graph_node,
-                                                   name: atom,
-                                                   namespace: namespace)
-            -> resolve_result<@graph_node> {
+    fn resolve_item_in_lexical_scope_of_name_bindings
+              (name_bindings: @NameBindings,
+               name: Atom,
+               namespace: Namespace)
+            -> ResolveResult<@NameBindings> {
 
-        alt (*graph_node).get_local_module_if_available() {
+        alt (*name_bindings).get_local_module_if_available() {
             some(local_module) {
-                ret self.resolve_item_in_lexical_scope(local_module, name,
+                ret self.resolve_item_in_lexical_scope(local_module,
+                                                       name,
                                                        namespace);
             }
             none {
-                alt graph_node.parent_node {
+                alt name_bindings.parent_node {
                     none {
                         fail "root node had no module definition?!";
                     }
-                    some(gnh_graph_node(parent_node)) {
-                        ret self.resolve_item_in_lexical_scope_of_graph_node
-                            (parent_node, name, namespace);
+                    some(WrappedNameBindings(parent_node)) {
+                        ret self.
+                            resolve_item_in_lexical_scope_of_name_bindings
+                                (parent_node,
+                                 name,
+                                 namespace);
                     }
                 }
             }
         }
     }
 
-    fn resolve_module_in_lexical_scope(local_module: @local_module, name: atom)
-            -> resolve_result<module_def> {
+    fn resolve_module_in_lexical_scope(local_module: @LocalModule,
+                                       name: Atom)
+                                    -> ResolveResult<ModuleDef> {
 
-        alt self.resolve_item_in_lexical_scope(local_module, name, ns_module) {
-            rr_success(graph_node) {
-                alt graph_node.module_def {
-                    md_none {
+        alt self.resolve_item_in_lexical_scope(local_module,
+                                               name,
+                                               ModuleNamespace) {
+
+            Success(name_bindings) {
+                alt name_bindings.module_def {
+                    NoModuleDef {
                         #error("!!! (resolving module in lexical scope) module
                                 wasn't actually a module!");
-                        ret rr_failed;
+                        ret Failed;
                     }
-                    md_local_module(*) | md_external_module(*) {
-                        ret rr_success(graph_node.module_def);
+                    LocalModuleDef(*) | ExternalModuleDef(*) {
+                        ret Success(name_bindings.module_def);
                     }
                 }
             }
-            rr_indeterminate {
+            Indeterminate {
                 #debug("(resolving module in lexical scope) indeterminate; \
                         bailing");
-                ret rr_indeterminate;
+                ret Indeterminate;
             }
-            rr_failed {
+            Failed {
                 #debug("(resolving module in lexical scope) failed to \
                         resolve");
-                ret rr_failed;
+                ret Failed;
             }
         }
     }
@@ -1780,36 +1825,44 @@ class resolver {
         given namespace. If successful, returns the reduced graph node
         corresponding to the name.
     "]
-    fn resolve_name_in_module(module_def: module_def, name: atom,
-                              namespace: namespace)
-            -> resolve_result<@graph_node> {
+    fn resolve_name_in_module(module_def: ModuleDef,
+                              name: Atom,
+                              namespace: Namespace)
+            -> ResolveResult<@NameBindings> {
 
         alt module_def {
-            md_none { fail "(resolving name in module) unexpected md_none"; }
-            md_local_module(local_module) {
-                ret self.resolve_name_in_local_module(local_module, name,
+            NoModuleDef {
+                fail "(resolving name in module) unexpected NoModuleDef";
+            }
+            LocalModuleDef(local_module) {
+                ret self.resolve_name_in_local_module(local_module,
+                                                      name,
                                                       namespace);
             }
-            md_external_module(external_module) {
+            ExternalModuleDef(external_module) {
                 ret self.resolve_name_in_external_module(external_module,
-                                                         name, namespace);
+                                                         name,
+                                                         namespace);
             }
         }
     }
 
-    fn resolve_name_in_local_module(local_module: @local_module, name: atom,
-                                    namespace: namespace)
-            -> resolve_result<@graph_node> {
+    fn resolve_name_in_local_module(local_module: @LocalModule,
+                                    name: Atom,
+                                    namespace: Namespace)
+                                 -> ResolveResult<@NameBindings> {
 
         #debug("(resolving name in local module) resolving '%s' in '%s'",
                *(*self.atom_table).atom_to_str(name),
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
 
         // First, check the direct children of the module.
         alt local_module.children.find(name) {
-            some(child_node) if (*child_node).defined_in_namespace(namespace) {
+            some(child_node)
+                    if (*child_node).defined_in_namespace(namespace) {
+
                 #debug("(resolving name in local module) found node as child");
-                ret rr_success(child_node);
+                ret Success(child_node);
             }
             some(_) | none {
                 // Continue.
@@ -1821,7 +1874,7 @@ class resolver {
         if local_module.glob_count > 0u {
             #debug("(resolving name in local module) module has glob; bailing \
                     out");
-            ret rr_indeterminate;
+            ret Indeterminate;
         }
 
         // Otherwise, we check the list of resolved imports.
@@ -1830,7 +1883,7 @@ class resolver {
                 if import_resolution.outstanding_references != 0u {
                     #debug("(resolving name in local module) import \
                             unresolved; bailing out");
-                    ret rr_indeterminate;
+                    ret Indeterminate;
                 }
 
                 alt (*import_resolution).target_for_namespace(namespace) {
@@ -1838,7 +1891,7 @@ class resolver {
                     some(target) {
                         #debug("(resolving name in local module) resolved to \
                                 import");
-                        ret rr_success(target);
+                        ret Success(target);
                     }
                 }
             }
@@ -1850,7 +1903,7 @@ class resolver {
         // We're out of luck.
         #debug("(resolving name in local module) failed to resolve %s",
                *(*self.atom_table).atom_to_str(name));
-        ret rr_failed;
+        ret Failed;
     }
 
     #[doc="
@@ -1858,18 +1911,18 @@ class resolver {
         This needs special handling, as, unlike all of the other imports, it
         needs to look in the scope chain for modules and non-modules alike.
     "]
-    fn resolve_one_level_renaming_import(local_module: @local_module,
-                                         import_directive: @import_directive)
-            -> resolve_result<()> {
+    fn resolve_one_level_renaming_import(local_module: @LocalModule,
+                                         import_directive: @ImportDirective)
+                                      -> ResolveResult<()> {
 
         let mut target_name;
         let mut source_name;
         alt *import_directive.subclass {
-            ids_single(target, source) {
+            SingleImport(target, source) {
                 target_name = target;
                 source_name = source;
             }
-            ids_glob {
+            GlobImport {
                 fail "found `import *`, which is invalid";
             }
         }
@@ -1878,71 +1931,77 @@ class resolver {
                 '%s' in '%s'",
                 *(*self.atom_table).atom_to_str(target_name),
                 *(*self.atom_table).atom_to_str(source_name),
-                self.graph_node_to_str(local_module.parent_graph_node));
+                self.name_bindings_to_str(local_module.parent_name_bindings));
 
         // Find the matching items in the lexical scope chain for every
         // namespace. If any of them come back indeterminate, this entire
         // import is indeterminate.
         let mut module_result;
         #debug("(resolving one-level naming result) searching for module");
-        alt self.resolve_item_in_lexical_scope(local_module, source_name,
-                                               ns_module) {
-            rr_failed {
+        alt self.resolve_item_in_lexical_scope(local_module,
+                                               source_name,
+                                               ModuleNamespace) {
+
+            Failed {
                 #debug("(resolving one-level renaming import) didn't find \
                         module result");
                 module_result = none;
             }
-            rr_indeterminate {
+            Indeterminate {
                 #debug("(resolving one-level renaming import) module result \
                         is indeterminate; bailing");
-                ret rr_indeterminate;
+                ret Indeterminate;
             }
-            rr_success(graph_node) {
+            Success(name_bindings) {
                 #debug("(resolving one-level renaming import) module result \
                         found");
-                module_result = some(graph_node);
+                module_result = some(name_bindings);
             }
         }
 
         let mut value_result;
         #debug("(resolving one-level naming result) searching for value");
-        alt self.resolve_item_in_lexical_scope(local_module, source_name,
-                                               ns_value) {
-            rr_failed {
+        alt self.resolve_item_in_lexical_scope(local_module,
+                                               source_name,
+                                               ValueNamespace) {
+
+            Failed {
                 #debug("(resolving one-level renaming import) didn't find \
                         value result");
                 value_result = none;
             }
-            rr_indeterminate {
+            Indeterminate {
                 #debug("(resolving one-level renaming import) value result is \
                         indeterminate; bailing");
-                ret rr_indeterminate;
+                ret Indeterminate;
             }
-            rr_success(graph_node) {
+            Success(name_bindings) {
                 #debug("(resolving one-level renaming import) value result \
                         found");
-                value_result = some(graph_node);
+                value_result = some(name_bindings);
             }
         }
 
         let mut type_result;
         #debug("(resolving one-level naming result) searching for type");
-        alt self.resolve_item_in_lexical_scope(local_module, source_name,
-                                               ns_type) {
-            rr_failed {
+        alt self.resolve_item_in_lexical_scope(local_module,
+                                               source_name,
+                                               TypeNamespace) {
+
+            Failed {
                 #debug("(resolving one-level renaming import) didn't find \
                         type result");
                 type_result = none;
             }
-            rr_indeterminate {
+            Indeterminate {
                 #debug("(resolving one-level renaming import) type result is \
                         indeterminate; bailing");
-                ret rr_indeterminate;
+                ret Indeterminate;
             }
-            rr_success(graph_node) {
+            Success(name_bindings) {
                 #debug("(resolving one-level renaming import) type result \
                         found");
-                type_result = some(graph_node);
+                type_result = some(name_bindings);
             }
         }
 
@@ -1965,22 +2024,24 @@ class resolver {
 
         let mut impl_result;
         #debug("(resolving one-level naming result) searching for impl");
-        alt self.resolve_item_in_lexical_scope(local_module, source_name,
-                                               ns_impl) {
-            rr_failed {
+        alt self.resolve_item_in_lexical_scope(local_module,
+                                               source_name,
+                                               ImplNamespace) {
+
+            Failed {
                 #debug("(resolving one-level renaming import) didn't find \
                         impl result");
                 impl_result = none;
             }
-            rr_indeterminate {
+            Indeterminate {
                 #debug("(resolving one-level renaming import) impl result is \
                         indeterminate; bailing");
-                ret rr_indeterminate;
+                ret Indeterminate;
             }
-            rr_success(graph_node) {
+            Success(name_bindings) {
                 #debug("(resolving one-level renaming import) impl result \
                         found");
-                impl_result = some(graph_node);
+                impl_result = some(name_bindings);
             }
         }
 
@@ -1989,7 +2050,7 @@ class resolver {
                 type_result.is_none() && impl_result.is_none() {
             #error("!!! (resolving one-level renaming import) couldn't find \
                     anything with that name");
-            ret rr_failed;
+            ret Failed;
         }
 
         // Otherwise, proceed and write in the bindings.
@@ -2004,7 +2065,8 @@ class resolver {
                         result %? for '%s' into '%s'",
                        module_result.is_none(),
                        *(*self.atom_table).atom_to_str(target_name),
-                       self.graph_node_to_str(local_module.parent_graph_node));
+                       self.name_bindings_to_str
+                            (local_module.parent_name_bindings));
 
                 import_resolution.module_target = module_result;
                 import_resolution.value_target = value_result;
@@ -2017,34 +2079,38 @@ class resolver {
         }
 
         #debug("(resolving one-level renaming import) successfully resolved");
-        ret rr_success(());
+        ret Success(());
     }
 
-    fn resolve_name_in_external_module(parent_module: @external_module,
-                                       name: atom, namespace: namespace)
-            -> resolve_result<@graph_node> {
+    fn resolve_name_in_external_module(parent_module: @ExternalModule,
+                                       name: Atom,
+                                       namespace: Namespace)
+                                    -> ResolveResult<@NameBindings> {
+
         #debug("(resolving name in external module) resolving '%s' in \
                 external",
                 *(*self.atom_table).atom_to_str(name));
 
         alt parent_module.children.find(name) {
-            some(child_node) if (*child_node).defined_in_namespace(namespace) {
+            some(child_node)
+                    if (*child_node).defined_in_namespace(namespace) {
+
                 // The node is a direct child.
                 #debug("(resolving name in external module) found node as \
                         child");
-                ret rr_success(child_node);
+                ret Success(child_node);
             }
             some(_) | none {
                 // We're out of luck.
                 #debug("(resolving name in external module) failed");
-                ret rr_failed;
+                ret Failed;
             }
         }
     }
 
-    fn report_unresolved_imports(graph_node: @graph_node) {
+    fn report_unresolved_imports(name_bindings: @NameBindings) {
         let mut local_module;
-        alt (*graph_node).get_local_module_if_available() {
+        alt (*name_bindings).get_local_module_if_available() {
             none { ret; }
             some(associated_module_node) {
                 local_module = associated_module_node;
@@ -2056,7 +2122,8 @@ class resolver {
         if index != import_count {
             let module_path = local_module.imports.get_elt(index).module_path;
             #error("!!! unresolved import in %s: %s",
-                   self.graph_node_to_str(local_module.parent_graph_node),
+                   self.name_bindings_to_str
+                        (local_module.parent_name_bindings),
                    *(*self.atom_table).atoms_to_str((*module_path).get()));
         }
 
@@ -2069,14 +2136,14 @@ class resolver {
 
     // AST resolution: We simply build up a list of scopes.
 
-    fn with_scope(name: option<atom>, f: fn()) {
-        let orig_graph_node = self.current_graph_node;
+    fn with_scope(name: option<Atom>, f: fn()) {
+        let orig_name_bindings = self.current_name_bindings;
 
         // Move down in the graph.
         alt name {
             none { /* Nothing to do. */ }
             some(name) {
-                alt (*orig_graph_node).get_local_module_if_available() {
+                alt (*orig_name_bindings).get_local_module_if_available() {
                     none {
                         #debug("!!! (with scope) no local module");
                     }
@@ -2086,7 +2153,7 @@ class resolver {
                                 #debug("!!! (with scope) no child found");
                             }
                             some(child_node) {
-                                self.current_graph_node = child_node;
+                                self.current_name_bindings = child_node;
                             }
                         }
                     }
@@ -2096,17 +2163,17 @@ class resolver {
 
         f();
 
-        self.current_graph_node = orig_graph_node;
+        self.current_name_bindings = orig_name_bindings;
     }
 
-    fn search_ribs(ribs: @dvec<@rib>, name: atom) -> option<def_like> {
+    fn search_ribs(ribs: @dvec<@Rib>, name: Atom) -> option<def_like> {
         // FIXME: This should not use a while loop.
         // TODO: Try caching?
         let mut i = (*ribs).len();
         while i != 0u {
             i -= 1u;
-            let rib = (*ribs).get_elt(i);
-            alt rib.bindings.find(name) {
+            let Rib = (*ribs).get_elt(i);
+            alt Rib.bindings.find(name) {
                 some(def_like) { ret some(def_like); }
                 none { /* Continue. */ }
             }
@@ -2144,7 +2211,7 @@ class resolver {
         }));
     }
 
-    fn resolve_item(item: @item, visitor: resolve_visitor) {
+    fn resolve_item(item: @item, visitor: ResolveVisitor) {
         let atom = (*self.atom_table).intern(@copy item.ident);
         self.with_scope(some(atom)) {
             ||
@@ -2163,7 +2230,7 @@ class resolver {
                         // type parameters.
                         self.resolve_function(method.decl, some(method.tps),
                                               method.body,
-                                              has_self_binding(item.id),
+                                              HasSelfBinding(item.id),
                                               visitor);
                     }
                 }
@@ -2197,7 +2264,7 @@ class resolver {
                 }
                 item_fn(fn_decl, ty_params, block) {
                     self.resolve_function(fn_decl, some(ty_params), block,
-                                          no_self_binding, visitor);
+                                          NoSelfBinding, visitor);
                 }
                 item_res(*) | item_const(*) {
                     visit_item(item, (), visitor);
@@ -2206,23 +2273,26 @@ class resolver {
         }
     }
 
-    fn resolve_function(fn_decl: fn_decl, _ty_params: option<[ty_param]>,
-                        block: blk, self_binding: self_binding,
-                        visitor: resolve_visitor) {
-        // Create a rib for the function.
-        let function_rib = @rib();
+    fn resolve_function(fn_decl: fn_decl,
+                        _ty_params: option<[ty_param]>,
+                        block: blk,
+                        self_binding: SelfBinding,
+                        visitor: ResolveVisitor) {
+
+        // Create a Rib for the function.
+        let function_rib = @Rib();
         (*self.value_ribs).push(function_rib);
 
-        // Add self to the rib, if necessary.
+        // Add self to the Rib, if necessary.
         alt self_binding {
-            no_self_binding { /* Nothing to do. */ }
-            has_self_binding(self_node_id) {
+            NoSelfBinding { /* Nothing to do. */ }
+            HasSelfBinding(self_node_id) {
                 let def_like = dl_def(def_self(self_node_id));
                 (*function_rib).bindings.insert(self.self_atom, def_like);
             }
         }
 
-        // Add each argument to the rib.
+        // Add each argument to the Rib.
         for fn_decl.inputs.each {
             |argument|
 
@@ -2235,7 +2305,7 @@ class resolver {
         }
 
         // Note: We don't call resolve_block() because that would create a
-        // useless extra rib for the outermost function block.
+        // useless extra Rib for the outermost function block.
         visit_block(block, (), visitor);
 
         #debug("(resolving function) leaving function");
@@ -2244,34 +2314,35 @@ class resolver {
     }
 
     fn resolve_module(module: _mod, span: span, _name: ident, id: node_id,
-                      visitor: resolve_visitor) {
+                      visitor: ResolveVisitor) {
+
         visit_mod(module, span, id, (), visitor);
     }
 
-    fn resolve_local(local: @local, _visitor: resolve_visitor) {
+    fn resolve_local(local: @local, _visitor: ResolveVisitor) {
         let mut mutability;
         if local.node.is_mutbl {
-            mutability = mutable;
+            mutability = Mutable;
         } else {
-            mutability = immutable;
+            mutability = Immutable;
         };
 
-        self.resolve_pattern(local.node.pat, pbm_irrefutable, mutability);
+        self.resolve_pattern(local.node.pat, IrrefutableMode, mutability);
     }
 
-    fn resolve_arm(arm: arm, visitor: resolve_visitor) {
+    fn resolve_arm(arm: arm, visitor: ResolveVisitor) {
         for arm.pats.each {
             |pattern|
-            self.resolve_pattern(pattern, pbm_refutable, immutable);
+            self.resolve_pattern(pattern, RefutableMode, Immutable);
         }
 
         visit_expr_opt(arm.guard, (), visitor);
         self.resolve_block(arm.body, visitor);
     }
 
-    fn resolve_block(block: blk, visitor: resolve_visitor) {
+    fn resolve_block(block: blk, visitor: ResolveVisitor) {
         #debug("(resolving block) entering block");
-        (*self.value_ribs).push(@rib());
+        (*self.value_ribs).push(@Rib());
 
         visit_block(block, (), visitor);
 
@@ -2279,8 +2350,10 @@ class resolver {
         #debug("(resolving block) leaving block");
     }
 
-    fn resolve_pattern(pattern: @pat, _mode: pattern_binding_mode,
-                       mutability: mutability) {
+    fn resolve_pattern(pattern: @pat,
+                       _mode: PatternBindingMode,
+                       mutability: Mutability) {
+
         walk_pat(pattern) {
             |pattern|
             alt pattern.node {
@@ -2299,7 +2372,7 @@ class resolver {
 
                     let atom =
                         (*self.atom_table).intern(@copy path.idents[0]);
-                    let is_mutable = mutability == mutable;
+                    let is_mutable = mutability == Mutable;
                     let def_like = dl_def(def_local(pattern.id, is_mutable));
                     (*self.value_ribs).last().bindings.insert(atom, def_like);
                 }
@@ -2310,7 +2383,7 @@ class resolver {
         }
     }
 
-    fn resolve_expr(expr: @expr, visitor: resolve_visitor) {
+    fn resolve_expr(expr: @expr, visitor: ResolveVisitor) {
         alt expr.node {
             // The interpretation of paths depends on whether the path has
             // multiple elements in it or not.
@@ -2330,10 +2403,14 @@ class resolver {
                     }
                     some(dl_field) | some(dl_impl(_)) | none {
                         // Otherwise, check the items.
-                        alt self.resolve_item_in_lexical_scope_of_graph_node
-                                (self.current_graph_node, name, ns_value) {
-                            rr_success(result_graph_node) {
-                                alt result_graph_node.value_def {
+                        alt self.
+                                resolve_item_in_lexical_scope_of_name_bindings
+                                (self.current_name_bindings,
+                                 name,
+                                 ValueNamespace) {
+
+                            Success(result_name_bindings) {
+                                alt result_name_bindings.value_def {
                                     none {
                                         fail "resolved name in value namespace
                                               to a graph node with no value
@@ -2348,10 +2425,10 @@ class resolver {
                                     }
                                 }
                             }
-                            rr_indeterminate {
+                            Indeterminate {
                                 fail "unexpected indeterminate result";
                             }
-                            rr_failed {
+                            Failed {
                                 result_def = none;
                             }
                         }
@@ -2373,7 +2450,7 @@ class resolver {
             }
 
             expr_fn(_, fn_decl, block, _) | expr_fn_block(fn_decl, block, _) {
-                self.resolve_function(fn_decl, none, block, no_self_binding,
+                self.resolve_function(fn_decl, none, block, NoSelfBinding,
                                       visitor);
             }
 
@@ -2386,38 +2463,40 @@ class resolver {
     // Diagnostics
 
     #[doc="
-        A terribly inefficient routine to print out the name of a graph node.
+        A terribly inefficient routine to print out the name of a set of name
+        bindings.
     "]
-    fn graph_node_to_str(graph_node: @graph_node) -> str {
+    fn name_bindings_to_str(name_bindings: @NameBindings) -> str {
         let atoms = dvec();
-        let mut current_node = graph_node;
+        let mut current_node = name_bindings;
         loop {
             alt current_node.parent_node {
                 none { break; }
-                some(gnh_graph_node(parent_node)) {
+                some(WrappedNameBindings(parent_node)) {
                     alt parent_node.module_def {
-                        md_none { break; }
-                        md_local_module(local_module) {
+                        NoModuleDef { break; }
+                        LocalModuleDef(local_module) {
                             for local_module.children.each {
                                 |name, child_node|
-                                if box::ptr_eq(child_node, graph_node) {
+                                if box::ptr_eq(child_node, name_bindings) {
                                     atoms.push(name);
                                     break;
                                 }
                             }
 
-                            current_node = local_module.parent_graph_node;
+                            current_node = local_module.parent_name_bindings;
                         }
-                        md_external_module(external_module) {
+                        ExternalModuleDef(external_module) {
                             for external_module.children.each {
                                 |name, child_node|
-                                if box::ptr_eq(child_node, graph_node) {
+                                if box::ptr_eq(child_node, name_bindings) {
                                     atoms.push(name);
                                     break;
                                 }
                             }
 
-                            current_node = external_module.parent_graph_node;
+                            current_node =
+                                external_module.parent_name_bindings;
                         }
                     }
                 }
@@ -2445,9 +2524,9 @@ class resolver {
         ret string;
     }
 
-    fn dump_local_module(local_module: @local_module) {
+    fn dump_local_module(local_module: @LocalModule) {
         #debug("Dump of module '%s':",
-               self.graph_node_to_str(local_module.parent_graph_node));
+               self.name_bindings_to_str(local_module.parent_name_bindings));
 
         #debug("Children:");
         for local_module.children.each {
@@ -2461,34 +2540,36 @@ class resolver {
             |name, import_resolution|
 
             let mut module_repr;
-            alt (*import_resolution).target_for_namespace(ns_module) {
+            alt (*import_resolution).target_for_namespace(ModuleNamespace) {
                 none { module_repr = ""; }
                 some(target) {
-                    module_repr = " module:" + self.graph_node_to_str(target);
+                    module_repr = " module:" +
+                        self.name_bindings_to_str(target);
                 }
             }
 
             let mut value_repr;
-            alt (*import_resolution).target_for_namespace(ns_value) {
+            alt (*import_resolution).target_for_namespace(ValueNamespace) {
                 none { value_repr = ""; }
                 some(target) {
-                    value_repr = " value:" + self.graph_node_to_str(target);
+                    value_repr = " value:" +
+                        self.name_bindings_to_str(target);
                 }
             }
 
             let mut type_repr;
-            alt (*import_resolution).target_for_namespace(ns_type) {
+            alt (*import_resolution).target_for_namespace(TypeNamespace) {
                 none { type_repr = ""; }
                 some(target) {
-                    type_repr = " type:" + self.graph_node_to_str(target);
+                    type_repr = " type:" + self.name_bindings_to_str(target);
                 }
             }
 
             let mut impl_repr;
-            alt (*import_resolution).target_for_namespace(ns_impl) {
+            alt (*import_resolution).target_for_namespace(ImplNamespace) {
                 none { impl_repr = ""; }
                 some(target) {
-                    impl_repr = " impl:" + self.graph_node_to_str(target);
+                    impl_repr = " impl:" + self.name_bindings_to_str(target);
                 }
             }
 
@@ -2500,9 +2581,10 @@ class resolver {
 }
 
 #[doc="Entry point to crate resolution."]
-fn resolve_crate(session: session, ast_map: ast_map_t, crate: @crate)
-        -> { def_map: def_map, impl_map: impl_map } {
-    let resolver = @resolver(session, ast_map, crate);
+fn resolve_crate(session: session, ast_map: ASTMap, crate: @crate)
+              -> { def_map: DefMap, impl_map: ImplMap } {
+
+    let resolver = @Resolver(session, ast_map, crate);
     (*resolver).resolve(resolver);
     ret { def_map: resolver.def_map, impl_map: resolver.impl_map };
 }
