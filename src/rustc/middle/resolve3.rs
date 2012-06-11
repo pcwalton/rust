@@ -48,10 +48,15 @@ enum Namespace {
     ImplNamespace
 }
 
+enum TargetModule {
+    LocalTargetModule(@LocalModule),
+    ExternalTargetModule(@ExternalModule)
+}
+
 enum NamespaceResult {
     UnknownResult,
     UnboundResult,
-    BoundResult(@NameBindings)
+    BoundResult(TargetModule, @NameBindings)
 }
 
 enum Mutability {
@@ -187,16 +192,29 @@ class ImportDirective {
     }
 }
 
+#[doc="The item that an import resolves to."]
+class ImportResolutionTarget {
+    let target_module: TargetModule;
+    let bindings: @NameBindings;
+
+    new(target_module: TargetModule,
+        bindings: @NameBindings) {
+
+        self.target_module = target_module;
+        self.bindings = bindings;
+    }
+}
+
 class ImportResolution {
     // The number of outstanding references to this name. When this reaches
     // zero, outside modules can count on the targets being correct. Before
     // then, all bets are off; future imports could override this name.
     let mut outstanding_references: uint;
 
-    let mut module_target: option<@NameBindings>;
-    let mut value_target: option<@NameBindings>;
-    let mut type_target: option<@NameBindings>;
-    let mut impl_target: option<@NameBindings>;
+    let mut module_target: option<ImportResolutionTarget>;
+    let mut value_target: option<ImportResolutionTarget>;
+    let mut type_target: option<ImportResolutionTarget>;
+    let mut impl_target: option<ImportResolutionTarget>;
 
     new() {
         self.outstanding_references = 0u;
@@ -207,12 +225,13 @@ class ImportResolution {
         self.impl_target = none;
     }
 
-    fn target_for_namespace(namespace: Namespace) -> option<@NameBindings> {
+    fn target_for_namespace(namespace: Namespace)
+            -> option<ImportResolutionTarget> {
         alt namespace {
-            ModuleNamespace { ret self.module_target; }
-            TypeNamespace   { ret self.type_target;   }
-            ValueNamespace  { ret self.value_target;  }
-            ImplNamespace   { ret self.impl_target;   }
+            ModuleNamespace { ret copy self.module_target; }
+            TypeNamespace   { ret copy self.type_target;   }
+            ValueNamespace  { ret copy self.value_target;  }
+            ImplNamespace   { ret copy self.impl_target;   }
         }
     }
 }
@@ -295,6 +314,15 @@ class ExternalModule {
         self.def_id = def_id;
 
         self.children = atom_hashmap();
+    }
+}
+
+// FIXME: This is a workaround due to is_none in the standard library
+// mistakenly requiring a T:copy.
+fn is_none<T>(x: option<T>) -> bool {
+    alt x {
+        none { ret true; }
+        some(_) { ret false; }
     }
 }
 
@@ -1175,7 +1203,7 @@ class Resolver {
 
         // We need to resolve all four namespaces for this to succeed.
         //
-        // FIXME: See if there's some way of handling namespaces in a more
+        // TODO: See if there's some way of handling namespaces in a more
         // generic way. We have four of them; it seems worth doing...
         let mut module_result = UnknownResult;
         let mut value_result = UnknownResult;
@@ -1189,22 +1217,30 @@ class Resolver {
                 if (*child_name_bindings)
                         .defined_in_namespace(ModuleNamespace) {
 
-                    module_result = BoundResult(child_name_bindings);
+                    module_result =
+                        BoundResult(LocalTargetModule(containing_module),
+                                    child_name_bindings);
                 }
                 if (*child_name_bindings)
                         .defined_in_namespace(ValueNamespace) {
 
-                    value_result = BoundResult(child_name_bindings);
+                    value_result =
+                        BoundResult(LocalTargetModule(containing_module),
+                                    child_name_bindings);
                 }
                 if (*child_name_bindings)
                         .defined_in_namespace(TypeNamespace) {
 
-                    type_result = BoundResult(child_name_bindings);
+                    type_result =
+                        BoundResult(LocalTargetModule(containing_module),
+                                    child_name_bindings);
                 }
                 if (*child_name_bindings)
                         .defined_in_namespace(ImplNamespace) {
 
-                    impl_result = BoundResult(child_name_bindings);
+                    impl_result =
+                        BoundResult(LocalTargetModule(containing_module),
+                                    child_name_bindings);
                 }
             }
         }
@@ -1212,13 +1248,13 @@ class Resolver {
         // Unless we managed to find a result in all four namespaces
         // (exceedingly unlikely), search imports as well.
         alt (module_result, value_result, type_result, impl_result) {
-            (BoundResult(_), BoundResult(_), BoundResult(_), BoundResult(_)) {
+            (BoundResult(*), BoundResult(*), BoundResult(*), BoundResult(*)) {
                 // Continue.
             }
             _ {
                 // If there is an unresolved glob at this point in the
-                // containing module, bail out. We don't know enough to be able
-                // to resolve this import.
+                // containing module, bail out. We don't know enough to be
+                // able to resolve this import.
                 if containing_module.glob_count > 0u {
                     #debug("(resolving single import) unresolved glob; \
                             bailing out");
@@ -1257,8 +1293,9 @@ class Resolver {
                                 none {
                                     ret UnboundResult;
                                 }
-                                some(binding) {
-                                    ret BoundResult(binding);
+                                some(target) {
+                                    ret BoundResult(target.target_module,
+                                                    target.bindings);
                                 }
                             }
                         }
@@ -1297,9 +1334,11 @@ class Resolver {
         let import_resolution = local_module.import_resolutions.get(target);
 
         alt module_result {
-            BoundResult(binding) {
+            BoundResult(target_module, name_bindings) {
                 #debug("(resolving single import) found module binding");
-                import_resolution.module_target = some(binding);
+                import_resolution.module_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             UnboundResult {
                 #debug("(resolving single import) didn't find module \
@@ -1310,8 +1349,10 @@ class Resolver {
             }
         }
         alt value_result {
-            BoundResult(binding) {
-                import_resolution.value_target = some(binding);
+            BoundResult(target_module, name_bindings) {
+                import_resolution.value_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             UnboundResult { /* Continue. */ }
             UnknownResult {
@@ -1319,8 +1360,10 @@ class Resolver {
             }
         }
         alt type_result {
-            BoundResult(binding) {
-                import_resolution.type_target = some(binding);
+            BoundResult(target_module, name_bindings) {
+                import_resolution.type_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             UnboundResult { /* Continue. */ }
             UnknownResult {
@@ -1328,8 +1371,10 @@ class Resolver {
             }
         }
         alt impl_result {
-            BoundResult(binding) {
-                import_resolution.impl_target = some(binding);
+            BoundResult(target_module, name_bindings) {
+                import_resolution.impl_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             UnboundResult { /* Continue. */ }
             UnknownResult {
@@ -1373,7 +1418,7 @@ class Resolver {
 
             #debug("(resolving glob import) writing module resolution \
                     %? into '%s'",
-                   target_import_resolution.module_target.is_none(),
+                   is_none(target_import_resolution.module_target),
                    self.local_module_to_str(local_module));
 
             // Here we merge two import resolutions.
@@ -1382,13 +1427,13 @@ class Resolver {
                     // Simple: just copy the old import resolution.
                     let new_import_resolution = @ImportResolution();
                     new_import_resolution.module_target =
-                        target_import_resolution.module_target;
+                        copy target_import_resolution.module_target;
                     new_import_resolution.value_target =
-                        target_import_resolution.value_target;
+                        copy target_import_resolution.value_target;
                     new_import_resolution.type_target =
-                        target_import_resolution.type_target;
+                        copy target_import_resolution.type_target;
                     new_import_resolution.impl_target =
-                        target_import_resolution.impl_target;
+                        copy target_import_resolution.impl_target;
 
                     local_module.import_resolutions.insert
                         (atom, new_import_resolution);
@@ -1400,28 +1445,28 @@ class Resolver {
                         none { /* Continue. */ }
                         some(module_target) {
                             dest_import_resolution.module_target =
-                                some(module_target);
+                                some(copy module_target);
                         }
                     }
                     alt target_import_resolution.value_target {
                         none { /* Continue. */ }
                         some(value_target) {
                             dest_import_resolution.value_target =
-                                some(value_target);
+                                some(copy value_target);
                         }
                     }
                     alt target_import_resolution.type_target {
                         none { /* Continue. */ }
                         some(type_target) {
                             dest_import_resolution.type_target =
-                                some(type_target);
+                                some(copy type_target);
                         }
                     }
                     alt target_import_resolution.impl_target {
                         none { /* Continue. */ }
                         some(impl_target) {
                             dest_import_resolution.impl_target =
-                                some(impl_target);
+                                some(copy impl_target);
                         }
                     }
                 }
@@ -1451,17 +1496,26 @@ class Resolver {
                    self.local_module_to_str(local_module));
 
             // Merge the child item into the import resolution.
+            let target_module = LocalTargetModule(containing_module);
             if (*name_bindings).defined_in_namespace(ModuleNamespace) {
-                dest_import_resolution.module_target = some(name_bindings);
+                dest_import_resolution.module_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ValueNamespace) {
-                dest_import_resolution.value_target = some(name_bindings);
+                dest_import_resolution.value_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             if (*name_bindings).defined_in_namespace(TypeNamespace) {
-                dest_import_resolution.type_target = some(name_bindings);
+                dest_import_resolution.type_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ImplNamespace) {
-                dest_import_resolution.impl_target = some(name_bindings);
+                dest_import_resolution.impl_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
         }
 
@@ -1517,8 +1571,8 @@ class Resolver {
         }
 
         // If no namespaces were resolved, that's an error.
-        if module_result.is_none() && value_result.is_none() &&
-                type_result.is_none() && impl_result.is_none() {
+        if is_none(module_result) && is_none(value_result) &&
+                is_none(type_result) && is_none(impl_result) {
             #debug("!!! (resolving single external import) failed");
             ret Failed;
         }
@@ -1527,32 +1581,42 @@ class Resolver {
         assert local_module.import_resolutions.contains_key(target);
         let import_resolution = local_module.import_resolutions.get(target);
 
+        let target_module = ExternalTargetModule(containing_module);
+
         alt module_result {
             none { /* Continue. */ }
-            some(binding) {
+            some(name_bindings) {
                 #error("(resolving glob import) writing module resolution \
                         '%s'",
                        self.local_module_to_str(local_module));
 
-                import_resolution.module_target = some(binding);
+                import_resolution.module_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
         }
         alt value_result {
             none { /* Continue. */ }
-            some(binding) {
-                import_resolution.value_target = some(binding);
+            some(name_bindings) {
+                import_resolution.value_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
         }
         alt type_result {
             none { /* Continue. */ }
-            some(binding) {
-                import_resolution.type_target = some(binding);
+            some(name_bindings) {
+                import_resolution.type_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
         }
         alt impl_result {
             none { /* Continue. */ }
-            some(binding) {
-                import_resolution.impl_target = some(binding);
+            some(name_bindings) {
+                import_resolution.impl_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
         }
 
@@ -1587,18 +1651,28 @@ class Resolver {
                 }
             }
 
+            let target_module = ExternalTargetModule(containing_module);
+
             // Merge the child item into the import resolution.
             if (*name_bindings).defined_in_namespace(ModuleNamespace) {
-                dest_import_resolution.module_target = some(name_bindings);
+                dest_import_resolution.module_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ValueNamespace) {
-                dest_import_resolution.value_target = some(name_bindings);
+                dest_import_resolution.value_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             if (*name_bindings).defined_in_namespace(TypeNamespace) {
-                dest_import_resolution.type_target = some(name_bindings);
+                dest_import_resolution.type_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ImplNamespace) {
-                dest_import_resolution.impl_target = some(name_bindings);
+                dest_import_resolution.impl_target =
+                    some(ImportResolutionTarget(target_module,
+                                                name_bindings));
             }
         }
 
@@ -1666,8 +1740,8 @@ class Resolver {
                            *(*self.atom_table).atom_to_str(name));
                     ret Indeterminate;
                 }
-                Success(name_bindings) {
-                    alt name_bindings.module_def {
+                Success(target) {
+                    alt target.bindings.module_def {
                         NoModuleDef {
                             // Not a module.
                             #debug("!!! (resolving module path for import) \
@@ -1676,7 +1750,7 @@ class Resolver {
                             ret Failed;
                         }
                         LocalModuleDef(*) | ExternalModuleDef(*) {
-                            search_module_def = name_bindings.module_def;
+                            search_module_def = target.bindings.module_def;
                         }
                     }
                 }
@@ -1692,7 +1766,7 @@ class Resolver {
     fn resolve_item_in_lexical_scope(local_module: @LocalModule,
                                      name: Atom,
                                      namespace: Namespace)
-                                  -> ResolveResult<@NameBindings> {
+                                  -> ResolveResult<ImportResolutionTarget> {
 
         #debug("(resolving item in lexical scope) resolving '%s' in \
                 namespace %? in '%s'",
@@ -1706,15 +1780,17 @@ class Resolver {
             some(name_bindings)
                     if (*name_bindings).defined_in_namespace(namespace) {
 
-                ret Success(name_bindings);
+                let target_module = LocalTargetModule(local_module);
+                ret Success(ImportResolutionTarget(target_module,
+                                                   name_bindings));
             }
             some(_) | none { /* Not found; continue. */ }
         }
 
         // Now check for its import directives. We don't have to have resolved
-        // all its imports in the usual way; this is because chains of adjacent
-        // import statements are processed as though they mutated the current
-        // scope.
+        // all its imports in the usual way; this is because chains of
+        // adjacent import statements are processed as though they mutated the
+        // current scope.
         alt local_module.import_resolutions.find(name) {
             none { /* Not found; continue. */ }
             some(import_resolution) {
@@ -1725,8 +1801,8 @@ class Resolver {
                                 import resolution, but not in namespace %?",
                                namespace);
                     }
-                    some(target_name_bindings) {
-                        ret Success(target_name_bindings);
+                    some(target) {
+                        ret Success(copy target);
                     }
                 }
             }
@@ -1763,9 +1839,9 @@ class Resolver {
                             higher scope; bailing");
                     ret Indeterminate;
                 }
-                Success(name_bindings) {
+                Success(target) {
                     // We found the module.
-                    ret Success(name_bindings);
+                    ret Success(copy target);
                 }
             }
         }
@@ -1779,15 +1855,15 @@ class Resolver {
                                                name,
                                                ModuleNamespace) {
 
-            Success(name_bindings) {
-                alt name_bindings.module_def {
+            Success(target) {
+                alt target.bindings.module_def {
                     NoModuleDef {
                         #error("!!! (resolving module in lexical scope) module
                                 wasn't actually a module!");
                         ret Failed;
                     }
                     LocalModuleDef(*) | ExternalModuleDef(*) {
-                        ret Success(name_bindings.module_def);
+                        ret Success(target.bindings.module_def);
                     }
                 }
             }
@@ -1812,7 +1888,7 @@ class Resolver {
     fn resolve_name_in_module(module_def: ModuleDef,
                               name: Atom,
                               namespace: Namespace)
-            -> ResolveResult<@NameBindings> {
+                           -> ResolveResult<ImportResolutionTarget> {
 
         alt module_def {
             NoModuleDef {
@@ -1834,7 +1910,7 @@ class Resolver {
     fn resolve_name_in_local_module(local_module: @LocalModule,
                                     name: Atom,
                                     namespace: Namespace)
-                                 -> ResolveResult<@NameBindings> {
+                                 -> ResolveResult<ImportResolutionTarget> {
 
         #debug("(resolving name in local module) resolving '%s' in '%s'",
                *(*self.atom_table).atom_to_str(name),
@@ -1842,11 +1918,14 @@ class Resolver {
 
         // First, check the direct children of the module.
         alt local_module.children.find(name) {
-            some(child_node)
-                    if (*child_node).defined_in_namespace(namespace) {
+            some(name_bindings)
+                    if (*name_bindings).defined_in_namespace(namespace) {
 
-                #debug("(resolving name in local module) found node as child");
-                ret Success(child_node);
+                #debug("(resolving name in local module) found node as \
+                        child");
+                let target_module = LocalTargetModule(local_module);
+                ret Success(ImportResolutionTarget(target_module,
+                                                   name_bindings));
             }
             some(_) | none {
                 // Continue.
@@ -1875,7 +1954,7 @@ class Resolver {
                     some(target) {
                         #debug("(resolving name in local module) resolved to \
                                 import");
-                        ret Success(target);
+                        ret Success(copy target);
                     }
                 }
             }
@@ -1939,7 +2018,7 @@ class Resolver {
             Success(name_bindings) {
                 #debug("(resolving one-level renaming import) module result \
                         found");
-                module_result = some(name_bindings);
+                module_result = some(copy name_bindings);
             }
         }
 
@@ -1962,7 +2041,7 @@ class Resolver {
             Success(name_bindings) {
                 #debug("(resolving one-level renaming import) value result \
                         found");
-                value_result = some(name_bindings);
+                value_result = some(copy name_bindings);
             }
         }
 
@@ -1985,7 +2064,7 @@ class Resolver {
             Success(name_bindings) {
                 #debug("(resolving one-level renaming import) type result \
                         found");
-                type_result = some(name_bindings);
+                type_result = some(copy name_bindings);
             }
         }
 
@@ -2025,13 +2104,13 @@ class Resolver {
             Success(name_bindings) {
                 #debug("(resolving one-level renaming import) impl result \
                         found");
-                impl_result = some(name_bindings);
+                impl_result = some(copy name_bindings);
             }
         }
 
         // If nothing at all was found, that's an error.
-        if module_result.is_none() && value_result.is_none() &&
-                type_result.is_none() && impl_result.is_none() {
+        if is_none(module_result) && is_none(value_result) &&
+                is_none(type_result) && is_none(impl_result) {
             #error("!!! (resolving one-level renaming import) couldn't find \
                     anything with that name");
             ret Failed;
@@ -2047,7 +2126,7 @@ class Resolver {
             some(import_resolution) {
                 #error("(resolving one-level renaming import) writing module \
                         result %? for '%s' into '%s'",
-                       module_result.is_none(),
+                       is_none(module_result),
                        *(*self.atom_table).atom_to_str(target_name),
                        self.local_module_to_str(local_module));
 
@@ -2068,20 +2147,22 @@ class Resolver {
     fn resolve_name_in_external_module(parent_module: @ExternalModule,
                                        name: Atom,
                                        namespace: Namespace)
-                                    -> ResolveResult<@NameBindings> {
+                                    -> ResolveResult<ImportResolutionTarget> {
 
         #debug("(resolving name in external module) resolving '%s' in \
                 external",
                 *(*self.atom_table).atom_to_str(name));
 
         alt parent_module.children.find(name) {
-            some(child_node)
-                    if (*child_node).defined_in_namespace(namespace) {
+            some(name_bindings)
+                    if (*name_bindings).defined_in_namespace(namespace) {
 
                 // The node is a direct child.
                 #debug("(resolving name in external module) found node as \
                         child");
-                ret Success(child_node);
+                let target_module = ExternalTargetModule(parent_module);
+                ret Success(ImportResolutionTarget(target_module,
+                                                   name_bindings));
             }
             some(_) | none {
                 // We're out of luck.
@@ -2412,8 +2493,8 @@ class Resolver {
                         alt self.resolve_item_in_lexical_scope
                                 (self.current_module, name, ValueNamespace) {
 
-                            Success(result_name_bindings) {
-                                alt result_name_bindings.value_def {
+                            Success(target) {
+                                alt target.bindings.value_def {
                                     none {
                                         fail "resolved name in value namespace
                                               to a graph node with no value
