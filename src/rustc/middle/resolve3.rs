@@ -80,20 +80,15 @@ enum ImportDirectiveSubclass {
 
 #[doc="The context that we thread through while building the reduced graph."]
 enum ReducedGraphParent {
-    GraphNodeParent(@NameBindings),
-    BlockParent(@NameBindings, node_id)
+    LocalModuleParent(@LocalModule),
+    ExternalModuleParent(@ExternalModule),
+    BlockParent(@LocalModule, node_id)
 }
 
 enum ResolveResult<T> {
     Failed,         // Failed to resolve the name.
     Indeterminate,  // Couldn't determine due to unresolved globs.
     Success(T)      // Successfully resolved the import.
-}
-
-// FIXME: This is needed to work around an ICE with classes that refer to
-// themselves.
-enum NameBindingsWrapper {
-    WrappedNameBindings(@NameBindings)
 }
 
 // FIXME (issue 2550): Should be a class but then it becomes not implicitly
@@ -222,65 +217,19 @@ class ImportResolution {
     }
 }
 
+#[doc="The link from a local module up to its nearest parent node."]
+enum LocalParentLink {
+    NoParentLink,
+    LocalModuleParentLink(@LocalModule, Atom),
+    BlockParentLink(@LocalModule, node_id)
+}
+
 #[doc="One node in the tree of modules."]
 class LocalModule {
-    let parent_name_bindings: @NameBindings;
+    let parent_link: LocalParentLink;
 
     let children: hashmap<Atom,@NameBindings>;
     let imports: dvec<@ImportDirective>;
-
-    // The status of resolving each import in this module.
-    let import_resolutions: hashmap<Atom,@ImportResolution>;
-
-    // The number of unresolved globs that this module exports.
-    let mut glob_count: uint;
-
-    // The index of the import we're resolving.
-    let mut resolved_import_count: uint;
-
-    new(parent_name_bindings: @NameBindings) {
-        self.parent_name_bindings = parent_name_bindings;
-
-        self.children = atom_hashmap();
-        self.imports = dvec();
-
-        self.import_resolutions = atom_hashmap();
-        self.glob_count = 0u;
-        self.resolved_import_count = 0u;
-    }
-
-    fn all_imports_resolved() -> bool {
-        ret self.imports.len() == self.resolved_import_count;
-    }
-}
-
-#[doc="An external module in the graph."]
-class ExternalModule {
-    let parent_name_bindings: @NameBindings;
-    let mut def_id: option<def_id>;
-
-    let children: hashmap<Atom,@NameBindings>;
-
-    new(parent_name_bindings: @NameBindings, def_id: option<def_id>) {
-        self.parent_name_bindings = parent_name_bindings;
-        self.def_id = def_id;
-
-        self.children = atom_hashmap();
-    }
-}
-
-#[doc="
-    Records the definitions (at most one for each namespace) that a name is
-    bound to.
-"]
-class NameBindings {
-    // The parent of this node.
-    let parent_node: option<NameBindingsWrapper>;
-
-    let mut module_def: ModuleDef;      // Meaning in the module namespace.
-    let mut type_def: option<def>;      // Meaning in the type namespace.
-    let mut value_def: option<def>;     // Meaning in the value namespace.
-    let mut impl_defs: [def_id];        // Meaning in the impl namespace.
 
     //
     // The anonymous children of this node. Anonymous children are pseudo-
@@ -299,31 +248,77 @@ class NameBindings {
     // entry block for `f`.
     //
 
-    let anonymous_children: hashmap<node_id,@NameBindings>;
+    let anonymous_children: hashmap<node_id,@LocalModule>;
 
-    new(parent_name_bindings: option<@NameBindings>) {
-        // FIXME: As above, this is needed to work around an ICE.
-        alt parent_name_bindings {
-            none {
-                self.parent_node = none;
-            }
-            some(name_bindings) {
-                self.parent_node = some(WrappedNameBindings(name_bindings));
-            }
-        }
+    // The status of resolving each import in this module.
+    let import_resolutions: hashmap<Atom,@ImportResolution>;
 
+    // The number of unresolved globs that this module exports.
+    let mut glob_count: uint;
+
+    // The index of the import we're resolving.
+    let mut resolved_import_count: uint;
+
+    new(parent_link: LocalParentLink) {
+        self.parent_link = parent_link;
+
+        self.children = atom_hashmap();
+        self.imports = dvec();
+
+        self.anonymous_children = int_hash();
+
+        self.import_resolutions = atom_hashmap();
+        self.glob_count = 0u;
+        self.resolved_import_count = 0u;
+    }
+
+    fn all_imports_resolved() -> bool {
+        ret self.imports.len() == self.resolved_import_count;
+    }
+}
+
+#[doc="The link from a local module up to its nearest parent node."]
+enum ExternalParentLink {
+    LocalExternalParentLink(@LocalModule, Atom),
+    ExternalExternalParentLink(@ExternalModule, Atom)
+}
+
+#[doc="An external module in the graph."]
+class ExternalModule {
+    let parent_link: ExternalParentLink;
+    let mut def_id: option<def_id>;
+
+    let children: hashmap<Atom,@NameBindings>;
+
+    new(parent_link: ExternalParentLink, def_id: option<def_id>) {
+        self.parent_link = parent_link;
+        self.def_id = def_id;
+
+        self.children = atom_hashmap();
+    }
+}
+
+#[doc="
+    Records the definitions (at most one for each namespace) that a name is
+    bound to.
+"]
+class NameBindings {
+    let mut module_def: ModuleDef;      // Meaning in the module namespace.
+    let mut type_def: option<def>;      // Meaning in the type namespace.
+    let mut value_def: option<def>;     // Meaning in the value namespace.
+    let mut impl_defs: [def_id];        // Meaning in the impl namespace.
+
+    new() {
         self.module_def = NoModuleDef;
         self.type_def = none;
         self.value_def = none;
         self.impl_defs = [];
-
-        self.anonymous_children = int_hash();
     }
 
     #[doc="Creates a new local module in this set of name bindings."]
-    fn define_local_module(this: @NameBindings) {
+    fn define_local_module(parent_link: LocalParentLink) {
         if self.module_def == NoModuleDef {
-            self.module_def = LocalModuleDef(@LocalModule(this));
+            self.module_def = LocalModuleDef(@LocalModule(parent_link));
         }
     }
 
@@ -331,11 +326,12 @@ class NameBindings {
         Creates a new external module with the given crate ID in this set of
         name bindings.
     "]
-    fn define_external_module(this: @NameBindings, def_id: option<def_id>)
+    fn define_external_module(parent_link: ExternalParentLink,
+                              def_id: option<def_id>)
                            -> @ExternalModule {
 
         assert self.module_def == NoModuleDef;  // FIXME: should be an error
-        let external_module = @ExternalModule(this, def_id);
+        let external_module = @ExternalModule(parent_link, def_id);
         self.module_def = ExternalModuleDef(external_module);
         ret external_module;
     }
@@ -427,8 +423,8 @@ class Resolver {
     // The number of imports that are currently unresolved.
     let mut unresolved_imports: uint;
 
-    // The graph node that represents the current item scope.
-    let mut current_name_bindings: @NameBindings;
+    // The module that represents the current item scope.
+    let mut current_module: @LocalModule;
 
     // The current set of local scopes, for values.
     // TODO: Reuse ribs to avoid allocation.
@@ -447,12 +443,12 @@ class Resolver {
 
         self.atom_table = @AtomTable();
 
-        self.graph_root = @NameBindings(none);
-        (*self.graph_root).define_local_module(self.graph_root);
+        self.graph_root = @NameBindings();
+        (*self.graph_root).define_local_module(NoParentLink);
 
         self.unresolved_imports = 0u;
 
-        self.current_name_bindings = self.graph_root;
+        self.current_module = (*self.graph_root).get_local_module();
         self.value_ribs = @dvec();
 
         self.self_atom = (*self.atom_table).intern(@"self");
@@ -476,7 +472,8 @@ class Resolver {
 
     #[doc="Constructs the reduced graph for the entire crate."]
     fn build_reduced_graph(this: @Resolver) {
-        let initial_parent = GraphNodeParent(self.graph_root);
+        let initial_parent =
+            LocalModuleParent((*self.graph_root).get_local_module());
         visit_crate(*self.crate, initial_parent, mk_vt(@{
             visit_item: {
                 |item, context, visitor|
@@ -496,27 +493,20 @@ class Resolver {
         }));
     }
 
-    // FIXME: This is totally wrong.
-    fn get_or_create_enclosing_name_bindings(reduced_graph_parent:
-                                             ReducedGraphParent)
-            -> @NameBindings {
-
+    #[doc="
+        Returns the current local module tracked by the reduced graph parent.
+        If this parent is an external module, fails.
+    "]
+    fn get_local_module_from_parent(reduced_graph_parent:
+                                        ReducedGraphParent)
+                                 -> @LocalModule {
         alt reduced_graph_parent {
-            GraphNodeParent(name_bindings) { ret name_bindings; }
-            BlockParent(enclosing_name_bindings, node_id) {
-                alt enclosing_name_bindings.anonymous_children.find(node_id) {
-                    none {
-                        let child =
-                            @NameBindings(some(enclosing_name_bindings));
-                        (*child).define_local_module(child);
-                        enclosing_name_bindings.anonymous_children.
-                            insert(node_id, child);
-                        ret child;
-                    }
-                    some(child) {
-                        ret child;
-                    }
-                }
+            ExternalModuleParent(_) {
+                fail "get_local_module_from_parent called with an external \
+                      module parent!";
+            }
+            LocalModuleParent(local_module) | BlockParent(local_module, _) {
+                ret local_module;
             }
         }
     }
@@ -533,18 +523,11 @@ class Resolver {
                  reduced_graph_parent: ReducedGraphParent)
               -> @NameBindings {
 
-        let enclosing_name_bindings =
-            self.get_or_create_enclosing_name_bindings(reduced_graph_parent);
-        alt enclosing_name_bindings.module_def {
-            NoModuleDef {
-                fail "Can't add a child to a graph node without a \
-                      module definition!";
-            }
-            ExternalModuleDef(external_module) {
+        alt reduced_graph_parent {
+            ExternalModuleParent(external_module) {
                 alt external_module.children.find(name) {
                     none {
-                        let child =
-                            @NameBindings(some(enclosing_name_bindings));
+                        let child = @NameBindings();
                         external_module.children.insert(name, child);
                         ret child;
                     }
@@ -553,11 +536,36 @@ class Resolver {
                     }
                 }
             }
-            LocalModuleDef(local_module) {
+            LocalModuleParent(_) | BlockParent(_, _) {
+                // If this is the immediate descendant of a local module, then
+                // we add the child name directly. Otherwise, we create or
+                // reuse an anonymous module and add the child to that.
+                
+                let mut local_module;
+                alt reduced_graph_parent {
+                    LocalModuleParent(module) {
+                        local_module = module;
+                    }
+                    BlockParent(module, node_id) {
+                        alt module.anonymous_children.find(node_id) {
+                            none {
+                                local_module = @LocalModule
+                                    (BlockParentLink(module, node_id));
+                                module.anonymous_children.insert
+                                    (node_id, local_module);
+                            }
+                            some(existing_local_module) {
+                                local_module = existing_local_module;
+                            }
+                        }
+                    }
+                    ExternalModuleParent(*) { fail; }
+                }
+
+                // Add or reuse the child.
                 alt local_module.children.find(name) {
                     none {
-                        let child =
-                            @NameBindings(some(enclosing_name_bindings));
+                        let child = @NameBindings();
                         local_module.children.insert(name, child);
                         ret child;
                     }
@@ -565,6 +573,22 @@ class Resolver {
                         ret child;
                     }
                 }
+            }
+        }
+    }
+
+    fn get_local_parent_link(parent: ReducedGraphParent, name: Atom)
+                          -> LocalParentLink {
+        alt parent {
+            LocalModuleParent(local_module) {
+                ret LocalModuleParentLink(local_module, name);
+            }
+            BlockParent(local_module, _) {
+                // FIXME: Create the intermediate module, maybe?
+                ret LocalModuleParentLink(local_module, name);
+            }
+            ExternalModuleParent(_) {
+                fail "external module parent in get_local_parent_link";
             }
         }
     }
@@ -580,13 +604,18 @@ class Resolver {
 
         alt item.node {
             item_mod(module) {
-                (*child).define_local_module(child);
-                visit_mod(module, item.span, item.id, GraphNodeParent(child),
+                (*child).define_local_module
+                    (self.get_local_parent_link(parent, atom));
+                visit_mod(module, item.span, item.id,
+                          LocalModuleParent((*child).get_local_module()),
                           visitor);
             }
             item_native_mod(native_module) {
-                (*child).define_local_module(child);
-                visit_item(item, GraphNodeParent(child), visitor);
+                (*child).define_local_module
+                    (self.get_local_parent_link(parent, atom));
+                visit_item(item,
+                           LocalModuleParent((*child).get_local_module()),
+                           visitor);
             }
 
             // These items live in the value namespace.
@@ -596,7 +625,7 @@ class Resolver {
             item_fn(decl, _, _) {
                 let def = def_fn(local_def(item.id), decl.purity);
                 (*child).define_value(def);
-                visit_item(item, GraphNodeParent(child), visitor);
+                visit_item(item, parent, visitor);
             }
 
             // These items live in the type namespace.
@@ -622,7 +651,7 @@ class Resolver {
                 (*child).define_value(value_def);
                 (*child).define_type(def_ty(local_def(item.id)));
 
-                visit_item(item, GraphNodeParent(child), visitor);
+                visit_item(item, parent, visitor);
             }
             item_class(_, _, _, ctor, _, _) {
                 (*child).define_type(def_ty(local_def(item.id)));
@@ -631,12 +660,12 @@ class Resolver {
                 let ctor_def = def_fn(local_def(ctor.node.id), purity);
                 (*child).define_value(ctor_def);
 
-                visit_item(item, GraphNodeParent(child), visitor);
+                visit_item(item, parent, visitor);
             }
 
             item_impl(*) {
                 (*child).define_impl(local_def(item.id));
-                visit_item(item, GraphNodeParent(child), visitor);
+                visit_item(item, parent, visitor);
             }
 
             item_iface(*) { /* TODO */ }
@@ -705,9 +734,8 @@ class Resolver {
                     }
 
                     // Build up the import directives.
-                    let enclosing_module =
-                        self.get_or_create_enclosing_name_bindings(parent);
-                    let local_module = (*enclosing_module).get_local_module();
+                    let local_module =
+                        self.get_local_module_from_parent(parent);
                     alt view_path.node {
                         view_path_simple(binding, full_path, _) {
                             let target_atom =
@@ -749,8 +777,10 @@ class Resolver {
                         let child = self.add_child(atom, parent);
 
                         let def_id = { crate: crate_id, node: 0 };
+                        let parent_link = LocalExternalParentLink
+                            (self.get_local_module_from_parent(parent), atom);
                         let external_module =
-                            (*child).define_external_module(child,
+                            (*child).define_external_module(parent_link,
                                                             some(def_id));
                         self.build_reduced_graph_for_external_crate
                             (external_module);
@@ -769,11 +799,12 @@ class Resolver {
 
         let mut new_parent;
         alt parent {
-            GraphNodeParent(name_bindings) {
-                new_parent = BlockParent(name_bindings, block.node.id);
+            LocalModuleParent(local_module) | BlockParent(local_module, _) {
+                new_parent = BlockParent(local_module, block.node.id);
             }
-            BlockParent(name_bindings, _) {
-                new_parent = BlockParent(name_bindings, block.node.id);
+            ExternalModuleParent(*) {
+                fail "unexpected external module parent in \
+                      build_reduced_graph_for_block";
             }
         }
 
@@ -801,21 +832,21 @@ class Resolver {
 
                 // Create or reuse a graph node for the child.
                 let atom = (*self.atom_table).intern(@copy ident);
-                let parent_name_bindings =
-                    current_module_node.parent_name_bindings;
                 let child_name_bindings =
                     self.add_child(atom,
-                                   GraphNodeParent(parent_name_bindings));
+                                   ExternalModuleParent(current_module_node));
 
                 // Define or reuse the module node.
                 alt child_name_bindings.module_def {
                     NoModuleDef {
                         #debug("(building reduced graph for external crate) \
                                 autovivifying %s", ident);
+                        let parent_link =
+                            ExternalExternalParentLink(current_module_node,
+                                                       atom);
                         current_module_node =
-                            (*child_name_bindings).
-                                define_external_module(child_name_bindings,
-                                                       none);
+                            (*child_name_bindings).define_external_module
+                                (parent_link, none);
                     }
                     ExternalModuleDef(_) {
                         current_module_node =
@@ -829,10 +860,9 @@ class Resolver {
 
             // Add the new child item.
             let atom = (*self.atom_table).intern(@copy final_ident);
-            let parent_name_bindings =
-                current_module_node.parent_name_bindings;
             let child_name_bindings =
-                self.add_child(atom, GraphNodeParent(parent_name_bindings));
+                self.add_child(atom,
+                               ExternalModuleParent(current_module_node));
 
             alt path_entry.def_like {
                 dl_def(def) {
@@ -843,15 +873,17 @@ class Resolver {
                                     #debug("(building reduced graph for \
                                             external crate) building module \
                                             %s", final_ident);
+                                    let parent_link =
+                                        ExternalExternalParentLink
+                                            (current_module_node, atom);
                                     (*child_name_bindings).
                                         define_external_module
-                                            (child_name_bindings,
-                                             some(def_id));
+                                            (parent_link, some(def_id));
                                 }
                                 ExternalModuleDef(external_module) {
                                     #debug("(building reduced graph for \
-                                            external crate) filling in def id \
-                                            for %s",
+                                            external crate) filling in def \
+                                            id for %s",
                                             final_ident);
                                     external_module.def_id = some(def_id);
                                 }
@@ -979,7 +1011,7 @@ class Resolver {
     "]
     fn resolve_imports_for_module_subtree(local_module: @LocalModule) {
         #debug("(resolving imports for module subtree) resolving %s",
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
         self.resolve_imports_for_module(local_module);
 
         for local_module.children.each {
@@ -998,8 +1030,7 @@ class Resolver {
         if (*local_module).all_imports_resolved() {
             #debug("(resolving imports for module) all imports resolved for \
                    %s",
-                   self.name_bindings_to_str
-                        (local_module.parent_name_bindings));
+                   self.local_module_to_str(local_module));
             ret;
         }
 
@@ -1012,8 +1043,7 @@ class Resolver {
                 Failed {
                     // We presumably emitted an error. Continue.
                     #debug("!!! (resolving imports for module) error: %s",
-                           self.name_bindings_to_str(local_module.
-                                                     parent_name_bindings));
+                           self.local_module_to_str(local_module));
                 }
                 Indeterminate {
                     // Bail out. We'll come around next time.
@@ -1045,7 +1075,7 @@ class Resolver {
         #debug("(resolving import for module) resolving import '%s::...' in \
                 '%s'",
                *(*self.atom_table).atoms_to_str((*module_path).get()),
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         // One-level renaming imports of the form `import foo = bar;` are
         // handled specially.
@@ -1139,10 +1169,9 @@ class Resolver {
         #debug("(resolving single import) resolving '%s' = '%s::%s' from \
                 '%s'",
                *(*self.atom_table).atom_to_str(target),
-               self.name_bindings_to_str
-                    (containing_module.parent_name_bindings),
+               self.local_module_to_str(containing_module),
                *(*self.atom_table).atom_to_str(source),
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         // We need to resolve all four namespaces for this to succeed.
         //
@@ -1345,8 +1374,7 @@ class Resolver {
             #debug("(resolving glob import) writing module resolution \
                     %? into '%s'",
                    target_import_resolution.module_target.is_none(),
-                   self.name_bindings_to_str
-                        (local_module.parent_name_bindings));
+                   self.local_module_to_str(local_module));
 
             // Here we merge two import resolutions.
             alt local_module.import_resolutions.find(atom) {
@@ -1420,8 +1448,7 @@ class Resolver {
 
             #error("(resolving glob import) writing module resolution \
                     '%s'",
-                   self.name_bindings_to_str
-                        (local_module.parent_name_bindings));
+                   self.local_module_to_str(local_module));
 
             // Merge the child item into the import resolution.
             if (*name_bindings).defined_in_namespace(ModuleNamespace) {
@@ -1452,11 +1479,9 @@ class Resolver {
         #debug("(resolving single external import) resolving import '%s' = \
                 '%s::%s' in '%s'",
                *(*self.atom_table).atom_to_str(target),
-               self.name_bindings_to_str
-                    (containing_module.parent_name_bindings),
+               self.external_module_to_str(containing_module),
                *(*self.atom_table).atom_to_str(source),
-               self.name_bindings_to_str
-                    (local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         // We need to resolve all four namespaces for this to succeed.
         let mut module_result = none;
@@ -1507,8 +1532,7 @@ class Resolver {
             some(binding) {
                 #error("(resolving glob import) writing module resolution \
                         '%s'",
-                       self.name_bindings_to_str
-                            (local_module.parent_name_bindings));
+                       self.local_module_to_str(local_module));
 
                 import_resolution.module_target = some(binding);
             }
@@ -1596,7 +1620,7 @@ class Resolver {
         #debug("(resolving module path for import) processing '%s' rooted at \
                '%s'",
                *(*self.atom_table).atoms_to_str((*module_path).get()),
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         // The first element of the module path must be in the current scope
         // chain.
@@ -1665,7 +1689,6 @@ class Resolver {
         ret Success(search_module_def);
     }
 
-    // FIXME: Merge me with resolve_item_in_lexical_scope_of_name_bindings.
     fn resolve_item_in_lexical_scope(local_module: @LocalModule,
                                      name: Atom,
                                      namespace: Namespace)
@@ -1675,7 +1698,7 @@ class Resolver {
                 namespace %? in '%s'",
                *(*self.atom_table).atom_to_str(name),
                namespace,
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         // The current module node is handled specially. First, check for
         // its immediate children.
@@ -1713,26 +1736,16 @@ class Resolver {
         let mut search_module = local_module;
         loop {
             // Go to the next parent.
-            alt search_module.parent_name_bindings.parent_node {
-                none {
+            alt search_module.parent_link {
+                NoParentLink {
                     // No more parents. This module was unresolved.
                     #debug("(resolving item in lexical scope) unresolved \
                             module");
                     ret Failed;
                 }
-                some(WrappedNameBindings(parent_bindings)) {
-                    alt (*parent_bindings).get_local_module_if_available() {
-                        none {
-                            // The parent is not a module. This should not
-                            // happen.
-                            #error("!!! (resolving item in lexical scope) \
-                                    UNEXPECTED: parent is not a module");
-                            ret Failed;
-                        }
-                        some(parent_module_node) {
-                            search_module = parent_module_node;
-                        }
-                    }
+                LocalModuleParentLink(parent_module_node, _) |
+                BlockParentLink(parent_module_node, _) {
+                    search_module = parent_module_node;
                 }
             }
 
@@ -1753,35 +1766,6 @@ class Resolver {
                 Success(name_bindings) {
                     // We found the module.
                     ret Success(name_bindings);
-                }
-            }
-        }
-    }
-
-    fn resolve_item_in_lexical_scope_of_name_bindings
-              (name_bindings: @NameBindings,
-               name: Atom,
-               namespace: Namespace)
-            -> ResolveResult<@NameBindings> {
-
-        alt (*name_bindings).get_local_module_if_available() {
-            some(local_module) {
-                ret self.resolve_item_in_lexical_scope(local_module,
-                                                       name,
-                                                       namespace);
-            }
-            none {
-                alt name_bindings.parent_node {
-                    none {
-                        fail "root node had no module definition?!";
-                    }
-                    some(WrappedNameBindings(parent_node)) {
-                        ret self.
-                            resolve_item_in_lexical_scope_of_name_bindings
-                                (parent_node,
-                                 name,
-                                 namespace);
-                    }
                 }
             }
         }
@@ -1854,7 +1838,7 @@ class Resolver {
 
         #debug("(resolving name in local module) resolving '%s' in '%s'",
                *(*self.atom_table).atom_to_str(name),
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         // First, check the direct children of the module.
         alt local_module.children.find(name) {
@@ -1931,7 +1915,7 @@ class Resolver {
                 '%s' in '%s'",
                 *(*self.atom_table).atom_to_str(target_name),
                 *(*self.atom_table).atom_to_str(source_name),
-                self.name_bindings_to_str(local_module.parent_name_bindings));
+                self.local_module_to_str(local_module));
 
         // Find the matching items in the lexical scope chain for every
         // namespace. If any of them come back indeterminate, this entire
@@ -2065,8 +2049,7 @@ class Resolver {
                         result %? for '%s' into '%s'",
                        module_result.is_none(),
                        *(*self.atom_table).atom_to_str(target_name),
-                       self.name_bindings_to_str
-                            (local_module.parent_name_bindings));
+                       self.local_module_to_str(local_module));
 
                 import_resolution.module_target = module_result;
                 import_resolution.value_target = value_result;
@@ -2122,8 +2105,7 @@ class Resolver {
         if index != import_count {
             let module_path = local_module.imports.get_elt(index).module_path;
             #error("!!! unresolved import in %s: %s",
-                   self.name_bindings_to_str
-                        (local_module.parent_name_bindings),
+                   self.local_module_to_str(local_module),
                    *(*self.atom_table).atoms_to_str((*module_path).get()));
         }
 
@@ -2137,23 +2119,28 @@ class Resolver {
     // AST resolution: We simply build up a list of scopes.
 
     fn with_scope(name: option<Atom>, f: fn()) {
-        let orig_name_bindings = self.current_name_bindings;
+        let orig_module = self.current_module;
 
         // Move down in the graph.
         alt name {
             none { /* Nothing to do. */ }
             some(name) {
-                alt (*orig_name_bindings).get_local_module_if_available() {
+                alt orig_module.children.find(name) {
                     none {
-                        #debug("!!! (with scope) no local module");
+                        #debug("!!! (with scope) didn't find '%s' in '%s'",
+                               *(*self.atom_table).atom_to_str(name),
+                               self.local_module_to_str(orig_module));
                     }
-                    some(local_module) {
-                        alt local_module.children.find(name) {
+                    some(name_bindings) {
+                        alt (*name_bindings).get_local_module_if_available() {
                             none {
-                                #debug("!!! (with scope) no child found");
+                                #debug("!!! (with scope) didn't find local \
+                                        module for '%s' in '%s'",
+                                       *(*self.atom_table).atom_to_str(name),
+                                       self.local_module_to_str(orig_module));
                             }
-                            some(child_node) {
-                                self.current_name_bindings = child_node;
+                            some(local_module) {
+                                self.current_module = local_module;
                             }
                         }
                     }
@@ -2163,7 +2150,7 @@ class Resolver {
 
         f();
 
-        self.current_name_bindings = orig_name_bindings;
+        self.current_module = orig_module;
     }
 
     fn search_ribs(ribs: @dvec<@Rib>, name: Atom) -> option<def_like> {
@@ -2212,47 +2199,52 @@ class Resolver {
     }
 
     fn resolve_item(item: @item, visitor: ResolveVisitor) {
-        let atom = (*self.atom_table).intern(@copy item.ident);
-        self.with_scope(some(atom)) {
-            ||
+        #debug("(resolving item) resolving %s", copy item.ident);
 
-            #debug("(resolving item) resolving %s", copy item.ident);
+        alt item.node {
+            item_enum(*) | item_ty(*) {
+                visit_item(item, (), visitor);
+            }
+            item_impl(_, _, _, _, methods) {
+                // Create a new scope for the impl-wide type parameters.
+                for methods.each {
+                    |method|
+                    // We also need a new scope for the method-specific
+                    // type parameters.
+                    self.resolve_function(method.decl, some(method.tps),
+                                          method.body,
+                                          HasSelfBinding(item.id),
+                                          visitor);
+                }
+            }
+            item_iface(_, _, methods) {
+                // Create a new scope for the interface-wide type parameters.
+                for methods.each {
+                    |method|
+                    // We also need a new scope for the method-specific
+                    // type parameters.
+                    visit_ty(method.decl.output, (), visitor);
+                }
+            }
+            item_class(*) {
+                // Create a new scope for the class-wide type parameters.
+                // FIXME: Handle methods properly.
+                visit_item(item, (), visitor);
+            }
+            item_mod(module) {
+                let atom = (*self.atom_table).intern(@copy item.ident);
+                self.with_scope(some(atom)) {
+                    ||
 
-            alt item.node {
-                item_enum(*) | item_ty(*) {
-                    visit_item(item, (), visitor);
+                    self.resolve_module(module, item.span, item.ident,
+                                        item.id, visitor);
                 }
-                item_impl(_, _, _, _, methods) {
-                    // Create a new scope for the impl-wide type parameters.
-                    for methods.each {
-                        |method|
-                        // We also need a new scope for the method-specific
-                        // type parameters.
-                        self.resolve_function(method.decl, some(method.tps),
-                                              method.body,
-                                              HasSelfBinding(item.id),
-                                              visitor);
-                    }
-                }
-                item_iface(_, _, methods) {
-                    // Create a new scope for the interface-wide type parameters.
-                    for methods.each {
-                        |method|
-                        // We also need a new scope for the method-specific
-                        // type parameters.
-                        visit_ty(method.decl.output, (), visitor);
-                    }
-                }
-                item_class(*) {
-                    // Create a new scope for the class-wide type parameters.
-                    // FIXME: Handle methods properly.
-                    visit_item(item, (), visitor);
-                }
-                item_mod(module) {
-                    self.resolve_module(module, item.span, item.ident, item.id,
-                                        visitor);
-                }
-                item_native_mod(native_module) {
+            }
+            item_native_mod(native_module) {
+                let atom = (*self.atom_table).intern(@copy item.ident);
+                self.with_scope(some(atom)) {
+                    ||
+
                     for native_module.items.each {
                         |native_item|
                         alt native_item.node {
@@ -2262,13 +2254,13 @@ class Resolver {
                         }
                     }
                 }
-                item_fn(fn_decl, ty_params, block) {
-                    self.resolve_function(fn_decl, some(ty_params), block,
-                                          NoSelfBinding, visitor);
-                }
-                item_res(*) | item_const(*) {
-                    visit_item(item, (), visitor);
-                }
+            }
+            item_fn(fn_decl, ty_params, block) {
+                self.resolve_function(fn_decl, some(ty_params), block,
+                                      NoSelfBinding, visitor);
+            }
+            item_res(*) | item_const(*) {
+                visit_item(item, (), visitor);
             }
         }
     }
@@ -2344,7 +2336,21 @@ class Resolver {
         #debug("(resolving block) entering block");
         (*self.value_ribs).push(@Rib());
 
+        // Move down in the graph, if there's an anonymous module rooted here.
+        let orig_module = self.current_module;
+        alt self.current_module.anonymous_children.find(block.node.id) {
+            none { /* Nothing to do. */ }
+            some(anonymous_module) {
+                #debug("(resolving block) found anonymous module");
+                self.current_module = anonymous_module;
+            }
+        }
+
+        // Descend into the block.
         visit_block(block, (), visitor);
+
+        // Move back up.
+        self.current_module = orig_module;
 
         (*self.value_ribs).pop();
         #debug("(resolving block) leaving block");
@@ -2403,11 +2409,8 @@ class Resolver {
                     }
                     some(dl_field) | some(dl_impl(_)) | none {
                         // Otherwise, check the items.
-                        alt self.
-                                resolve_item_in_lexical_scope_of_name_bindings
-                                (self.current_name_bindings,
-                                 name,
-                                 ValueNamespace) {
+                        alt self.resolve_item_in_lexical_scope
+                                (self.current_module, name, ValueNamespace) {
 
                             Success(result_name_bindings) {
                                 alt result_name_bindings.value_def {
@@ -2441,10 +2444,10 @@ class Resolver {
                         self.def_map.insert(expr.id, def);
                     }
                     none {
-                        /*self.session.span_warn
+                        self.session.span_warn
                             (expr.span,
                              #fmt("use of undeclared identifier '%s'",
-                                  *(*self.atom_table).atom_to_str(name)));*/
+                                  *(*self.atom_table).atom_to_str(name)));
                     }
                 }
             }
@@ -2463,42 +2466,24 @@ class Resolver {
     // Diagnostics
 
     #[doc="
-        A terribly inefficient routine to print out the name of a set of name
-        bindings.
+        A terribly inefficient routine to print out the name of a local
+        module.
     "]
-    fn name_bindings_to_str(name_bindings: @NameBindings) -> str {
+    fn local_module_to_str(local_module: @LocalModule) -> str {
         let atoms = dvec();
-        let mut current_node = name_bindings;
+        let mut current_local_module = local_module;
         loop {
-            alt current_node.parent_node {
-                none { break; }
-                some(WrappedNameBindings(parent_node)) {
-                    alt parent_node.module_def {
-                        NoModuleDef { break; }
-                        LocalModuleDef(local_module) {
-                            for local_module.children.each {
-                                |name, child_node|
-                                if box::ptr_eq(child_node, name_bindings) {
-                                    atoms.push(name);
-                                    break;
-                                }
-                            }
-
-                            current_node = local_module.parent_name_bindings;
-                        }
-                        ExternalModuleDef(external_module) {
-                            for external_module.children.each {
-                                |name, child_node|
-                                if box::ptr_eq(child_node, name_bindings) {
-                                    atoms.push(name);
-                                    break;
-                                }
-                            }
-
-                            current_node =
-                                external_module.parent_name_bindings;
-                        }
-                    }
+            alt current_local_module.parent_link {
+                NoParentLink {
+                    break;
+                }
+                LocalModuleParentLink(local_module, name) {
+                    atoms.push(name);
+                    current_local_module = local_module;
+                }
+                BlockParentLink(local_module, node_id) {
+                    atoms.push((*self.atom_table).intern(@"<opaque>"));
+                    current_local_module = local_module;
                 }
             }
         }
@@ -2524,9 +2509,13 @@ class Resolver {
         ret string;
     }
 
+    fn external_module_to_str(_external_module: @ExternalModule) -> str {
+        ret "<external>";
+    }
+
     fn dump_local_module(local_module: @LocalModule) {
         #debug("Dump of module '%s':",
-               self.name_bindings_to_str(local_module.parent_name_bindings));
+               self.local_module_to_str(local_module));
 
         #debug("Children:");
         for local_module.children.each {
@@ -2543,8 +2532,8 @@ class Resolver {
             alt (*import_resolution).target_for_namespace(ModuleNamespace) {
                 none { module_repr = ""; }
                 some(target) {
-                    module_repr = " module:" +
-                        self.name_bindings_to_str(target);
+                    module_repr = " module:?";
+                    // FIXME
                 }
             }
 
@@ -2552,8 +2541,8 @@ class Resolver {
             alt (*import_resolution).target_for_namespace(ValueNamespace) {
                 none { value_repr = ""; }
                 some(target) {
-                    value_repr = " value:" +
-                        self.name_bindings_to_str(target);
+                    value_repr = " value:?";
+                    // FIXME
                 }
             }
 
@@ -2561,7 +2550,8 @@ class Resolver {
             alt (*import_resolution).target_for_namespace(TypeNamespace) {
                 none { type_repr = ""; }
                 some(target) {
-                    type_repr = " type:" + self.name_bindings_to_str(target);
+                    type_repr = " type:?";
+                    // FIXME
                 }
             }
 
@@ -2569,7 +2559,8 @@ class Resolver {
             alt (*import_resolution).target_for_namespace(ImplNamespace) {
                 none { impl_repr = ""; }
                 some(target) {
-                    impl_repr = " impl:" + self.name_bindings_to_str(target);
+                    impl_repr = " impl:?";
+                    // FIXME
                 }
             }
 
