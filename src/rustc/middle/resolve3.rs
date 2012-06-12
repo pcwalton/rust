@@ -2,18 +2,18 @@ import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
-import syntax::ast::{_mod, arm, blk, crate, crate_num, def, def_arg};
-import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
-import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
+import syntax::ast::{_mod, arm, blk, class_method, crate, crate_num, def};
+import syntax::ast::{def_arg, def_binding, def_class, def_const, def_fn};
+import syntax::ast::{def_id, def_local, def_mod, def_native_mod, def_prim_ty};
 import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
 import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
-import syntax::ast::{expr_path, fn_decl, ident, item, item_class, item_const};
-import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
-import syntax::ast::{item_native_mod, item_res, item_ty, local};
-import syntax::ast::{native_item_fn, node_id, pat, pat_ident, ty_param};
-import syntax::ast::{variant, view_item, view_item_export, view_item_import};
-import syntax::ast::{view_item_use, view_path_glob, view_path_list};
-import syntax::ast::{view_path_simple};
+import syntax::ast::{expr_path, fn_decl, ident, impure_fn, instance_var};
+import syntax::ast::{item, item_class, item_const, item_enum, item_fn};
+import syntax::ast::{item_iface, item_impl, item_mod, item_native_mod};
+import syntax::ast::{item_res, item_ty, local, native_item, native_item_fn};
+import syntax::ast::{node_id, pat, pat_ident, ty_param, variant, view_item};
+import syntax::ast::{view_item_export, view_item_import, view_item_use};
+import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
@@ -439,14 +439,22 @@ class Resolver {
                 |item, context, visitor|
                 (*this).build_reduced_graph_for_item(item, context, visitor)
             },
+            visit_native_item: {
+                |native_item, context, visitor|
+                (*this).build_reduced_graph_for_native_item(native_item,
+                                                            context,
+                                                            visitor)
+            },
             visit_view_item: {
                 |view_item, context, visitor|
-                (*this).build_reduced_graph_for_view_item(view_item, context,
+                (*this).build_reduced_graph_for_view_item(view_item,
+                                                          context,
                                                           visitor)
             },
             visit_block: {
                 |block, context, visitor|
-                (*this).build_reduced_graph_for_block(block, context,
+                (*this).build_reduced_graph_for_block(block,
+                                                      context,
                                                       visitor);
             }
             with *default_visitor()
@@ -466,20 +474,22 @@ class Resolver {
 
     #[doc="
         Adds a new child item to the module definition of the parent node and
-        returns it. Or, if we're inside a block, creates an anonymous module
-        corresponding to the innermost block ID instead.
+        returns its corresponding name bindings as well as the current parent.
+        Or, if we're inside a block, creates (or reuses) an anonymous module
+        corresponding to the innermost block ID and returns the name bindings
+        as well as the newly-created parent.
 
         If this node does not have a module definition and we are not inside
         a block, fails.
     "]
     fn add_child(name: Atom,
                  reduced_graph_parent: ReducedGraphParent)
-              -> @NameBindings {
+              -> (@NameBindings, ReducedGraphParent) {
 
         // If this is the immediate descendant of a module, then we add the
         // child name directly. Otherwise, we create or reuse an anonymous
         // module and add the child to that.
-        
+       
         let mut module;
         alt reduced_graph_parent {
             ModuleReducedGraphParent(parent_module) {
@@ -502,25 +512,23 @@ class Resolver {
         }
 
         // Add or reuse the child.
+        let new_parent = ModuleReducedGraphParent(module);
         alt module.children.find(name) {
             none {
                 let child = @NameBindings();
                 module.children.insert(name, child);
-                ret child;
+                ret (child, new_parent);
             }
             some(child) {
-                ret child;
+                ret (child, new_parent);
             }
         }
     }
 
     fn get_parent_link(parent: ReducedGraphParent, name: Atom) -> ParentLink {
         alt parent {
-            ModuleReducedGraphParent(module) {
-                ret ModuleParentLink(module, name);
-            }
+            ModuleReducedGraphParent(module) |
             BlockReducedGraphParent(module, _) {
-                // FIXME: Create the intermediate module, maybe?
                 ret ModuleParentLink(module, name);
             }
         }
@@ -533,72 +541,78 @@ class Resolver {
 
         let atom =
             (*self.atom_table).intern(@/* FIXME: bad */ copy item.ident);
-        let child = self.add_child(atom, parent);
+        let (name_bindings, new_parent) = self.add_child(atom, parent);
 
         alt item.node {
             item_mod(module) {
-                (*child).define_module(self.get_parent_link(parent, atom),
-                                       some({ crate: 0, node: item.id }));
-                visit_mod(module, item.span, item.id,
-                          ModuleReducedGraphParent((*child).get_module()),
-                          visitor);
+                let parent_link = self.get_parent_link(new_parent, atom);
+                let def_id = { crate: 0, node: item.id };
+                (*name_bindings).define_module(parent_link, some(def_id));
+
+                let new_parent =
+                    ModuleReducedGraphParent((*name_bindings).get_module());
+
+                visit_mod(module, item.span, item.id, new_parent, visitor);
             }
             item_native_mod(native_module) {
-                (*child).define_module(self.get_parent_link(parent, atom),
-                     some({ crate: 0, node: item.id }));
-                visit_item(item,
-                           ModuleReducedGraphParent((*child).get_module()),
-                           visitor);
+                let parent_link = self.get_parent_link(new_parent, atom);
+                let def_id = { crate: 0, node: item.id };
+                (*name_bindings).define_module(parent_link, some(def_id));
+
+                let new_parent =
+                    ModuleReducedGraphParent((*name_bindings).get_module());
+
+                visit_item(item, new_parent, visitor);
             }
 
             // These items live in the value namespace.
             item_const(*) {
-                (*child).define_value(def_const(local_def(item.id)));
+                (*name_bindings).define_value(def_const(local_def(item.id)));
             }
             item_fn(decl, _, _) {
                 let def = def_fn(local_def(item.id), decl.purity);
-                (*child).define_value(def);
-                visit_item(item, parent, visitor);
+                (*name_bindings).define_value(def);
+                visit_item(item, new_parent, visitor);
             }
 
             // These items live in the type namespace.
             item_ty(*) {
-                (*child).define_type(def_ty(local_def(item.id)));
+                (*name_bindings).define_type(def_ty(local_def(item.id)));
             }
 
             // These items live in both the type and value namespaces.
             item_enum(variants, _, _) {
-                (*child).define_type(def_ty(local_def(item.id)));
+                (*name_bindings).define_type(def_ty(local_def(item.id)));
 
                 for variants.each {
                     |variant|
                     self.build_reduced_graph_for_variant(variant,
                                                          local_def(item.id),
-                                                         parent,
+                                                         new_parent,
                                                          visitor);
                 }
             }
             item_res(decl, _, _, _, _, _) {
                 let purity = decl.purity;
                 let value_def = def_fn(local_def(item.id), purity);
-                (*child).define_value(value_def);
-                (*child).define_type(def_ty(local_def(item.id)));
+                (*name_bindings).define_value(value_def);
+                (*name_bindings).define_type(def_ty(local_def(item.id)));
 
-                visit_item(item, parent, visitor);
+                visit_item(item, new_parent, visitor);
             }
             item_class(_, _, _, ctor, _, _) {
-                (*child).define_type(def_ty(local_def(item.id)));
+                (*name_bindings).define_type(def_ty(local_def(item.id)));
 
                 let purity = ctor.node.dec.purity;
                 let ctor_def = def_fn(local_def(ctor.node.id), purity);
-                (*child).define_value(ctor_def);
+                (*name_bindings).define_value(ctor_def);
 
-                visit_item(item, parent, visitor);
+                visit_item(item, new_parent, visitor);
             }
 
             item_impl(*) {
-                (*child).define_impl(local_def(item.id));
-                visit_item(item, parent, visitor);
+                (*name_bindings).define_impl(local_def(item.id));
+                visit_item(item, new_parent, visitor);
             }
 
             item_iface(*) { /* TODO */ }
@@ -616,7 +630,7 @@ class Resolver {
 
         let atom = (*self.atom_table).intern(@/* FIXME: bad */ copy
                                              variant.node.name);
-        let child = self.add_child(atom, parent);
+        let (child, _) = self.add_child(atom, parent);
 
         (*child).define_value(def_variant(item_id,
                                           local_def(variant.node.id)));
@@ -706,14 +720,17 @@ class Resolver {
                 alt find_use_stmt_cnum(self.session.cstore, node_id) {
                     some(crate_id) {
                         let atom = (*self.atom_table).intern(@copy name);
-                        let child = self.add_child(atom, parent);
+                        let (child_name_bindings, new_parent) =
+                            self.add_child(atom, parent);
 
                         let def_id = { crate: crate_id, node: 0 };
                         let parent_link = ModuleParentLink
-                            (self.get_module_from_parent(parent), atom);
-                        (*child).define_module(parent_link, some(def_id));
+                            (self.get_module_from_parent(new_parent), atom);
+
+                        (*child_name_bindings).define_module(parent_link,
+                                                             some(def_id));
                         self.build_reduced_graph_for_external_crate
-                            ((*child).get_module());
+                            ((*child_name_bindings).get_module());
                     }
                     none {
                         /* Ignore. */
@@ -721,6 +738,27 @@ class Resolver {
                 }
             }
         }
+    }
+
+    #[doc="Constructs the reduced graph for one native item."]
+    fn build_reduced_graph_for_native_item(native_item: @native_item,
+                                           parent: ReducedGraphParent,
+                                           &&visitor:
+                                                vt<ReducedGraphParent>) {
+    
+        let name =
+            (*self.atom_table).intern(@/* FIXME: bad */ copy
+                                      native_item.ident);
+        let (name_bindings, new_parent) = self.add_child(name, parent);
+
+        alt native_item.node {
+            native_item_fn(fn_decl, ty_params) {
+                let def = def_fn(local_def(native_item.id), impure_fn);
+                (*name_bindings).define_value(def);
+            }
+        }
+
+        visit_native_item(native_item, new_parent, visitor);
     }
 
     fn build_reduced_graph_for_block(block: blk,
@@ -753,38 +791,37 @@ class Resolver {
 
             // Find the module we need, creating modules along the way if we
             // need to.
-            let mut current_module_node = root;
+            let mut current_module = root;
             for pieces.each {
                 |ident|
 
                 // Create or reuse a graph node for the child.
                 let atom = (*self.atom_table).intern(@copy ident);
-                let child_name_bindings =
+                let (child_name_bindings, new_parent) =
                     self.add_child(atom,
-                                   ModuleReducedGraphParent
-                                        (current_module_node));
+                                   ModuleReducedGraphParent(current_module));
 
                 // Define or reuse the module node.
                 alt child_name_bindings.module_def {
                     NoModuleDef {
                         #debug("(building reduced graph for external crate) \
                                 autovivifying %s", ident);
-                        let parent_link =
-                            ModuleParentLink(current_module_node, atom);
+                        let parent_link = self.get_parent_link(new_parent,
+                                                               atom);
                         (*child_name_bindings).define_module(parent_link,
                                                              none);
                     }
                     ModuleDef(_) { /* Fall through. */ }
                 }
 
-                current_module_node = (*child_name_bindings).get_module();
+                current_module = (*child_name_bindings).get_module();
             }
 
             // Add the new child item.
             let atom = (*self.atom_table).intern(@copy final_ident);
-            let child_name_bindings =
+            let (child_name_bindings, new_parent) =
                 self.add_child(atom,
-                               ModuleReducedGraphParent(current_module_node));
+                               ModuleReducedGraphParent(current_module));
 
             alt path_entry.def_like {
                 dl_def(def) {
@@ -796,8 +833,8 @@ class Resolver {
                                             external crate) building module \
                                             %s", final_ident);
                                     let parent_link =
-                                        ModuleParentLink(current_module_node,
-                                                         atom);
+                                        self.get_parent_link(new_parent,
+                                                             atom);
                                     (*child_name_bindings).
                                         define_module(parent_link,
                                                       some(def_id));
@@ -909,7 +946,7 @@ class Resolver {
 
             if self.unresolved_imports == prev_unresolved_imports {
                 #debug("!!! (resolving imports) failure");
-                self.report_unresolved_imports(self.graph_root);
+                self.report_unresolved_imports(module_root);
                 break;
             }
 
@@ -935,6 +972,11 @@ class Resolver {
                     self.resolve_imports_for_module_subtree(child_module_node);
                 }
             }
+        }
+
+        for module.anonymous_children.each {
+            |_block_id, child_module|
+            self.resolve_imports_for_module_subtree(child_module);
         }
     }
 
@@ -1030,7 +1072,9 @@ class Resolver {
                 assert self.unresolved_imports >= 1u;
                 self.unresolved_imports -= 1u;
             }
-            _ { /* Nothing to do here; just return the error. */ }
+            _ {
+                // Nothing to do here; just return the error.
+            }
         }
 
         // Decrement the count of unresolved globs if necessary. But only if
@@ -1043,7 +1087,9 @@ class Resolver {
                     assert module.glob_count >= 1u;
                     module.glob_count -= 1u;
                 }
-                SingleImport(*) { /* Ignore. */ }
+                SingleImport(*) {
+                    // Ignore.
+                }
             }
         }
 
@@ -1156,11 +1202,11 @@ class Resolver {
                         }
                         if value_result == UnknownResult {
                             value_result = get_binding(import_resolution,
-                                                       TypeNS);
+                                                       ValueNS);
                         }
                         if type_result == UnknownResult {
                             type_result = get_binding(import_resolution,
-                                                      ValueNS);
+                                                      TypeNS);
                         }
                         if impl_result == UnknownResult {
                             impl_result = get_binding(import_resolution,
@@ -1595,7 +1641,11 @@ class Resolver {
                 }
 
                 alt (*import_resolution).target_for_namespace(namespace) {
-                    none { /* Continue. */ }
+                    none {
+                        #debug("(resolving name in module) name found, but \
+                                not in namespace %?",
+                               namespace);
+                    }
                     some(target) {
                         #debug("(resolving name in module) resolved to \
                                 import");
@@ -1789,15 +1839,7 @@ class Resolver {
         ret Success(());
     }
 
-    fn report_unresolved_imports(name_bindings: @NameBindings) {
-        let mut module;
-        alt (*name_bindings).get_module_if_available() {
-            none { ret; }
-            some(associated_module_node) {
-                module = associated_module_node;
-            }
-        }
-
+    fn report_unresolved_imports(module: @Module) {
         let index = module.resolved_import_count;
         let import_count = module.imports.len();
         if index != import_count {
@@ -1807,10 +1849,22 @@ class Resolver {
                    *(*self.atom_table).atoms_to_str((*module_path).get()));
         }
 
-        // Descend into children.
+        // Descend into children and anonymous children.
         for module.children.each {
             |_name, child_node|
-            self.report_unresolved_imports(child_node);
+            alt (*child_node).get_module_if_available() {
+                none {
+                    // Continue.
+                }
+                some(child_module) {
+                    self.report_unresolved_imports(child_module);
+                }
+            }
+        }
+
+        for module.anonymous_children.each {
+            |_name, module|
+            self.report_unresolved_imports(module);
         }
     }
 
@@ -1867,8 +1921,10 @@ class Resolver {
         ret none;
     }
 
+    // FIXME: This shouldn't be unsafe!
     fn resolve_crate() unsafe {
         #debug("(resolving crate) starting");
+
         // FIXME: This is awful!
         let this = ptr::addr_of(self);
         visit_crate(*self.crate, (), mk_vt(@{
@@ -1909,7 +1965,8 @@ class Resolver {
                     |method|
                     // We also need a new scope for the method-specific
                     // type parameters.
-                    self.resolve_function(method.decl, some(method.tps),
+                    self.resolve_function(some(@method.decl),
+                                          some(method.tps),
                                           method.body,
                                           HasSelfBinding(item.id),
                                           visitor);
@@ -1924,11 +1981,50 @@ class Resolver {
                     visit_ty(method.decl.output, (), visitor);
                 }
             }
-            item_class(*) {
-                // Create a new scope for the class-wide type parameters.
-                // FIXME: Handle methods properly.
-                visit_item(item, (), visitor);
+
+            item_class(ty_params, _, class_members, constructor,
+                       optional_destructor, _) {
+                // Resolve methods.
+                for class_members.each {
+                    |class_member|
+
+                    alt class_member.node {
+                        class_method(method) {
+                            self.resolve_function(some(@method.decl),
+                                                  some(method.tps),
+                                                  method.body,
+                                                  HasSelfBinding(item.id),
+                                                  visitor);
+                        }
+                        instance_var(*) {
+                            // Don't need to do anything with this.
+                        }
+                    }
+                }
+
+                // Resolve the constructor.
+                self.resolve_function(some(@constructor.node.dec),
+                                      none,
+                                      constructor.node.body,
+                                      HasSelfBinding(item.id),
+                                      visitor);
+
+
+                // Resolve the destructor, if applicable.
+                alt optional_destructor {
+                    none {
+                        // Nothing to do.
+                    }
+                    some(destructor) {
+                        self.resolve_function(none,
+                                              none,
+                                              destructor.node.body,
+                                              HasSelfBinding(item.id),
+                                              visitor);
+                    }
+                }
             }
+
             item_mod(module) {
                 let atom = (*self.atom_table).intern(@copy item.ident);
                 self.with_scope(some(atom)) {
@@ -1953,27 +2049,28 @@ class Resolver {
                     }
                 }
             }
-            item_fn(fn_decl, ty_params, block) {
-                self.resolve_function(fn_decl, some(ty_params), block,
+            item_fn(fn_decl, ty_params, block)  |
+            item_res(fn_decl, ty_params, block, _, _, _) {
+                self.resolve_function(some(@fn_decl), some(ty_params), block,
                                       NoSelfBinding, visitor);
             }
-            item_res(*) | item_const(*) {
+            item_const(*) {
                 visit_item(item, (), visitor);
             }
         }
     }
 
-    fn resolve_function(fn_decl: fn_decl,
+    fn resolve_function(optional_declaration: option<@fn_decl>,
                         _ty_params: option<[ty_param]>,
                         block: blk,
                         self_binding: SelfBinding,
                         visitor: ResolveVisitor) {
 
-        // Create a Rib for the function.
+        // Create a rib for the function.
         let function_rib = @Rib();
         (*self.value_ribs).push(function_rib);
 
-        // Add self to the Rib, if necessary.
+        // Add self to the rib, if necessary.
         alt self_binding {
             NoSelfBinding { /* Nothing to do. */ }
             HasSelfBinding(self_node_id) {
@@ -1982,21 +2079,28 @@ class Resolver {
             }
         }
 
-        // Add each argument to the Rib.
-        for fn_decl.inputs.each {
-            |argument|
+        // Add each argument to the rib.
+        alt optional_declaration {
+            none {
+                // Nothing to do.
+            }
+            some(declaration) {
+                for declaration.inputs.each {
+                    |argument|
 
-            let name = (*self.atom_table).intern(@copy argument.ident);
-            let def_like = dl_def(def_arg(argument.id, argument.mode));
-            (*function_rib).bindings.insert(name, def_like);
+                    let name =
+                        (*self.atom_table).intern(@copy argument.ident);
+                    let def_like = dl_def(def_arg(argument.id,
+                                                  argument.mode));
+                    (*function_rib).bindings.insert(name, def_like);
 
-            #debug("(resolving function) recorded argument '%s'",
-                   *(*self.atom_table).atom_to_str(name));
+                    #debug("(resolving function) recorded argument '%s'",
+                           *(*self.atom_table).atom_to_str(name));
+                }
+            }
         }
 
-        // Note: We don't call resolve_block() because that would create a
-        // useless extra Rib for the outermost function block.
-        visit_block(block, (), visitor);
+        self.resolve_block(block, visitor);
 
         #debug("(resolving function) leaving function");
 
@@ -2063,9 +2167,9 @@ class Resolver {
             alt pattern.node {
                 pat_ident(path, none)
                         if !path.global && path.idents.len() == 1u {
-                    // The meaning of pat_ident with no type parameters depends
-                    // on whether an enum variant with that name is in scope.
-                    // The probing lookup has to be careful not to emit
+                    // The meaning of pat_ident with no type parameters
+                    // depends on whether an enum variant with that name is in
+                    // scope. The probing lookup has to be careful not to emit
                     // spurious errors. Only matching patterns (alt) can match
                     // nullary variants. For binding patterns (let), matching
                     // such a variant is simply disallowed (since it's rarely
@@ -2151,8 +2255,8 @@ class Resolver {
             }
 
             expr_fn(_, fn_decl, block, _) | expr_fn_block(fn_decl, block, _) {
-                self.resolve_function(fn_decl, none, block, NoSelfBinding,
-                                      visitor);
+                self.resolve_function(some(@fn_decl), none, block,
+                                      NoSelfBinding, visitor);
             }
 
             _ {
