@@ -2,19 +2,19 @@ import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
-import syntax::ast::{_mod, arm, blk, class_method, crate, crate_num};
-import syntax::ast::{decl_item, def, def_arg, def_binding, def_class};
-import syntax::ast::{def_const, def_fn, def_id, def_local, def_mod};
-import syntax::ast::{def_native_mod, def_prim_ty, def_region, def_self};
-import syntax::ast::{def_ty, def_ty_param, def_upvar, def_use, def_variant};
+import syntax::ast::{_mod, arm, blk, class_ctor, class_dtor, class_member, class_method, crate};
+import syntax::ast::{crate_num, decl_item, def, def_arg, def_binding};
+import syntax::ast::{def_class, def_const, def_fn, def_id, def_local};
+import syntax::ast::{def_mod, def_native_mod, def_prim_ty, def_region};
+import syntax::ast::{def_self, def_ty, def_ty_param, def_upvar, def_use, def_variant};
 import syntax::ast::{expr, expr_fn, expr_fn_block, expr_path, fn_decl, ident};
 import syntax::ast::{impure_fn, instance_var, item, item_class, item_const};
 import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
-import syntax::ast::{item_native_mod, item_res, item_ty, local, native_item};
+import syntax::ast::{item_native_mod, item_res, item_ty, local, method, native_item};
 import syntax::ast::{native_item_fn, node_id, pat, pat_ident, stmt_decl};
-import syntax::ast::{ty_param, variant, view_item, view_item_export};
-import syntax::ast::{view_item_import, view_item_use, view_path_glob};
-import syntax::ast::{view_path_list, view_path_simple};
+import syntax::ast::{ty, ty_param, ty_path, variant, view_item};
+import syntax::ast::{view_item_export, view_item_import, view_item_use};
+import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
@@ -87,6 +87,11 @@ enum ResolveResult<T> {
     Failed,         // Failed to resolve the name.
     Indeterminate,  // Couldn't determine due to unresolved globs.
     Success(T)      // Successfully resolved the import.
+}
+
+enum TypeParameters {
+    NoTypeParameters,                           // No type parameters.
+    HasTypeParameters(@[ty_param], node_id)     // Type parameters and ID.
 }
 
 // FIXME (issue 2550): Should be a class but then it becomes not implicitly
@@ -390,6 +395,9 @@ class Resolver {
     // TODO: Reuse ribs to avoid allocation.
     let value_ribs: @dvec<@Rib>;
 
+    // The current set of local scopes, for types.
+    let type_ribs: @dvec<@Rib>;
+
     // The atom for the keyword "self".
     let self_atom: Atom;
 
@@ -410,6 +418,7 @@ class Resolver {
 
         self.current_module = (*self.graph_root).get_module();
         self.value_ribs = @dvec();
+        self.type_ribs = @dvec();
 
         self.self_atom = (*self.atom_table).intern(@"self");
 
@@ -994,8 +1003,8 @@ class Resolver {
             |_name, child_node|
             alt (*child_node).get_module_if_available() {
                 none { /* Nothing to do. */ }
-                some(child_module_node) {
-                    self.resolve_imports_for_module_subtree(child_module_node);
+                some(child_module) {
+                    self.resolve_imports_for_module_subtree(child_module);
                 }
             }
         }
@@ -1042,8 +1051,8 @@ class Resolver {
         Attempts to resolve the given import. The return value indicates
         failure if we're certain the name does not exist, indeterminate if we
         don't know whether the name exists at the moment due to other
-        currently-unresolved imports, or success if we know the name exists. If
-        successful, the resolved bindings are written into the module.
+        currently-unresolved imports, or success if we know the name exists.
+        If successful, the resolved bindings are written into the module.
     "]
     fn resolve_import_for_module(module: @Module,
                                  import_directive: @ImportDirective)
@@ -1203,7 +1212,8 @@ class Resolver {
                         }
                     }
                     some(import_resolution)
-                            if import_resolution.outstanding_references == 0u {
+                            if import_resolution.outstanding_references
+                                == 0u {
                         fn get_binding(import_resolution: @ImportResolution,
                                        namespace: Namespace)
                                     -> NamespaceResult {
@@ -1973,6 +1983,10 @@ class Resolver {
             visit_local: {
                 |local, _context, visitor|
                 (*this).resolve_local(local, visitor);
+            },
+            visit_ty: {
+                |ty, _context, visitor|
+                (*this).resolve_type(ty, visitor);
             }
             with *default_visitor()
         }));
@@ -1986,18 +2000,9 @@ class Resolver {
                 visit_item(item, (), visitor);
             }
 
-            item_impl(_, _, _, _, methods) {
-                // Create a new scope for the impl-wide type parameters.
-                for methods.each {
-                    |method|
-                    // We also need a new scope for the method-specific
-                    // type parameters.
-                    self.resolve_function(some(@method.decl),
-                                          some(method.tps),
-                                          method.body,
-                                          HasSelfBinding(item.id),
-                                          visitor);
-                }
+            item_impl(type_parameters, _, _, _, methods) {
+                self.resolve_implementation(item.id, type_parameters,
+                                            methods, visitor);
             }
 
             item_iface(_, _, methods) {
@@ -2012,45 +2017,9 @@ class Resolver {
 
             item_class(ty_params, _, class_members, constructor,
                        optional_destructor, _) {
-                // Resolve methods.
-                for class_members.each {
-                    |class_member|
-
-                    alt class_member.node {
-                        class_method(method) {
-                            self.resolve_function(some(@method.decl),
-                                                  some(method.tps),
-                                                  method.body,
-                                                  HasSelfBinding(item.id),
-                                                  visitor);
-                        }
-                        instance_var(*) {
-                            // Don't need to do anything with this.
-                        }
-                    }
-                }
-
-                // Resolve the constructor.
-                self.resolve_function(some(@constructor.node.dec),
-                                      none,
-                                      constructor.node.body,
-                                      HasSelfBinding(item.id),
-                                      visitor);
-
-
-                // Resolve the destructor, if applicable.
-                alt optional_destructor {
-                    none {
-                        // Nothing to do.
-                    }
-                    some(destructor) {
-                        self.resolve_function(none,
-                                              none,
-                                              destructor.node.body,
-                                              HasSelfBinding(item.id),
-                                              visitor);
-                    }
-                }
+                self.resolve_class(item.id, @copy ty_params, class_members,
+                                   constructor, optional_destructor,
+                                   visitor);
             }
 
             item_mod(module) {
@@ -2081,8 +2050,13 @@ class Resolver {
 
             item_fn(fn_decl, ty_params, block)  |
             item_res(fn_decl, ty_params, block, _, _, _) {
-                self.resolve_function(some(@fn_decl), some(ty_params), block,
-                                      NoSelfBinding, visitor);
+                self.resolve_function(some(@fn_decl),
+                                      HasTypeParameters(@/* FIXME: bad */ copy
+                                                            ty_params,
+                                                        item.id),
+                                      block,
+                                      NoSelfBinding,
+                                      visitor);
             }
 
             item_const(*) {
@@ -2092,21 +2066,47 @@ class Resolver {
     }
 
     fn resolve_function(optional_declaration: option<@fn_decl>,
-                        _ty_params: option<[ty_param]>,
+                        type_parameters: TypeParameters,
                         block: blk,
                         self_binding: SelfBinding,
                         visitor: ResolveVisitor) {
 
-        // Create a rib for the function.
-        let function_rib = @Rib();
-        (*self.value_ribs).push(function_rib);
+        // Create a value rib for the function.
+        let function_value_rib = @Rib();
+        (*self.value_ribs).push(function_value_rib);
+
+        // If this function has type parameters, add them now.
+        alt type_parameters {
+            HasTypeParameters(type_parameters, function_id) 
+                    if (*type_parameters).len() >= 1u {
+
+                let function_type_rib = @Rib();
+                (*self.type_ribs).push(function_type_rib);
+
+                for (*type_parameters).eachi {
+                    |index, type_parameter|
+
+                    let name =
+                        (*self.atom_table).intern(@copy type_parameter.ident);
+                    let def_like = dl_def(def_ty_param(local_def(function_id),
+                                                       index));
+                    (*function_type_rib).bindings.insert(name, def_like);
+                }
+            }
+            _ {
+                // Nothing to do.
+            }
+        }
 
         // Add self to the rib, if necessary.
         alt self_binding {
-            NoSelfBinding { /* Nothing to do. */ }
+            NoSelfBinding {
+                // Nothing to do.
+            }
             HasSelfBinding(self_node_id) {
                 let def_like = dl_def(def_self(self_node_id));
-                (*function_rib).bindings.insert(self.self_atom, def_like);
+                (*function_value_rib).bindings.insert(self.self_atom,
+                                                      def_like);
             }
         }
 
@@ -2123,7 +2123,7 @@ class Resolver {
                         (*self.atom_table).intern(@copy argument.ident);
                     let def_like = dl_def(def_arg(argument.id,
                                                   argument.mode));
-                    (*function_rib).bindings.insert(name, def_like);
+                    (*function_value_rib).bindings.insert(name, def_like);
 
                     #debug("(resolving function) recorded argument '%s'",
                            *(*self.atom_table).atom_to_str(name));
@@ -2135,7 +2135,108 @@ class Resolver {
 
         #debug("(resolving function) leaving function");
 
+        // If this function has type parameters, remove the rib.
+        alt type_parameters {
+            HasTypeParameters(type_parameters, _) 
+                    if (*type_parameters).len() >= 1u {
+                (*self.type_ribs).pop();
+            }
+            _ {
+                // Nothing to do.
+            }
+        }
+
         (*self.value_ribs).pop();
+    }
+
+    fn resolve_class(id: node_id,
+                     type_parameters: @[ty_param],
+                     class_members: [@class_member],
+                     constructor: class_ctor,
+                     optional_destructor: option<class_dtor>,
+                     visitor: ResolveVisitor) {
+
+        // If applicable, create a rib for the type parameters.
+        if (*type_parameters).len() >= 1u {
+            let class_type_rib = @Rib();
+            (*self.type_ribs).push(class_type_rib);
+
+            for (*type_parameters).eachi {
+                |index, type_parameter|
+
+                let name =
+                    (*self.atom_table).intern(@copy type_parameter.ident);
+                let def_like = dl_def(def_ty_param(local_def(id), index));
+                (*class_type_rib).bindings.insert(name, def_like);
+            }
+        }
+
+        // Resolve methods.
+        for class_members.each {
+            |class_member|
+
+            alt class_member.node {
+                class_method(method) {
+                    self.resolve_function(some(@method.decl),
+                                          HasTypeParameters(@method.tps,
+                                                            method.id),
+                                          method.body,
+                                          HasSelfBinding(id),
+                                          visitor);
+                }
+                instance_var(*) {
+                    // Don't need to do anything with this.
+                }
+            }
+        }
+
+        // Resolve the constructor.
+        self.resolve_function(some(@constructor.node.dec),
+                              NoTypeParameters,
+                              constructor.node.body,
+                              HasSelfBinding(id),
+                              visitor);
+
+
+        // Resolve the destructor, if applicable.
+        alt optional_destructor {
+            none {
+                // Nothing to do.
+            }
+            some(destructor) {
+                self.resolve_function(none,
+                                      NoTypeParameters,
+                                      destructor.node.body,
+                                      HasSelfBinding(id),
+                                      visitor);
+            }
+        }
+
+        if (*type_parameters).len() >= 1u {
+            (*self.type_ribs).pop();
+        }
+    }
+
+    fn resolve_implementation(id: node_id,
+                              _type_parameters: [ty_param],
+                              methods: [@method],
+                              visitor: ResolveVisitor) {
+
+        // Create a new scope for the impl-wide type parameters.
+        // TODO
+
+        for methods.each {
+            |method|
+
+            // We also need a new scope for the method-specific
+            // type parameters.
+
+            self.resolve_function(some(@method.decl),
+                                  HasTypeParameters(@method.tps, method.id),
+                                  method.body,
+                                  HasSelfBinding(id),
+                                  visitor);
+        }
     }
 
     fn resolve_module(module: _mod, span: span, _name: ident, id: node_id,
@@ -2150,7 +2251,7 @@ class Resolver {
             mutability = Mutable;
         } else {
             mutability = Immutable;
-        };
+        }
 
         self.resolve_pattern(local.node.pat, IrrefutableMode, mutability);
     }
@@ -2188,6 +2289,77 @@ class Resolver {
 
         (*self.value_ribs).pop();
         #debug("(resolving block) leaving block");
+    }
+
+    fn resolve_type(ty: @ty, visitor: ResolveVisitor) {
+        alt ty.node {
+            // Like path expressions, the interpretation of path types depends
+            // on whether the path has multiple elements in it or not.
+            ty_path(path, _) if path.idents.len() == 1u {
+                // This is a local path in the type namespace. Walk through
+                // scopes looking for it.
+
+                // TODO: Merge this with the expr_path code somehow, perhaps?
+
+                let name = (*self.atom_table).intern(@copy path.idents[0]);
+
+                // First, check the local set of ribs.
+                let mut result_def;
+                alt self.search_ribs(self.type_ribs, name) {
+                    some(dl_def(def)) {
+                        #debug("(resolving type) resolved '%s' to type param",
+                               *(*self.atom_table).atom_to_str(name));
+                        result_def = some(def);
+                    }
+                    some(dl_field) | some(dl_impl(_)) | none {
+                        // Otherwise, check the items.
+                        alt self.resolve_item_in_lexical_scope
+                                (self.current_module, name, TypeNS) {
+
+                            Success(target) {
+                                alt target.bindings.type_def {
+                                    none {
+                                        fail "resolved name in type \
+                                              namespace to a set of name \
+                                              bindings with no type def?!";
+                                    }
+                                    some(def) {
+                                        #debug("(resolving type) resolved \
+                                                '%s' to item",
+                                               *(*self.atom_table).
+                                                atom_to_str(name));
+                                        result_def = some(def);
+                                    }
+                                }
+                            }
+                            Indeterminate {
+                                fail "unexpected indeterminate result";
+                            }
+                            Failed {
+                                result_def = none;
+                            }
+                        }
+                    }
+                }
+
+                alt result_def {
+                    some(def) {
+                        // Write the result into the def map.
+                        self.def_map.insert(ty.id, def);
+                    }
+                    none {
+                        self.session.span_warn
+                            (ty.span,
+                             #fmt("use of undeclared type name '%s'",
+                                  *(*self.atom_table).atom_to_str(name)));
+                    }
+                }
+            }
+
+            _ {
+                visit_ty(ty, (), visitor);
+            }
+        }
     }
 
     fn resolve_pattern(pattern: @pat,
@@ -2248,13 +2420,13 @@ class Resolver {
                             Success(target) {
                                 alt target.bindings.value_def {
                                     none {
-                                        fail "resolved name in value namespace
-                                              to a graph node with no value
-                                              def?!";
+                                        fail "resolved name in value \
+                                              to a set of name bindings with \
+                                              no def?!";
                                     }
                                     some(def) {
-                                        #debug("(resolving expr) resolved '%s'
-                                                to item",
+                                        #debug("(resolving expr) resolved \
+                                                '%s' to item",
                                                *(*self.atom_table).
                                                 atom_to_str(name));
                                         result_def = some(def);
@@ -2286,7 +2458,7 @@ class Resolver {
             }
 
             expr_fn(_, fn_decl, block, _) | expr_fn_block(fn_decl, block, _) {
-                self.resolve_function(some(@fn_decl), none, block,
+                self.resolve_function(some(@fn_decl), NoTypeParameters, block,
                                       NoSelfBinding, visitor);
             }
 
