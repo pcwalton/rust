@@ -42,10 +42,10 @@ enum PatternBindingMode {
 }
 
 enum Namespace {
-    ModuleNamespace,
-    TypeNamespace,
-    ValueNamespace,
-    ImplNamespace
+    ModuleNS,
+    TypeNS,
+    ValueNS,
+    ImplNS
 }
 
 enum NamespaceResult {
@@ -60,8 +60,8 @@ enum Mutability {
 }
 
 enum SelfBinding {
-    NoSelfBinding
-    HasSelfBinding(node_id),
+    NoSelfBinding,
+    HasSelfBinding(node_id)
 }
 
 type ResolveVisitor = vt<()>;
@@ -218,10 +218,10 @@ class ImportResolution {
 
     fn target_for_namespace(namespace: Namespace) -> option<Target> {
         alt namespace {
-            ModuleNamespace { ret copy self.module_target; }
-            TypeNamespace   { ret copy self.type_target;   }
-            ValueNamespace  { ret copy self.value_target;  }
-            ImplNamespace   { ret copy self.impl_target;   }
+            ModuleNS    { ret copy self.module_target; }
+            TypeNS      { ret copy self.type_target;   }
+            ValueNS     { ret copy self.value_target;  }
+            ImplNS      { ret copy self.impl_target;   }
         }
     }
 }
@@ -362,10 +362,10 @@ class NameBindings {
 
     fn defined_in_namespace(namespace: Namespace) -> bool {
         alt namespace {
-            ModuleNamespace { ret self.module_def != NoModuleDef; }
-            TypeNamespace   { ret self.type_def != none;          }
-            ValueNamespace  { ret self.value_def != none;         }
-            ImplNamespace   { ret self.impl_defs.len() >= 0u;     }
+            ModuleNS    { ret self.module_def != NoModuleDef; }
+            TypeNS      { ret self.type_def != none;          }
+            ValueNS     { ret self.value_def != none;         }
+            ImplNS      { ret self.impl_defs.len() >= 0u;     }
         }
     }
 }
@@ -1074,27 +1074,19 @@ class Resolver {
         alt containing_module.children.find(source) {
             none { /* Continue. */ }
             some(child_name_bindings) {
-                if (*child_name_bindings)
-                        .defined_in_namespace(ModuleNamespace) {
-
+                if (*child_name_bindings).defined_in_namespace(ModuleNS) {
                     module_result = BoundResult(containing_module,
                                                 child_name_bindings);
                 }
-                if (*child_name_bindings)
-                        .defined_in_namespace(ValueNamespace) {
-
+                if (*child_name_bindings).defined_in_namespace(ValueNS) {
                     value_result = BoundResult(containing_module,
                                                child_name_bindings);
                 }
-                if (*child_name_bindings)
-                        .defined_in_namespace(TypeNamespace) {
-
+                if (*child_name_bindings).defined_in_namespace(TypeNS) {
                     type_result = BoundResult(containing_module,
                                               child_name_bindings);
                 }
-                if (*child_name_bindings)
-                        .defined_in_namespace(ImplNamespace) {
-
+                if (*child_name_bindings).defined_in_namespace(ImplNS) {
                     impl_result = BoundResult(containing_module,
                                               child_name_bindings);
                 }
@@ -1160,19 +1152,19 @@ class Resolver {
                         // We can, therefore, just follow the import.
                         if module_result == UnknownResult {
                             module_result = get_binding(import_resolution,
-                                                        ModuleNamespace);
+                                                        ModuleNS);
                         }
                         if value_result == UnknownResult {
                             value_result = get_binding(import_resolution,
-                                                       TypeNamespace);
+                                                       TypeNS);
                         }
                         if type_result == UnknownResult {
                             type_result = get_binding(import_resolution,
-                                                      ValueNamespace);
+                                                      ValueNS);
                         }
                         if impl_result == UnknownResult {
                             impl_result = get_binding(import_resolution,
-                                                      ImplNamespace);
+                                                      ImplNS);
                         }
                     }
                     some(_) {
@@ -1347,19 +1339,19 @@ class Resolver {
                    self.module_to_str(module));
 
             // Merge the child item into the import resolution.
-            if (*name_bindings).defined_in_namespace(ModuleNamespace) {
+            if (*name_bindings).defined_in_namespace(ModuleNS) {
                 dest_import_resolution.module_target =
                     some(Target(containing_module, name_bindings));
             }
-            if (*name_bindings).defined_in_namespace(ValueNamespace) {
+            if (*name_bindings).defined_in_namespace(ValueNS) {
                 dest_import_resolution.value_target =
                     some(Target(containing_module, name_bindings));
             }
-            if (*name_bindings).defined_in_namespace(TypeNamespace) {
+            if (*name_bindings).defined_in_namespace(TypeNS) {
                 dest_import_resolution.type_target =
                     some(Target(containing_module, name_bindings));
             }
-            if (*name_bindings).defined_in_namespace(ImplNamespace) {
+            if (*name_bindings).defined_in_namespace(ImplNS) {
                 dest_import_resolution.impl_target =
                     some(Target(containing_module, name_bindings));
             }
@@ -1413,9 +1405,7 @@ class Resolver {
         let mut index = 1u;
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module,
-                                            name,
-                                            ModuleNamespace) {
+            alt self.resolve_name_in_module(search_module, name, ModuleNS) {
 
                 Failed {
                     #debug("!!! (resolving module path for import) module \
@@ -1535,10 +1525,7 @@ class Resolver {
     fn resolve_module_in_lexical_scope(module: @Module, name: Atom)
                                     -> ResolveResult<@Module> {
 
-        alt self.resolve_item_in_lexical_scope(module,
-                                               name,
-                                               ModuleNamespace) {
-
+        alt self.resolve_item_in_lexical_scope(module, name, ModuleNS) {
             Success(target) {
                 alt target.bindings.module_def {
                     NoModuleDef {
@@ -1661,7 +1648,7 @@ class Resolver {
         #debug("(resolving one-level naming result) searching for module");
         alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
-                                               ModuleNamespace) {
+                                               ModuleNS) {
 
             Failed {
                 #debug("(resolving one-level renaming import) didn't find \
@@ -1684,7 +1671,7 @@ class Resolver {
         #debug("(resolving one-level naming result) searching for value");
         alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
-                                               ValueNamespace) {
+                                               ValueNS) {
 
             Failed {
                 #debug("(resolving one-level renaming import) didn't find \
@@ -1707,7 +1694,7 @@ class Resolver {
         #debug("(resolving one-level naming result) searching for type");
         alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
-                                               TypeNamespace) {
+                                               TypeNS) {
 
             Failed {
                 #debug("(resolving one-level renaming import) didn't find \
@@ -1747,7 +1734,7 @@ class Resolver {
         #debug("(resolving one-level naming result) searching for impl");
         alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
-                                               ImplNamespace) {
+                                               ImplNS) {
 
             Failed {
                 #debug("(resolving one-level renaming import) didn't find \
@@ -2121,7 +2108,7 @@ class Resolver {
                     some(dl_field) | some(dl_impl(_)) | none {
                         // Otherwise, check the items.
                         alt self.resolve_item_in_lexical_scope
-                                (self.current_module, name, ValueNamespace) {
+                                (self.current_module, name, ValueNS) {
 
                             Success(target) {
                                 alt target.bindings.value_def {
@@ -2232,7 +2219,7 @@ class Resolver {
             |name, import_resolution|
 
             let mut module_repr;
-            alt (*import_resolution).target_for_namespace(ModuleNamespace) {
+            alt (*import_resolution).target_for_namespace(ModuleNS) {
                 none { module_repr = ""; }
                 some(target) {
                     module_repr = " module:?";
@@ -2241,7 +2228,7 @@ class Resolver {
             }
 
             let mut value_repr;
-            alt (*import_resolution).target_for_namespace(ValueNamespace) {
+            alt (*import_resolution).target_for_namespace(ValueNS) {
                 none { value_repr = ""; }
                 some(target) {
                     value_repr = " value:?";
@@ -2250,7 +2237,7 @@ class Resolver {
             }
 
             let mut type_repr;
-            alt (*import_resolution).target_for_namespace(TypeNamespace) {
+            alt (*import_resolution).target_for_namespace(TypeNS) {
                 none { type_repr = ""; }
                 some(target) {
                     type_repr = " type:?";
@@ -2259,7 +2246,7 @@ class Resolver {
             }
 
             let mut impl_repr;
-            alt (*import_resolution).target_for_namespace(ImplNamespace) {
+            alt (*import_resolution).target_for_namespace(ImplNS) {
                 none { impl_repr = ""; }
                 some(target) {
                     impl_repr = " impl:?";
