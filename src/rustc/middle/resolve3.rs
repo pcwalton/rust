@@ -48,14 +48,10 @@ enum Namespace {
     ImplNamespace
 }
 
-enum TargetModule {
-    LocalTargetModule(@LocalModule)
-}
-
 enum NamespaceResult {
     UnknownResult,
     UnboundResult,
-    BoundResult(TargetModule, @NameBindings)
+    BoundResult(@LocalModule, @NameBindings)
 }
 
 enum Mutability {
@@ -191,12 +187,10 @@ class ImportDirective {
 
 #[doc="The item that an import resolves to."]
 class ImportResolutionTarget {
-    let target_module: TargetModule;
+    let target_module: @LocalModule;
     let bindings: @NameBindings;
 
-    new(target_module: TargetModule,
-        bindings: @NameBindings) {
-
+    new(target_module: @LocalModule, bindings: @NameBindings) {
         self.target_module = target_module;
         self.bindings = bindings;
     }
@@ -1098,30 +1092,26 @@ class Resolver {
                 if (*child_name_bindings)
                         .defined_in_namespace(ModuleNamespace) {
 
-                    module_result =
-                        BoundResult(LocalTargetModule(containing_module),
-                                    child_name_bindings);
+                    module_result = BoundResult(containing_module,
+                                                child_name_bindings);
                 }
                 if (*child_name_bindings)
                         .defined_in_namespace(ValueNamespace) {
 
-                    value_result =
-                        BoundResult(LocalTargetModule(containing_module),
-                                    child_name_bindings);
+                    value_result = BoundResult(containing_module,
+                                               child_name_bindings);
                 }
                 if (*child_name_bindings)
                         .defined_in_namespace(TypeNamespace) {
 
-                    type_result =
-                        BoundResult(LocalTargetModule(containing_module),
-                                    child_name_bindings);
+                    type_result = BoundResult(containing_module,
+                                              child_name_bindings);
                 }
                 if (*child_name_bindings)
                         .defined_in_namespace(ImplNamespace) {
 
-                    impl_result =
-                        BoundResult(LocalTargetModule(containing_module),
-                                    child_name_bindings);
+                    impl_result = BoundResult(containing_module,
+                                              child_name_bindings);
                 }
             }
         }
@@ -1377,25 +1367,24 @@ class Resolver {
                    self.local_module_to_str(local_module));
 
             // Merge the child item into the import resolution.
-            let target_module = LocalTargetModule(containing_module);
             if (*name_bindings).defined_in_namespace(ModuleNamespace) {
                 dest_import_resolution.module_target =
-                    some(ImportResolutionTarget(target_module,
+                    some(ImportResolutionTarget(containing_module,
                                                 name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ValueNamespace) {
                 dest_import_resolution.value_target =
-                    some(ImportResolutionTarget(target_module,
+                    some(ImportResolutionTarget(containing_module,
                                                 name_bindings));
             }
             if (*name_bindings).defined_in_namespace(TypeNamespace) {
                 dest_import_resolution.type_target =
-                    some(ImportResolutionTarget(target_module,
+                    some(ImportResolutionTarget(containing_module,
                                                 name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ImplNamespace) {
                 dest_import_resolution.impl_target =
-                    some(ImportResolutionTarget(target_module,
+                    some(ImportResolutionTarget(containing_module,
                                                 name_bindings));
             }
         }
@@ -1504,8 +1493,7 @@ class Resolver {
             some(name_bindings)
                     if (*name_bindings).defined_in_namespace(namespace) {
 
-                let target_module = LocalTargetModule(local_module);
-                ret Success(ImportResolutionTarget(target_module,
+                ret Success(ImportResolutionTarget(local_module,
                                                    name_bindings));
             }
             some(_) | none { /* Not found; continue. */ }
@@ -1642,8 +1630,7 @@ class Resolver {
 
                 #debug("(resolving name in local module) found node as \
                         child");
-                let target_module = LocalTargetModule(local_module);
-                ret Success(ImportResolutionTarget(target_module,
+                ret Success(ImportResolutionTarget(local_module,
                                                    name_bindings));
             }
             some(_) | none {
