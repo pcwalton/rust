@@ -49,8 +49,7 @@ enum Namespace {
 }
 
 enum TargetModule {
-    LocalTargetModule(@LocalModule),
-    ExternalTargetModule(@ExternalModule)
+    LocalTargetModule(@LocalModule)
 }
 
 enum NamespaceResult {
@@ -74,7 +73,6 @@ type ResolveVisitor = vt<()>;
 enum ModuleDef {
     NoModuleDef,                            // Does not define a module.
     LocalModuleDef(@LocalModule),           // Defines a local module.
-    ExternalModuleDef(@ExternalModule)      // Defines an external module.
 }
 
 #[doc="Contains data for specific types of import directives."]
@@ -86,7 +84,6 @@ enum ImportDirectiveSubclass {
 #[doc="The context that we thread through while building the reduced graph."]
 enum ReducedGraphParent {
     LocalModuleParent(@LocalModule),
-    ExternalModuleParent(@ExternalModule),
     BlockParent(@LocalModule, node_id)
 }
 
@@ -246,6 +243,7 @@ enum LocalParentLink {
 #[doc="One node in the tree of modules."]
 class LocalModule {
     let parent_link: LocalParentLink;
+    let mut def_id: option<def_id>;
 
     let children: hashmap<Atom,@NameBindings>;
     let imports: dvec<@ImportDirective>;
@@ -278,8 +276,9 @@ class LocalModule {
     // The index of the import we're resolving.
     let mut resolved_import_count: uint;
 
-    new(parent_link: LocalParentLink) {
+    new(parent_link: LocalParentLink, def_id: option<def_id>) {
         self.parent_link = parent_link;
+        self.def_id = def_id;
 
         self.children = atom_hashmap();
         self.imports = dvec();
@@ -293,27 +292,6 @@ class LocalModule {
 
     fn all_imports_resolved() -> bool {
         ret self.imports.len() == self.resolved_import_count;
-    }
-}
-
-#[doc="The link from a local module up to its nearest parent node."]
-enum ExternalParentLink {
-    LocalExternalParentLink(@LocalModule, Atom),
-    ExternalExternalParentLink(@ExternalModule, Atom)
-}
-
-#[doc="An external module in the graph."]
-class ExternalModule {
-    let parent_link: ExternalParentLink;
-    let mut def_id: option<def_id>;
-
-    let children: hashmap<Atom,@NameBindings>;
-
-    new(parent_link: ExternalParentLink, def_id: option<def_id>) {
-        self.parent_link = parent_link;
-        self.def_id = def_id;
-
-        self.children = atom_hashmap();
     }
 }
 
@@ -344,24 +322,12 @@ class NameBindings {
     }
 
     #[doc="Creates a new local module in this set of name bindings."]
-    fn define_local_module(parent_link: LocalParentLink) {
+    fn define_local_module(parent_link: LocalParentLink,
+                           def_id: option<def_id>) {
         if self.module_def == NoModuleDef {
-            self.module_def = LocalModuleDef(@LocalModule(parent_link));
+            let local_module = @LocalModule(parent_link, def_id);
+            self.module_def = LocalModuleDef(local_module);
         }
-    }
-
-    #[doc="
-        Creates a new external module with the given crate ID in this set of
-        name bindings.
-    "]
-    fn define_external_module(parent_link: ExternalParentLink,
-                              def_id: option<def_id>)
-                           -> @ExternalModule {
-
-        assert self.module_def == NoModuleDef;  // FIXME: should be an error
-        let external_module = @ExternalModule(parent_link, def_id);
-        self.module_def = ExternalModuleDef(external_module);
-        ret external_module;
     }
 
     #[doc="Records a type definition."]
@@ -384,7 +350,6 @@ class NameBindings {
         alt self.module_def {
             NoModuleDef                     { ret none;               }
             LocalModuleDef(local_module)    { ret some(local_module); }
-            ExternalModuleDef(*)            { ret none;               }
         }
     }
 
@@ -400,30 +365,6 @@ class NameBindings {
             }
             LocalModuleDef(local_module) {
                 ret local_module;
-            }
-            ExternalModuleDef(*) {
-                fail "get_local_module called on a node with an external \
-                      module definition!";
-            }
-        }
-    }
-
-    #[doc="
-        Returns the external module node. Fails if this node does not have an
-        external module definition.
-    "]
-    fn get_external_module() -> @ExternalModule {
-        alt self.module_def {
-            NoModuleDef {
-                fail "get_external_module called on a node with no module \
-                      definition!";
-            }
-            LocalModuleDef(*) {
-                fail "get_external_module called on a node with a local \
-                      module definition!";
-            }
-            ExternalModuleDef(external_module) {
-                ret external_module;
             }
         }
     }
@@ -472,7 +413,7 @@ class Resolver {
         self.atom_table = @AtomTable();
 
         self.graph_root = @NameBindings();
-        (*self.graph_root).define_local_module(NoParentLink);
+        (*self.graph_root).define_local_module(NoParentLink, none);
 
         self.unresolved_imports = 0u;
 
@@ -523,16 +464,10 @@ class Resolver {
 
     #[doc="
         Returns the current local module tracked by the reduced graph parent.
-        If this parent is an external module, fails.
     "]
-    fn get_local_module_from_parent(reduced_graph_parent:
-                                        ReducedGraphParent)
+    fn get_local_module_from_parent(reduced_graph_parent: ReducedGraphParent)
                                  -> @LocalModule {
         alt reduced_graph_parent {
-            ExternalModuleParent(_) {
-                fail "get_local_module_from_parent called with an external \
-                      module parent!";
-            }
             LocalModuleParent(local_module) | BlockParent(local_module, _) {
                 ret local_module;
             }
@@ -551,56 +486,39 @@ class Resolver {
                  reduced_graph_parent: ReducedGraphParent)
               -> @NameBindings {
 
+        // If this is the immediate descendant of a local module, then we add
+        // the child name directly. Otherwise, we create or reuse an anonymous
+        // module and add the child to that.
+        
+        let mut local_module;
         alt reduced_graph_parent {
-            ExternalModuleParent(external_module) {
-                alt external_module.children.find(name) {
+            LocalModuleParent(module) {
+                local_module = module;
+            }
+            BlockParent(module, node_id) {
+                alt module.anonymous_children.find(node_id) {
                     none {
-                        let child = @NameBindings();
-                        external_module.children.insert(name, child);
-                        ret child;
+                        local_module = @LocalModule
+                            (BlockParentLink(module, node_id), none);
+                        module.anonymous_children.insert
+                            (node_id, local_module);
                     }
-                    some(child) {
-                        ret child;
+                    some(existing_local_module) {
+                        local_module = existing_local_module;
                     }
                 }
             }
-            LocalModuleParent(_) | BlockParent(_, _) {
-                // If this is the immediate descendant of a local module, then
-                // we add the child name directly. Otherwise, we create or
-                // reuse an anonymous module and add the child to that.
-                
-                let mut local_module;
-                alt reduced_graph_parent {
-                    LocalModuleParent(module) {
-                        local_module = module;
-                    }
-                    BlockParent(module, node_id) {
-                        alt module.anonymous_children.find(node_id) {
-                            none {
-                                local_module = @LocalModule
-                                    (BlockParentLink(module, node_id));
-                                module.anonymous_children.insert
-                                    (node_id, local_module);
-                            }
-                            some(existing_local_module) {
-                                local_module = existing_local_module;
-                            }
-                        }
-                    }
-                    ExternalModuleParent(*) { fail; }
-                }
+        }
 
-                // Add or reuse the child.
-                alt local_module.children.find(name) {
-                    none {
-                        let child = @NameBindings();
-                        local_module.children.insert(name, child);
-                        ret child;
-                    }
-                    some(child) {
-                        ret child;
-                    }
-                }
+        // Add or reuse the child.
+        alt local_module.children.find(name) {
+            none {
+                let child = @NameBindings();
+                local_module.children.insert(name, child);
+                ret child;
+            }
+            some(child) {
+                ret child;
             }
         }
     }
@@ -614,9 +532,6 @@ class Resolver {
             BlockParent(local_module, _) {
                 // FIXME: Create the intermediate module, maybe?
                 ret LocalModuleParentLink(local_module, name);
-            }
-            ExternalModuleParent(_) {
-                fail "external module parent in get_local_parent_link";
             }
         }
     }
@@ -633,14 +548,16 @@ class Resolver {
         alt item.node {
             item_mod(module) {
                 (*child).define_local_module
-                    (self.get_local_parent_link(parent, atom));
+                    (self.get_local_parent_link(parent, atom),
+                     some({ crate: 0, node: item.id }));
                 visit_mod(module, item.span, item.id,
                           LocalModuleParent((*child).get_local_module()),
                           visitor);
             }
             item_native_mod(native_module) {
                 (*child).define_local_module
-                    (self.get_local_parent_link(parent, atom));
+                    (self.get_local_parent_link(parent, atom),
+                     some({ crate: 0, node: item.id }));
                 visit_item(item,
                            LocalModuleParent((*child).get_local_module()),
                            visitor);
@@ -805,13 +722,12 @@ class Resolver {
                         let child = self.add_child(atom, parent);
 
                         let def_id = { crate: crate_id, node: 0 };
-                        let parent_link = LocalExternalParentLink
+                        let parent_link = LocalModuleParentLink
                             (self.get_local_module_from_parent(parent), atom);
-                        let external_module =
-                            (*child).define_external_module(parent_link,
-                                                            some(def_id));
+                        (*child).define_local_module(parent_link,
+                                                     some(def_id));
                         self.build_reduced_graph_for_external_crate
-                            (external_module);
+                            ((*child).get_local_module());
                     }
                     none {
                         /* Ignore. */
@@ -830,10 +746,6 @@ class Resolver {
             LocalModuleParent(local_module) | BlockParent(local_module, _) {
                 new_parent = BlockParent(local_module, block.node.id);
             }
-            ExternalModuleParent(*) {
-                fail "unexpected external module parent in \
-                      build_reduced_graph_for_block";
-            }
         }
 
         visit_block(block, new_parent, visitor);
@@ -843,7 +755,7 @@ class Resolver {
         Builds the reduced graph rooted at the 'use' directive for an external
         crate.
     "]
-    fn build_reduced_graph_for_external_crate(root: @ExternalModule) {
+    fn build_reduced_graph_for_external_crate(root: @LocalModule) {
         for each_path(self.session.cstore, root.def_id.get().crate) {
             |path_entry|
             #debug("(building reduced graph for external crate) found path \
@@ -862,7 +774,7 @@ class Resolver {
                 let atom = (*self.atom_table).intern(@copy ident);
                 let child_name_bindings =
                     self.add_child(atom,
-                                   ExternalModuleParent(current_module_node));
+                                   LocalModuleParent(current_module_node));
 
                 // Define or reuse the module node.
                 alt child_name_bindings.module_def {
@@ -870,27 +782,21 @@ class Resolver {
                         #debug("(building reduced graph for external crate) \
                                 autovivifying %s", ident);
                         let parent_link =
-                            ExternalExternalParentLink(current_module_node,
-                                                       atom);
-                        current_module_node =
-                            (*child_name_bindings).define_external_module
-                                (parent_link, none);
+                            LocalModuleParentLink(current_module_node, atom);
+                        (*child_name_bindings).define_local_module
+                            (parent_link, none);
                     }
-                    ExternalModuleDef(_) {
-                        current_module_node =
-                            (*child_name_bindings).get_external_module();
-                    }
-                    LocalModuleDef(_) {
-                        fail "unexpected local module";
-                    }
+                    LocalModuleDef(_) { /* Fall through. */ }
                 }
+
+                current_module_node =
+                    (*child_name_bindings).get_local_module();
             }
 
             // Add the new child item.
             let atom = (*self.atom_table).intern(@copy final_ident);
             let child_name_bindings =
-                self.add_child(atom,
-                               ExternalModuleParent(current_module_node));
+                self.add_child(atom, LocalModuleParent(current_module_node));
 
             alt path_entry.def_like {
                 dl_def(def) {
@@ -902,21 +808,14 @@ class Resolver {
                                             external crate) building module \
                                             %s", final_ident);
                                     let parent_link =
-                                        ExternalExternalParentLink
+                                        LocalModuleParentLink
                                             (current_module_node, atom);
                                     (*child_name_bindings).
-                                        define_external_module
+                                        define_local_module
                                             (parent_link, some(def_id));
                                 }
-                                ExternalModuleDef(external_module) {
-                                    #debug("(building reduced graph for \
-                                            external crate) filling in def \
-                                            id for %s",
-                                            final_ident);
-                                    external_module.def_id = some(def_id);
-                                }
-                                LocalModuleDef(_) {
-                                    fail "unexpected local module";
+                                LocalModuleDef(local_module) {
+                                    local_module.def_id = some(def_id);
                                 }
                             }
                         }
@@ -1135,24 +1034,6 @@ class Resolver {
                             resolution_result =
                                 self.resolve_glob_import(local_module,
                                                          containing_module);
-                        }
-                    }
-                }
-                Success(ExternalModuleDef(containing_module)) {
-                    alt *import_directive.subclass {
-                        SingleImport(target, source) {
-                            resolution_result =
-                                self.resolve_single_external_import
-                                    (local_module,
-                                     containing_module,
-                                     target,
-                                     source);
-                        }
-                        GlobImport {
-                            resolution_result =
-                                self.resolve_glob_external_import
-                                    (local_module,
-                                     containing_module);
                         }
                     }
                 }
@@ -1523,163 +1404,6 @@ class Resolver {
         ret Success(());
     }
 
-    // FIXME: This duplicates code from resolve_single_import.
-    fn resolve_single_external_import(local_module: @LocalModule,
-                                      containing_module: @ExternalModule,
-                                      target: Atom,
-                                      source: Atom)
-                                   -> ResolveResult<()> {
-
-        #debug("(resolving single external import) resolving import '%s' = \
-                '%s::%s' in '%s'",
-               *(*self.atom_table).atom_to_str(target),
-               self.external_module_to_str(containing_module),
-               *(*self.atom_table).atom_to_str(source),
-               self.local_module_to_str(local_module));
-
-        // We need to resolve all four namespaces for this to succeed.
-        let mut module_result = none;
-        let mut value_result = none;
-        let mut type_result = none;
-        let mut impl_result = none;
-
-        // Search for direct children of the containing module.
-        alt containing_module.children.find(source) {
-            none { /* Continue. */ }
-            some(child_name_bindings) {
-                if (*child_name_bindings)
-                        .defined_in_namespace(ModuleNamespace) {
-
-                    module_result = some(child_name_bindings);
-                }
-                if (*child_name_bindings)
-                        .defined_in_namespace(ValueNamespace) {
-
-                    value_result = some(child_name_bindings);
-                }
-                if (*child_name_bindings)
-                        .defined_in_namespace(TypeNamespace) {
-
-                    type_result = some(child_name_bindings);
-                }
-                if (*child_name_bindings)
-                        .defined_in_namespace(ImplNamespace) {
-
-                    impl_result = some(child_name_bindings);
-                }
-            }
-        }
-
-        // If no namespaces were resolved, that's an error.
-        if is_none(module_result) && is_none(value_result) &&
-                is_none(type_result) && is_none(impl_result) {
-            #debug("!!! (resolving single external import) failed");
-            ret Failed;
-        }
-
-        // We've successfully resolved the import. Write the results in.
-        assert local_module.import_resolutions.contains_key(target);
-        let import_resolution = local_module.import_resolutions.get(target);
-
-        let target_module = ExternalTargetModule(containing_module);
-
-        alt module_result {
-            none { /* Continue. */ }
-            some(name_bindings) {
-                #error("(resolving glob import) writing module resolution \
-                        '%s'",
-                       self.local_module_to_str(local_module));
-
-                import_resolution.module_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-        }
-        alt value_result {
-            none { /* Continue. */ }
-            some(name_bindings) {
-                import_resolution.value_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-        }
-        alt type_result {
-            none { /* Continue. */ }
-            some(name_bindings) {
-                import_resolution.type_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-        }
-        alt impl_result {
-            none { /* Continue. */ }
-            some(name_bindings) {
-                import_resolution.impl_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-        }
-
-        assert import_resolution.outstanding_references >= 1u;
-        import_resolution.outstanding_references -= 1u;
-
-        #debug("(resolving external import) success");
-        ret Success(());
-    }
-
-    // FIXME: This duplicates code from resolve_glob_import.
-    fn resolve_glob_external_import(local_module: @LocalModule,
-                                    containing_module: @ExternalModule)
-                                 -> ResolveResult<()> {
-
-        #debug("(resolving glob external import) resolving");
-
-        // Add all children from the containing module.
-        for containing_module.children.each {
-            |atom, name_bindings|
-
-            let mut dest_import_resolution;
-            alt local_module.import_resolutions.find(atom) {
-                none {
-                    // Create a new import resolution from this child.
-                    dest_import_resolution = @ImportResolution();
-                    local_module.import_resolutions.insert
-                        (atom, dest_import_resolution);
-                }
-                some(existing_import_resolution) {
-                    dest_import_resolution = existing_import_resolution;
-                }
-            }
-
-            let target_module = ExternalTargetModule(containing_module);
-
-            // Merge the child item into the import resolution.
-            if (*name_bindings).defined_in_namespace(ModuleNamespace) {
-                dest_import_resolution.module_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-            if (*name_bindings).defined_in_namespace(ValueNamespace) {
-                dest_import_resolution.value_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-            if (*name_bindings).defined_in_namespace(TypeNamespace) {
-                dest_import_resolution.type_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-            if (*name_bindings).defined_in_namespace(ImplNamespace) {
-                dest_import_resolution.impl_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
-            }
-        }
-
-        #debug("(resolving external glob import) success");
-        ret Success(());
-    }
-
     #[doc="
         Attempts to resolve the module part of an import directive rooted at
         the given module.
@@ -1749,7 +1473,7 @@ class Resolver {
                                    *(*self.atom_table).atom_to_str(name));
                             ret Failed;
                         }
-                        LocalModuleDef(*) | ExternalModuleDef(*) {
+                        LocalModuleDef(*) {
                             search_module_def = target.bindings.module_def;
                         }
                     }
@@ -1862,7 +1586,7 @@ class Resolver {
                                 wasn't actually a module!");
                         ret Failed;
                     }
-                    LocalModuleDef(*) | ExternalModuleDef(*) {
+                    LocalModuleDef(*) {
                         ret Success(target.bindings.module_def);
                     }
                 }
@@ -1898,11 +1622,6 @@ class Resolver {
                 ret self.resolve_name_in_local_module(local_module,
                                                       name,
                                                       namespace);
-            }
-            ExternalModuleDef(external_module) {
-                ret self.resolve_name_in_external_module(external_module,
-                                                         name,
-                                                         namespace);
             }
         }
     }
@@ -2142,34 +1861,6 @@ class Resolver {
 
         #debug("(resolving one-level renaming import) successfully resolved");
         ret Success(());
-    }
-
-    fn resolve_name_in_external_module(parent_module: @ExternalModule,
-                                       name: Atom,
-                                       namespace: Namespace)
-                                    -> ResolveResult<ImportResolutionTarget> {
-
-        #debug("(resolving name in external module) resolving '%s' in \
-                external",
-                *(*self.atom_table).atom_to_str(name));
-
-        alt parent_module.children.find(name) {
-            some(name_bindings)
-                    if (*name_bindings).defined_in_namespace(namespace) {
-
-                // The node is a direct child.
-                #debug("(resolving name in external module) found node as \
-                        child");
-                let target_module = ExternalTargetModule(parent_module);
-                ret Success(ImportResolutionTarget(target_module,
-                                                   name_bindings));
-            }
-            some(_) | none {
-                // We're out of luck.
-                #debug("(resolving name in external module) failed");
-                ret Failed;
-            }
-        }
     }
 
     fn report_unresolved_imports(name_bindings: @NameBindings) {
@@ -2588,10 +2279,6 @@ class Resolver {
         }
 
         ret string;
-    }
-
-    fn external_module_to_str(_external_module: @ExternalModule) -> str {
-        ret "<external>";
     }
 
     fn dump_local_module(local_module: @LocalModule) {
