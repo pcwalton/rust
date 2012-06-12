@@ -51,7 +51,7 @@ enum Namespace {
 enum NamespaceResult {
     UnknownResult,
     UnboundResult,
-    BoundResult(@LocalModule, @NameBindings)
+    BoundResult(@Module, @NameBindings)
 }
 
 enum Mutability {
@@ -60,15 +60,15 @@ enum Mutability {
 }
 
 enum SelfBinding {
-    HasSelfBinding(node_id),
     NoSelfBinding
+    HasSelfBinding(node_id),
 }
 
 type ResolveVisitor = vt<()>;
 
 enum ModuleDef {
-    NoModuleDef,                            // Does not define a module.
-    LocalModuleDef(@LocalModule),           // Defines a local module.
+    NoModuleDef,            // Does not define a module.
+    ModuleDef(@Module),     // Defines a module.
 }
 
 #[doc="Contains data for specific types of import directives."]
@@ -79,8 +79,8 @@ enum ImportDirectiveSubclass {
 
 #[doc="The context that we thread through while building the reduced graph."]
 enum ReducedGraphParent {
-    LocalModuleParent(@LocalModule),
-    BlockParent(@LocalModule, node_id)
+    ModuleReducedGraphParent(@Module),
+    BlockReducedGraphParent(@Module, node_id)
 }
 
 enum ResolveResult<T> {
@@ -186,11 +186,11 @@ class ImportDirective {
 }
 
 #[doc="The item that an import resolves to."]
-class ImportResolutionTarget {
-    let target_module: @LocalModule;
+class Target {
+    let target_module: @Module;
     let bindings: @NameBindings;
 
-    new(target_module: @LocalModule, bindings: @NameBindings) {
+    new(target_module: @Module, bindings: @NameBindings) {
         self.target_module = target_module;
         self.bindings = bindings;
     }
@@ -202,10 +202,10 @@ class ImportResolution {
     // then, all bets are off; future imports could override this name.
     let mut outstanding_references: uint;
 
-    let mut module_target: option<ImportResolutionTarget>;
-    let mut value_target: option<ImportResolutionTarget>;
-    let mut type_target: option<ImportResolutionTarget>;
-    let mut impl_target: option<ImportResolutionTarget>;
+    let mut module_target: option<Target>;
+    let mut value_target: option<Target>;
+    let mut type_target: option<Target>;
+    let mut impl_target: option<Target>;
 
     new() {
         self.outstanding_references = 0u;
@@ -216,8 +216,7 @@ class ImportResolution {
         self.impl_target = none;
     }
 
-    fn target_for_namespace(namespace: Namespace)
-            -> option<ImportResolutionTarget> {
+    fn target_for_namespace(namespace: Namespace) -> option<Target> {
         alt namespace {
             ModuleNamespace { ret copy self.module_target; }
             TypeNamespace   { ret copy self.type_target;   }
@@ -227,16 +226,16 @@ class ImportResolution {
     }
 }
 
-#[doc="The link from a local module up to its nearest parent node."]
-enum LocalParentLink {
+#[doc="The link from a module up to its nearest parent node."]
+enum ParentLink {
     NoParentLink,
-    LocalModuleParentLink(@LocalModule, Atom),
-    BlockParentLink(@LocalModule, node_id)
+    ModuleParentLink(@Module, Atom),
+    BlockParentLink(@Module, node_id)
 }
 
 #[doc="One node in the tree of modules."]
-class LocalModule {
-    let parent_link: LocalParentLink;
+class Module {
+    let parent_link: ParentLink;
     let mut def_id: option<def_id>;
 
     let children: hashmap<Atom,@NameBindings>;
@@ -259,7 +258,7 @@ class LocalModule {
     // entry block for `f`.
     //
 
-    let anonymous_children: hashmap<node_id,@LocalModule>;
+    let anonymous_children: hashmap<node_id,@Module>;
 
     // The status of resolving each import in this module.
     let import_resolutions: hashmap<Atom,@ImportResolution>;
@@ -270,7 +269,7 @@ class LocalModule {
     // The index of the import we're resolving.
     let mut resolved_import_count: uint;
 
-    new(parent_link: LocalParentLink, def_id: option<def_id>) {
+    new(parent_link: ParentLink, def_id: option<def_id>) {
         self.parent_link = parent_link;
         self.def_id = def_id;
 
@@ -315,12 +314,11 @@ class NameBindings {
         self.impl_defs = [];
     }
 
-    #[doc="Creates a new local module in this set of name bindings."]
-    fn define_local_module(parent_link: LocalParentLink,
-                           def_id: option<def_id>) {
+    #[doc="Creates a new module in this set of name bindings."]
+    fn define_module(parent_link: ParentLink, def_id: option<def_id>) {
         if self.module_def == NoModuleDef {
-            let local_module = @LocalModule(parent_link, def_id);
-            self.module_def = LocalModuleDef(local_module);
+            let module = @Module(parent_link, def_id);
+            self.module_def = ModuleDef(module);
         }
     }
 
@@ -339,26 +337,25 @@ class NameBindings {
         self.impl_defs += [def_id];
     }
 
-    #[doc="Returns the local module node if applicable."]
-    fn get_local_module_if_available() -> option<@LocalModule> {
+    #[doc="Returns the module node if applicable."]
+    fn get_module_if_available() -> option<@Module> {
         alt self.module_def {
-            NoModuleDef                     { ret none;               }
-            LocalModuleDef(local_module)    { ret some(local_module); }
+            NoModuleDef         { ret none;         }
+            ModuleDef(module)   { ret some(module); }
         }
     }
 
     #[doc="
-        Returns the local module node. Fails if this node does not have a
-        local module definition.
+        Returns the module node. Fails if this node does not have a module
+        definition.
     "]
-    fn get_local_module() -> @LocalModule {
+    fn get_module() -> @Module {
         alt self.module_def {
             NoModuleDef {
-                fail "get_local_module called on a node with no module \
-                      definition!";
+                fail "get_module called on a node with no module definition!";
             }
-            LocalModuleDef(local_module) {
-                ret local_module;
+            ModuleDef(module) {
+                ret module;
             }
         }
     }
@@ -387,7 +384,7 @@ class Resolver {
     let mut unresolved_imports: uint;
 
     // The module that represents the current item scope.
-    let mut current_module: @LocalModule;
+    let mut current_module: @Module;
 
     // The current set of local scopes, for values.
     // TODO: Reuse ribs to avoid allocation.
@@ -407,11 +404,11 @@ class Resolver {
         self.atom_table = @AtomTable();
 
         self.graph_root = @NameBindings();
-        (*self.graph_root).define_local_module(NoParentLink, none);
+        (*self.graph_root).define_module(NoParentLink, none);
 
         self.unresolved_imports = 0u;
 
-        self.current_module = (*self.graph_root).get_local_module();
+        self.current_module = (*self.graph_root).get_module();
         self.value_ribs = @dvec();
 
         self.self_atom = (*self.atom_table).intern(@"self");
@@ -436,7 +433,7 @@ class Resolver {
     #[doc="Constructs the reduced graph for the entire crate."]
     fn build_reduced_graph(this: @Resolver) {
         let initial_parent =
-            LocalModuleParent((*self.graph_root).get_local_module());
+            ModuleReducedGraphParent((*self.graph_root).get_module());
         visit_crate(*self.crate, initial_parent, mk_vt(@{
             visit_item: {
                 |item, context, visitor|
@@ -456,14 +453,13 @@ class Resolver {
         }));
     }
 
-    #[doc="
-        Returns the current local module tracked by the reduced graph parent.
-    "]
-    fn get_local_module_from_parent(reduced_graph_parent: ReducedGraphParent)
-                                 -> @LocalModule {
+    #[doc="Returns the current module tracked by the reduced graph parent."]
+    fn get_module_from_parent(reduced_graph_parent: ReducedGraphParent)
+                           -> @Module {
         alt reduced_graph_parent {
-            LocalModuleParent(local_module) | BlockParent(local_module, _) {
-                ret local_module;
+            ModuleReducedGraphParent(module) |
+            BlockReducedGraphParent(module, _) {
+                ret module;
             }
         }
     }
@@ -480,35 +476,36 @@ class Resolver {
                  reduced_graph_parent: ReducedGraphParent)
               -> @NameBindings {
 
-        // If this is the immediate descendant of a local module, then we add
-        // the child name directly. Otherwise, we create or reuse an anonymous
+        // If this is the immediate descendant of a module, then we add the
+        // child name directly. Otherwise, we create or reuse an anonymous
         // module and add the child to that.
         
-        let mut local_module;
+        let mut module;
         alt reduced_graph_parent {
-            LocalModuleParent(module) {
-                local_module = module;
+            ModuleReducedGraphParent(parent_module) {
+                module = parent_module;
             }
-            BlockParent(module, node_id) {
-                alt module.anonymous_children.find(node_id) {
+            BlockReducedGraphParent(parent_module, node_id) {
+                alt parent_module.anonymous_children.find(node_id) {
                     none {
-                        local_module = @LocalModule
-                            (BlockParentLink(module, node_id), none);
-                        module.anonymous_children.insert
-                            (node_id, local_module);
+                        module = @Module(BlockParentLink(parent_module,
+                                                         node_id),
+                                         none);
+                        parent_module.anonymous_children.insert(node_id,
+                                                                module);
                     }
-                    some(existing_local_module) {
-                        local_module = existing_local_module;
+                    some(existing_module) {
+                        module = existing_module;
                     }
                 }
             }
         }
 
         // Add or reuse the child.
-        alt local_module.children.find(name) {
+        alt module.children.find(name) {
             none {
                 let child = @NameBindings();
-                local_module.children.insert(name, child);
+                module.children.insert(name, child);
                 ret child;
             }
             some(child) {
@@ -517,15 +514,14 @@ class Resolver {
         }
     }
 
-    fn get_local_parent_link(parent: ReducedGraphParent, name: Atom)
-                          -> LocalParentLink {
+    fn get_parent_link(parent: ReducedGraphParent, name: Atom) -> ParentLink {
         alt parent {
-            LocalModuleParent(local_module) {
-                ret LocalModuleParentLink(local_module, name);
+            ModuleReducedGraphParent(module) {
+                ret ModuleParentLink(module, name);
             }
-            BlockParent(local_module, _) {
+            BlockReducedGraphParent(module, _) {
                 // FIXME: Create the intermediate module, maybe?
-                ret LocalModuleParentLink(local_module, name);
+                ret ModuleParentLink(module, name);
             }
         }
     }
@@ -541,19 +537,17 @@ class Resolver {
 
         alt item.node {
             item_mod(module) {
-                (*child).define_local_module
-                    (self.get_local_parent_link(parent, atom),
-                     some({ crate: 0, node: item.id }));
+                (*child).define_module(self.get_parent_link(parent, atom),
+                                       some({ crate: 0, node: item.id }));
                 visit_mod(module, item.span, item.id,
-                          LocalModuleParent((*child).get_local_module()),
+                          ModuleReducedGraphParent((*child).get_module()),
                           visitor);
             }
             item_native_mod(native_module) {
-                (*child).define_local_module
-                    (self.get_local_parent_link(parent, atom),
+                (*child).define_module(self.get_parent_link(parent, atom),
                      some({ crate: 0, node: item.id }));
                 visit_item(item,
-                           LocalModuleParent((*child).get_local_module()),
+                           ModuleReducedGraphParent((*child).get_module()),
                            visitor);
             }
 
@@ -673,8 +667,7 @@ class Resolver {
                     }
 
                     // Build up the import directives.
-                    let local_module =
-                        self.get_local_module_from_parent(parent);
+                    let module = self.get_module_from_parent(parent);
                     alt view_path.node {
                         view_path_simple(binding, full_path, _) {
                             let target_atom =
@@ -684,7 +677,7 @@ class Resolver {
                                     (@copy full_path.idents.last());
                             let subclass = @SingleImport(target_atom,
                                                          source_atom);
-                            self.build_import_directive(local_module,
+                            self.build_import_directive(module,
                                                         module_path,
                                                         subclass);
                         }
@@ -695,13 +688,13 @@ class Resolver {
                                 let atom =
                                     (*self.atom_table).intern(@copy name);
                                 let subclass = @SingleImport(atom, atom);
-                                self.build_import_directive(local_module,
+                                self.build_import_directive(module,
                                                             module_path,
                                                             subclass);
                             }
                         }
                         view_path_glob(_, _) {
-                            self.build_import_directive(local_module,
+                            self.build_import_directive(module,
                                                         module_path,
                                                         @GlobImport);
                         }
@@ -716,12 +709,11 @@ class Resolver {
                         let child = self.add_child(atom, parent);
 
                         let def_id = { crate: crate_id, node: 0 };
-                        let parent_link = LocalModuleParentLink
-                            (self.get_local_module_from_parent(parent), atom);
-                        (*child).define_local_module(parent_link,
-                                                     some(def_id));
+                        let parent_link = ModuleParentLink
+                            (self.get_module_from_parent(parent), atom);
+                        (*child).define_module(parent_link, some(def_id));
                         self.build_reduced_graph_for_external_crate
-                            ((*child).get_local_module());
+                            ((*child).get_module());
                     }
                     none {
                         /* Ignore. */
@@ -737,8 +729,9 @@ class Resolver {
 
         let mut new_parent;
         alt parent {
-            LocalModuleParent(local_module) | BlockParent(local_module, _) {
-                new_parent = BlockParent(local_module, block.node.id);
+            ModuleReducedGraphParent(module) |
+            BlockReducedGraphParent(module, _) {
+                new_parent = BlockReducedGraphParent(module, block.node.id);
             }
         }
 
@@ -749,7 +742,7 @@ class Resolver {
         Builds the reduced graph rooted at the 'use' directive for an external
         crate.
     "]
-    fn build_reduced_graph_for_external_crate(root: @LocalModule) {
+    fn build_reduced_graph_for_external_crate(root: @Module) {
         for each_path(self.session.cstore, root.def_id.get().crate) {
             |path_entry|
             #debug("(building reduced graph for external crate) found path \
@@ -768,7 +761,8 @@ class Resolver {
                 let atom = (*self.atom_table).intern(@copy ident);
                 let child_name_bindings =
                     self.add_child(atom,
-                                   LocalModuleParent(current_module_node));
+                                   ModuleReducedGraphParent
+                                        (current_module_node));
 
                 // Define or reuse the module node.
                 alt child_name_bindings.module_def {
@@ -776,21 +770,21 @@ class Resolver {
                         #debug("(building reduced graph for external crate) \
                                 autovivifying %s", ident);
                         let parent_link =
-                            LocalModuleParentLink(current_module_node, atom);
-                        (*child_name_bindings).define_local_module
-                            (parent_link, none);
+                            ModuleParentLink(current_module_node, atom);
+                        (*child_name_bindings).define_module(parent_link,
+                                                             none);
                     }
-                    LocalModuleDef(_) { /* Fall through. */ }
+                    ModuleDef(_) { /* Fall through. */ }
                 }
 
-                current_module_node =
-                    (*child_name_bindings).get_local_module();
+                current_module_node = (*child_name_bindings).get_module();
             }
 
             // Add the new child item.
             let atom = (*self.atom_table).intern(@copy final_ident);
             let child_name_bindings =
-                self.add_child(atom, LocalModuleParent(current_module_node));
+                self.add_child(atom,
+                               ModuleReducedGraphParent(current_module_node));
 
             alt path_entry.def_like {
                 dl_def(def) {
@@ -802,14 +796,14 @@ class Resolver {
                                             external crate) building module \
                                             %s", final_ident);
                                     let parent_link =
-                                        LocalModuleParentLink
-                                            (current_module_node, atom);
+                                        ModuleParentLink(current_module_node,
+                                                         atom);
                                     (*child_name_bindings).
-                                        define_local_module
-                                            (parent_link, some(def_id));
+                                        define_module(parent_link,
+                                                      some(def_id));
                                 }
-                                LocalModuleDef(local_module) {
-                                    local_module.def_id = some(def_id);
+                                ModuleDef(module) {
+                                    module.def_id = some(def_id);
                                 }
                             }
                         }
@@ -852,34 +846,32 @@ class Resolver {
     }
 
     #[doc="Creates and adds an import directive to the given module."]
-    fn build_import_directive(local_module: @LocalModule,
+    fn build_import_directive(module: @Module,
                               module_path: @dvec<Atom>,
                               subclass: @ImportDirectiveSubclass) {
 
         let directive = @ImportDirective(module_path, subclass);
-        local_module.imports.push(directive);
+        module.imports.push(directive);
 
         // Bump the reference count on the name. Or, if this is a glob, set
         // the appropriate flag.
         alt *subclass {
             SingleImport(target, _) {
-                alt local_module.import_resolutions.find(target) {
+                alt module.import_resolutions.find(target) {
                     some(resolution) {
                         resolution.outstanding_references += 1u;
                     }
                     none {
                         let resolution = @ImportResolution();
                         resolution.outstanding_references = 1u;
-                        local_module.import_resolutions.insert(target,
-                                                              resolution);
-                            
+                        module.import_resolutions.insert(target, resolution);
                     }
                 }
             }
             GlobImport {
                 // Set the glob flag. This tells us that we don't know the
                 // module's exports ahead of time.
-                local_module.glob_count += 1u;
+                module.glob_count += 1u;
             }
         }
 
@@ -907,7 +899,7 @@ class Resolver {
             #debug("(resolving imports) iteration %u, %u imports left",
                    i, self.unresolved_imports);
 
-            let module_root = (*self.graph_root).get_local_module();
+            let module_root = (*self.graph_root).get_module();
             self.resolve_imports_for_module_subtree(module_root);
 
             if self.unresolved_imports == 0u {
@@ -930,14 +922,14 @@ class Resolver {
         Attempts to resolve imports for the given module and all of its
         submodules.
     "]
-    fn resolve_imports_for_module_subtree(local_module: @LocalModule) {
+    fn resolve_imports_for_module_subtree(module: @Module) {
         #debug("(resolving imports for module subtree) resolving %s",
-               self.local_module_to_str(local_module));
-        self.resolve_imports_for_module(local_module);
+               self.module_to_str(module));
+        self.resolve_imports_for_module(module);
 
-        for local_module.children.each {
+        for module.children.each {
             |_name, child_node|
-            alt (*child_node).get_local_module_if_available() {
+            alt (*child_node).get_module_if_available() {
                 none { /* Nothing to do. */ }
                 some(child_module_node) {
                     self.resolve_imports_for_module_subtree(child_module_node);
@@ -947,24 +939,23 @@ class Resolver {
     }
 
     #[doc="Attempts to resolve imports for the given module only."]
-    fn resolve_imports_for_module(local_module: @LocalModule) {
-        if (*local_module).all_imports_resolved() {
+    fn resolve_imports_for_module(module: @Module) {
+        if (*module).all_imports_resolved() {
             #debug("(resolving imports for module) all imports resolved for \
                    %s",
-                   self.local_module_to_str(local_module));
+                   self.module_to_str(module));
             ret;
         }
 
-        let import_count = local_module.imports.len();
-        while local_module.resolved_import_count < import_count {
-            let import_index = local_module.resolved_import_count;
-            let import_directive = local_module.imports.get_elt(import_index);
-            alt self.resolve_import_for_module(local_module,
-                                               import_directive) {
+        let import_count = module.imports.len();
+        while module.resolved_import_count < import_count {
+            let import_index = module.resolved_import_count;
+            let import_directive = module.imports.get_elt(import_index);
+            alt self.resolve_import_for_module(module, import_directive) {
                 Failed {
                     // We presumably emitted an error. Continue.
                     #debug("!!! (resolving imports for module) error: %s",
-                           self.local_module_to_str(local_module));
+                           self.module_to_str(module));
                 }
                 Indeterminate {
                     // Bail out. We'll come around next time.
@@ -975,7 +966,7 @@ class Resolver {
                 }
             }
 
-            local_module.resolved_import_count += 1u;
+            module.resolved_import_count += 1u;
         }
     }
 
@@ -986,7 +977,7 @@ class Resolver {
         currently-unresolved imports, or success if we know the name exists. If
         successful, the resolved bindings are written into the module.
     "]
-    fn resolve_import_for_module(local_module: @LocalModule,
+    fn resolve_import_for_module(module: @Module,
                                  import_directive: @ImportDirective)
                               -> ResolveResult<()> {
 
@@ -996,43 +987,39 @@ class Resolver {
         #debug("(resolving import for module) resolving import '%s::...' in \
                 '%s'",
                *(*self.atom_table).atoms_to_str((*module_path).get()),
-               self.local_module_to_str(local_module));
+               self.module_to_str(module));
 
         // One-level renaming imports of the form `import foo = bar;` are
         // handled specially.
         if (*module_path).len() == 0u {
             resolution_result =
-                self.resolve_one_level_renaming_import(local_module,
+                self.resolve_one_level_renaming_import(module,
                                                        import_directive);
         } else {
             // First, resolve the module path for the directive, if necessary.
-            alt self.resolve_module_path_for_import(local_module,
-                                                    module_path) {
+            alt self.resolve_module_path_for_import(module, module_path) {
                 Failed {
                     resolution_result = Failed;
                 }
                 Indeterminate {
                     resolution_result = Indeterminate;
                 }
-                Success(LocalModuleDef(containing_module)) {
+                Success(containing_module) {
                     // Attempt to resolve the import.
                     alt *import_directive.subclass {
                         SingleImport(target, source) {
                             resolution_result =
-                                self.resolve_single_import(local_module,
+                                self.resolve_single_import(module,
                                                            containing_module,
                                                            target,
                                                            source);
                         }
                         GlobImport {
                             resolution_result =
-                                self.resolve_glob_import(local_module,
+                                self.resolve_glob_import(module,
                                                          containing_module);
                         }
                     }
-                }
-                Success(NoModuleDef) {
-                    fail "NoModuleDef unexpected here";
                 }
             }
         }
@@ -1053,8 +1040,8 @@ class Resolver {
         if resolution_result != Indeterminate {
             alt *import_directive.subclass {
                 GlobImport {
-                    assert local_module.glob_count >= 1u;
-                    local_module.glob_count -= 1u;
+                    assert module.glob_count >= 1u;
+                    module.glob_count -= 1u;
                 }
                 SingleImport(*) { /* Ignore. */ }
             }
@@ -1063,18 +1050,16 @@ class Resolver {
         ret resolution_result;
     }
 
-    fn resolve_single_import(local_module: @LocalModule,
-                             containing_module: @LocalModule,
-                             target: Atom,
-                             source: Atom)
+    fn resolve_single_import(module: @Module, containing_module: @Module,
+                             target: Atom, source: Atom)
                           -> ResolveResult<()> {
 
         #debug("(resolving single import) resolving '%s' = '%s::%s' from \
                 '%s'",
                *(*self.atom_table).atom_to_str(target),
-               self.local_module_to_str(containing_module),
+               self.module_to_str(containing_module),
                *(*self.atom_table).atom_to_str(source),
-               self.local_module_to_str(local_module));
+               self.module_to_str(module));
 
         // We need to resolve all four namespaces for this to succeed.
         //
@@ -1201,15 +1186,14 @@ class Resolver {
         }
 
         // We've successfully resolved the import. Write the results in.
-        assert local_module.import_resolutions.contains_key(target);
-        let import_resolution = local_module.import_resolutions.get(target);
+        assert module.import_resolutions.contains_key(target);
+        let import_resolution = module.import_resolutions.get(target);
 
         alt module_result {
             BoundResult(target_module, name_bindings) {
                 #debug("(resolving single import) found module binding");
                 import_resolution.module_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
+                    some(Target(target_module, name_bindings));
             }
             UnboundResult {
                 #debug("(resolving single import) didn't find module \
@@ -1222,8 +1206,7 @@ class Resolver {
         alt value_result {
             BoundResult(target_module, name_bindings) {
                 import_resolution.value_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
+                    some(Target(target_module, name_bindings));
             }
             UnboundResult { /* Continue. */ }
             UnknownResult {
@@ -1233,8 +1216,7 @@ class Resolver {
         alt type_result {
             BoundResult(target_module, name_bindings) {
                 import_resolution.type_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
+                    some(Target(target_module, name_bindings));
             }
             UnboundResult { /* Continue. */ }
             UnknownResult {
@@ -1244,8 +1226,7 @@ class Resolver {
         alt impl_result {
             BoundResult(target_module, name_bindings) {
                 import_resolution.impl_target =
-                    some(ImportResolutionTarget(target_module,
-                                                name_bindings));
+                    some(Target(target_module, name_bindings));
             }
             UnboundResult { /* Continue. */ }
             UnknownResult {
@@ -1265,8 +1246,7 @@ class Resolver {
         succeeds or bails out (as importing * from an empty module or a module
         that exports nothing is valid).
     "]
-    fn resolve_glob_import(local_module: @LocalModule,
-                           containing_module: @LocalModule)
+    fn resolve_glob_import(module: @Module, containing_module: @Module)
                         -> ResolveResult<()> {
 
         // This function works in a highly imperative manner; it eagerly adds
@@ -1290,10 +1270,10 @@ class Resolver {
             #debug("(resolving glob import) writing module resolution \
                     %? into '%s'",
                    is_none(target_import_resolution.module_target),
-                   self.local_module_to_str(local_module));
+                   self.module_to_str(module));
 
             // Here we merge two import resolutions.
-            alt local_module.import_resolutions.find(atom) {
+            alt module.import_resolutions.find(atom) {
                 none {
                     // Simple: just copy the old import resolution.
                     let new_import_resolution = @ImportResolution();
@@ -1306,7 +1286,7 @@ class Resolver {
                     new_import_resolution.impl_target =
                         copy target_import_resolution.impl_target;
 
-                    local_module.import_resolutions.insert
+                    module.import_resolutions.insert
                         (atom, new_import_resolution);
                 }
                 some(dest_import_resolution) {
@@ -1349,11 +1329,11 @@ class Resolver {
             |atom, name_bindings|
 
             let mut dest_import_resolution;
-            alt local_module.import_resolutions.find(atom) {
+            alt module.import_resolutions.find(atom) {
                 none {
                     // Create a new import resolution from this child.
                     dest_import_resolution = @ImportResolution();
-                    local_module.import_resolutions.insert
+                    module.import_resolutions.insert
                         (atom, dest_import_resolution);
                 }
                 some(existing_import_resolution) {
@@ -1364,28 +1344,24 @@ class Resolver {
 
             #error("(resolving glob import) writing module resolution \
                     '%s'",
-                   self.local_module_to_str(local_module));
+                   self.module_to_str(module));
 
             // Merge the child item into the import resolution.
             if (*name_bindings).defined_in_namespace(ModuleNamespace) {
                 dest_import_resolution.module_target =
-                    some(ImportResolutionTarget(containing_module,
-                                                name_bindings));
+                    some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ValueNamespace) {
                 dest_import_resolution.value_target =
-                    some(ImportResolutionTarget(containing_module,
-                                                name_bindings));
+                    some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(TypeNamespace) {
                 dest_import_resolution.type_target =
-                    some(ImportResolutionTarget(containing_module,
-                                                name_bindings));
+                    some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ImplNamespace) {
                 dest_import_resolution.impl_target =
-                    some(ImportResolutionTarget(containing_module,
-                                                name_bindings));
+                    some(Target(containing_module, name_bindings));
             }
         }
 
@@ -1397,9 +1373,9 @@ class Resolver {
         Attempts to resolve the module part of an import directive rooted at
         the given module.
     "]
-    fn resolve_module_path_for_import(local_module: @LocalModule,
+    fn resolve_module_path_for_import(module: @Module,
                                       module_path: @dvec<Atom>)
-                                   -> ResolveResult<ModuleDef> {
+                                   -> ResolveResult<@Module> {
 
         let module_path_len = (*module_path).len();
         assert module_path_len > 0u;
@@ -1407,13 +1383,13 @@ class Resolver {
         #debug("(resolving module path for import) processing '%s' rooted at \
                '%s'",
                *(*self.atom_table).atoms_to_str((*module_path).get()),
-               self.local_module_to_str(local_module));
+               self.module_to_str(module));
 
         // The first element of the module path must be in the current scope
         // chain.
         let first_element = (*module_path).get_elt(0u);
-        let mut search_module_def;
-        alt self.resolve_module_in_lexical_scope(local_module, first_element) {
+        let mut search_module;
+        alt self.resolve_module_in_lexical_scope(module, first_element) {
             Failed {
                 #error("(resolving module path for import) !!! unresolved \
                         name: %s",
@@ -1426,8 +1402,8 @@ class Resolver {
                         bailing");
                 ret Indeterminate;
             }
-            Success(resulting_module_def) {
-                search_module_def = resulting_module_def;
+            Success(resulting_module) {
+                search_module = resulting_module;
             }
         }
 
@@ -1437,7 +1413,7 @@ class Resolver {
         let mut index = 1u;
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module_def,
+            alt self.resolve_name_in_module(search_module,
                                             name,
                                             ModuleNamespace) {
 
@@ -1462,8 +1438,8 @@ class Resolver {
                                    *(*self.atom_table).atom_to_str(name));
                             ret Failed;
                         }
-                        LocalModuleDef(*) {
-                            search_module_def = target.bindings.module_def;
+                        ModuleDef(module) {
+                            search_module = module;
                         }
                     }
                 }
@@ -1473,28 +1449,27 @@ class Resolver {
         }
 
         #debug("(resolving module path for import) resolved module");
-        ret Success(search_module_def);
+        ret Success(search_module);
     }
 
-    fn resolve_item_in_lexical_scope(local_module: @LocalModule,
+    fn resolve_item_in_lexical_scope(module: @Module,
                                      name: Atom,
                                      namespace: Namespace)
-                                  -> ResolveResult<ImportResolutionTarget> {
+                                  -> ResolveResult<Target> {
 
         #debug("(resolving item in lexical scope) resolving '%s' in \
                 namespace %? in '%s'",
                *(*self.atom_table).atom_to_str(name),
                namespace,
-               self.local_module_to_str(local_module));
+               self.module_to_str(module));
 
         // The current module node is handled specially. First, check for
         // its immediate children.
-        alt local_module.children.find(name) {
+        alt module.children.find(name) {
             some(name_bindings)
                     if (*name_bindings).defined_in_namespace(namespace) {
 
-                ret Success(ImportResolutionTarget(local_module,
-                                                   name_bindings));
+                ret Success(Target(module, name_bindings));
             }
             some(_) | none { /* Not found; continue. */ }
         }
@@ -1503,7 +1478,7 @@ class Resolver {
         // all its imports in the usual way; this is because chains of
         // adjacent import statements are processed as though they mutated the
         // current scope.
-        alt local_module.import_resolutions.find(name) {
+        alt module.import_resolutions.find(name) {
             none { /* Not found; continue. */ }
             some(import_resolution) {
                 alt (*import_resolution).target_for_namespace(namespace) {
@@ -1521,7 +1496,7 @@ class Resolver {
         }
         
         // Finally, proceed up the scope chain looking for parent modules.
-        let mut search_module = local_module;
+        let mut search_module = module;
         loop {
             // Go to the next parent.
             alt search_module.parent_link {
@@ -1531,16 +1506,14 @@ class Resolver {
                             module");
                     ret Failed;
                 }
-                LocalModuleParentLink(parent_module_node, _) |
+                ModuleParentLink(parent_module_node, _) |
                 BlockParentLink(parent_module_node, _) {
                     search_module = parent_module_node;
                 }
             }
 
             // Resolve the name in the parent module.
-            alt self.resolve_name_in_local_module(search_module,
-                                                  name,
-                                                  namespace) {
+            alt self.resolve_name_in_module(search_module, name, namespace) {
                 Failed {
                     // Continue up the search chain.
                 }
@@ -1559,11 +1532,10 @@ class Resolver {
         }
     }
 
-    fn resolve_module_in_lexical_scope(local_module: @LocalModule,
-                                       name: Atom)
-                                    -> ResolveResult<ModuleDef> {
+    fn resolve_module_in_lexical_scope(module: @Module, name: Atom)
+                                    -> ResolveResult<@Module> {
 
-        alt self.resolve_item_in_lexical_scope(local_module,
+        alt self.resolve_item_in_lexical_scope(module,
                                                name,
                                                ModuleNamespace) {
 
@@ -1574,8 +1546,8 @@ class Resolver {
                                 wasn't actually a module!");
                         ret Failed;
                     }
-                    LocalModuleDef(*) {
-                        ret Success(target.bindings.module_def);
+                    ModuleDef(module) {
+                        ret Success(module);
                     }
                 }
             }
@@ -1594,44 +1566,25 @@ class Resolver {
 
     #[doc="
         Attempts to resolve the supplied name in the given module for the
-        given namespace. If successful, returns the reduced graph node
-        corresponding to the name.
+        given namespace. If successful, returns the target corresponding to
+        the name.
     "]
-    fn resolve_name_in_module(module_def: ModuleDef,
+    fn resolve_name_in_module(module: @Module,
                               name: Atom,
                               namespace: Namespace)
-                           -> ResolveResult<ImportResolutionTarget> {
+                           -> ResolveResult<Target> {
 
-        alt module_def {
-            NoModuleDef {
-                fail "(resolving name in module) unexpected NoModuleDef";
-            }
-            LocalModuleDef(local_module) {
-                ret self.resolve_name_in_local_module(local_module,
-                                                      name,
-                                                      namespace);
-            }
-        }
-    }
-
-    fn resolve_name_in_local_module(local_module: @LocalModule,
-                                    name: Atom,
-                                    namespace: Namespace)
-                                 -> ResolveResult<ImportResolutionTarget> {
-
-        #debug("(resolving name in local module) resolving '%s' in '%s'",
+        #debug("(resolving name in module) resolving '%s' in '%s'",
                *(*self.atom_table).atom_to_str(name),
-               self.local_module_to_str(local_module));
+               self.module_to_str(module));
 
         // First, check the direct children of the module.
-        alt local_module.children.find(name) {
+        alt module.children.find(name) {
             some(name_bindings)
                     if (*name_bindings).defined_in_namespace(namespace) {
 
-                #debug("(resolving name in local module) found node as \
-                        child");
-                ret Success(ImportResolutionTarget(local_module,
-                                                   name_bindings));
+                #debug("(resolving name in module) found node as child");
+                ret Success(Target(module, name_bindings));
             }
             some(_) | none {
                 // Continue.
@@ -1640,25 +1593,24 @@ class Resolver {
 
         // Next, check the module's imports. If the module has a glob, then
         // we bail out; we don't know its imports.
-        if local_module.glob_count > 0u {
-            #debug("(resolving name in local module) module has glob; bailing \
-                    out");
+        if module.glob_count > 0u {
+            #debug("(resolving name in module) module has glob; bailing out");
             ret Indeterminate;
         }
 
         // Otherwise, we check the list of resolved imports.
-        alt local_module.import_resolutions.find(name) {
+        alt module.import_resolutions.find(name) {
             some(import_resolution) {
                 if import_resolution.outstanding_references != 0u {
-                    #debug("(resolving name in local module) import \
-                            unresolved; bailing out");
+                    #debug("(resolving name in module) import unresolved; \
+                            bailing out");
                     ret Indeterminate;
                 }
 
                 alt (*import_resolution).target_for_namespace(namespace) {
                     none { /* Continue. */ }
                     some(target) {
-                        #debug("(resolving name in local module) resolved to \
+                        #debug("(resolving name in module) resolved to \
                                 import");
                         ret Success(copy target);
                     }
@@ -1670,7 +1622,7 @@ class Resolver {
         }
 
         // We're out of luck.
-        #debug("(resolving name in local module) failed to resolve %s",
+        #debug("(resolving name in module) failed to resolve %s",
                *(*self.atom_table).atom_to_str(name));
         ret Failed;
     }
@@ -1680,7 +1632,7 @@ class Resolver {
         This needs special handling, as, unlike all of the other imports, it
         needs to look in the scope chain for modules and non-modules alike.
     "]
-    fn resolve_one_level_renaming_import(local_module: @LocalModule,
+    fn resolve_one_level_renaming_import(module: @Module,
                                          import_directive: @ImportDirective)
                                       -> ResolveResult<()> {
 
@@ -1700,14 +1652,14 @@ class Resolver {
                 '%s' in '%s'",
                 *(*self.atom_table).atom_to_str(target_name),
                 *(*self.atom_table).atom_to_str(source_name),
-                self.local_module_to_str(local_module));
+                self.module_to_str(module));
 
         // Find the matching items in the lexical scope chain for every
         // namespace. If any of them come back indeterminate, this entire
         // import is indeterminate.
         let mut module_result;
         #debug("(resolving one-level naming result) searching for module");
-        alt self.resolve_item_in_lexical_scope(local_module,
+        alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
                                                ModuleNamespace) {
 
@@ -1730,7 +1682,7 @@ class Resolver {
 
         let mut value_result;
         #debug("(resolving one-level naming result) searching for value");
-        alt self.resolve_item_in_lexical_scope(local_module,
+        alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
                                                ValueNamespace) {
 
@@ -1753,7 +1705,7 @@ class Resolver {
 
         let mut type_result;
         #debug("(resolving one-level naming result) searching for type");
-        alt self.resolve_item_in_lexical_scope(local_module,
+        alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
                                                TypeNamespace) {
 
@@ -1793,7 +1745,7 @@ class Resolver {
 
         let mut impl_result;
         #debug("(resolving one-level naming result) searching for impl");
-        alt self.resolve_item_in_lexical_scope(local_module,
+        alt self.resolve_item_in_lexical_scope(module,
                                                source_name,
                                                ImplNamespace) {
 
@@ -1823,7 +1775,7 @@ class Resolver {
         }
 
         // Otherwise, proceed and write in the bindings.
-        alt local_module.import_resolutions.find(target_name) {
+        alt module.import_resolutions.find(target_name) {
             none {
                 fail "(resolving one-level renaming import) reduced graph \
                       construction or glob importing should have created the \
@@ -1834,7 +1786,7 @@ class Resolver {
                         result %? for '%s' into '%s'",
                        is_none(module_result),
                        *(*self.atom_table).atom_to_str(target_name),
-                       self.local_module_to_str(local_module));
+                       self.module_to_str(module));
 
                 import_resolution.module_target = module_result;
                 import_resolution.value_target = value_result;
@@ -1851,25 +1803,25 @@ class Resolver {
     }
 
     fn report_unresolved_imports(name_bindings: @NameBindings) {
-        let mut local_module;
-        alt (*name_bindings).get_local_module_if_available() {
+        let mut module;
+        alt (*name_bindings).get_module_if_available() {
             none { ret; }
             some(associated_module_node) {
-                local_module = associated_module_node;
+                module = associated_module_node;
             }
         }
 
-        let index = local_module.resolved_import_count;
-        let import_count = local_module.imports.len();
+        let index = module.resolved_import_count;
+        let import_count = module.imports.len();
         if index != import_count {
-            let module_path = local_module.imports.get_elt(index).module_path;
+            let module_path = module.imports.get_elt(index).module_path;
             #error("!!! unresolved import in %s: %s",
-                   self.local_module_to_str(local_module),
+                   self.module_to_str(module),
                    *(*self.atom_table).atoms_to_str((*module_path).get()));
         }
 
         // Descend into children.
-        for local_module.children.each {
+        for module.children.each {
             |_name, child_node|
             self.report_unresolved_imports(child_node);
         }
@@ -1888,18 +1840,18 @@ class Resolver {
                     none {
                         #debug("!!! (with scope) didn't find '%s' in '%s'",
                                *(*self.atom_table).atom_to_str(name),
-                               self.local_module_to_str(orig_module));
+                               self.module_to_str(orig_module));
                     }
                     some(name_bindings) {
-                        alt (*name_bindings).get_local_module_if_available() {
+                        alt (*name_bindings).get_module_if_available() {
                             none {
-                                #debug("!!! (with scope) didn't find local \
-                                        module for '%s' in '%s'",
+                                #debug("!!! (with scope) didn't find module \
+                                        for '%s' in '%s'",
                                        *(*self.atom_table).atom_to_str(name),
-                                       self.local_module_to_str(orig_module));
+                                       self.module_to_str(orig_module));
                             }
-                            some(local_module) {
-                                self.current_module = local_module;
+                            some(module) {
+                                self.current_module = module;
                             }
                         }
                     }
@@ -2224,25 +2176,22 @@ class Resolver {
 
     // Diagnostics
 
-    #[doc="
-        A terribly inefficient routine to print out the name of a local
-        module.
-    "]
-    fn local_module_to_str(local_module: @LocalModule) -> str {
+    #[doc="A somewhat inefficient routine to print out the name of a module."]
+    fn module_to_str(module: @Module) -> str {
         let atoms = dvec();
-        let mut current_local_module = local_module;
+        let mut current_module = module;
         loop {
-            alt current_local_module.parent_link {
+            alt current_module.parent_link {
                 NoParentLink {
                     break;
                 }
-                LocalModuleParentLink(local_module, name) {
+                ModuleParentLink(module, name) {
                     atoms.push(name);
-                    current_local_module = local_module;
+                    current_module = module;
                 }
-                BlockParentLink(local_module, node_id) {
+                BlockParentLink(module, node_id) {
                     atoms.push((*self.atom_table).intern(@"<opaque>"));
-                    current_local_module = local_module;
+                    current_module = module;
                 }
             }
         }
@@ -2268,19 +2217,18 @@ class Resolver {
         ret string;
     }
 
-    fn dump_local_module(local_module: @LocalModule) {
-        #debug("Dump of module '%s':",
-               self.local_module_to_str(local_module));
+    fn dump_module(module: @Module) {
+        #debug("Dump of module '%s':", self.module_to_str(module));
 
         #debug("Children:");
-        for local_module.children.each {
+        for module.children.each {
             |name, _child|
 
             #debug("* %s", *(*self.atom_table).atom_to_str(name));
         }
 
         #debug("Import resolutions:");
-        for local_module.import_resolutions.each {
+        for module.import_resolutions.each {
             |name, import_resolution|
 
             let mut module_repr;
