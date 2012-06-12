@@ -12,7 +12,7 @@ import syntax::ast::{impure_fn, instance_var, item, item_class, item_const};
 import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
 import syntax::ast::{item_native_mod, item_res, item_ty, local, method, native_item};
 import syntax::ast::{native_item_fn, node_id, pat, pat_ident, stmt_decl};
-import syntax::ast::{ty, ty_param, ty_path, variant, view_item};
+import syntax::ast::{ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64, ty_float, ty_i, ty_i32, ty_i64, ty_int, ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u8, ty_u32, ty_u64, ty_uint, variant, view_item};
 import syntax::ast::{view_item_export, view_item_import, view_item_use};
 import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
@@ -27,6 +27,7 @@ import std::map::{hashmap, int_hash, str_hash};
 import str::split_str;
 import vec::pop;
 import ASTMap = syntax::ast_map::map;
+import str_eq = str::eq;
 
 type DefMap = hashmap<node_id, def>;
 
@@ -165,6 +166,90 @@ class AtomTable {
 #[doc="Creates a hash table of atoms."]
 fn atom_hashmap<V:copy>() -> hashmap<Atom,V> {
     ret hashmap::<Atom,V>({ |a| a }, { |a, b| a == b });
+}
+
+// TODO: This really should be a syntax extension.
+#[doc="A gperf-generated hash function for built-in types."]
+class BuiltinTypeHash {
+    let hash_box: [u8]/256;
+
+    new() {
+        self.hash_box = [
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,  3u8,
+            39u8, 10u8, 39u8, 39u8,  0u8, 39u8,  0u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,  5u8,  0u8,
+            39u8, 39u8, 20u8, 39u8,  0u8,  5u8, 39u8, 39u8,  0u8, 39u8,
+            30u8,  5u8, 39u8, 39u8, 39u8, 15u8, 10u8,  0u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
+            39u8, 39u8, 39u8, 39u8, 39u8, 39u8
+        ]/256;
+    }
+
+    fn hash(string: str) -> uint {
+        ret string.byte_len() +
+            (self.hash_box[string[1]] as uint) +
+            (self.hash_box[string[0]] as uint);
+    }
+
+    fn test(candidate: str, keyword: str, result: prim_ty)
+         -> option<prim_ty> {
+
+        if str_eq(candidate, keyword) {
+            ret some(prim_ty);
+        }
+
+        ret none;
+    }
+
+    fn get_primitive_type(string: str) -> option<prim_ty> {
+        if str.byte_len() < 2u || str.byte_len() > 5u {
+            ret none;
+        }
+
+        let key = self.hash(string);
+        if key < 2u || key > 38u {
+            ret none;
+        }
+
+        ret alt key - 2u {
+            0u  { self.test(key, "u8",      ty_uint(ty_u8))     }
+            1u  { self.test(key, "u64",     ty_uint(ty_u64))    }
+            2u  { self.test(key, "char",    ty_char)            }
+            4u  { self.test(key, "u16",     ty_uint(ty_u16))    }
+            5u  { self.test(key, "i8",      ty_int(ty_i8))      }
+            6u  { self.test(key, "u64",     ty_int(ty_i64))     }
+            7u  { self.test(key, "uint",    ty_uint(ty_u))      }
+            9u  { self.test(key, "i16",     ty_int(ty_i16))     }
+            11u { self.test(key, "u32",     ty_uint(ty_u32))    }
+            12u { self.test(key, "bool",    ty_bool)            }
+            16u { self.test(key, "i32",     ty_int(ty_i32))     }
+            21u { self.test(key, "f64",     ty_float(ty_f64))   }
+            23u { self.test(key, "float",   ty_float(ty_f))     }
+            26u { self.test(key, "str",     ty_str)             }
+            31u { self.test(key, "f32",     ty_float(ty_f32))   }
+            36u { self.test(key, "int",     ty_int(ty_i))       }
+            _   { none                                          }
+        }
+    }
 }
 
 #[doc="
