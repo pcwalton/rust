@@ -2,18 +2,19 @@ import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
-import syntax::ast::{_mod, arm, blk, class_method, crate, crate_num, def};
-import syntax::ast::{def_arg, def_binding, def_class, def_const, def_fn};
-import syntax::ast::{def_id, def_local, def_mod, def_native_mod, def_prim_ty};
-import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
-import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
-import syntax::ast::{expr_path, fn_decl, ident, impure_fn, instance_var};
-import syntax::ast::{item, item_class, item_const, item_enum, item_fn};
-import syntax::ast::{item_iface, item_impl, item_mod, item_native_mod};
-import syntax::ast::{item_res, item_ty, local, native_item, native_item_fn};
-import syntax::ast::{node_id, pat, pat_ident, ty_param, variant, view_item};
-import syntax::ast::{view_item_export, view_item_import, view_item_use};
-import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
+import syntax::ast::{_mod, arm, blk, class_method, crate, crate_num};
+import syntax::ast::{decl_item, def, def_arg, def_binding, def_class};
+import syntax::ast::{def_const, def_fn, def_id, def_local, def_mod};
+import syntax::ast::{def_native_mod, def_prim_ty, def_region, def_self};
+import syntax::ast::{def_ty, def_ty_param, def_upvar, def_use, def_variant};
+import syntax::ast::{expr, expr_fn, expr_fn_block, expr_path, fn_decl, ident};
+import syntax::ast::{impure_fn, instance_var, item, item_class, item_const};
+import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
+import syntax::ast::{item_native_mod, item_res, item_ty, local, native_item};
+import syntax::ast::{native_item_fn, node_id, pat, pat_ident, stmt_decl};
+import syntax::ast::{ty_param, variant, view_item, view_item_export};
+import syntax::ast::{view_item_import, view_item_use, view_path_glob};
+import syntax::ast::{view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
@@ -79,8 +80,7 @@ enum ImportDirectiveSubclass {
 
 #[doc="The context that we thread through while building the reduced graph."]
 enum ReducedGraphParent {
-    ModuleReducedGraphParent(@Module),
-    BlockReducedGraphParent(@Module, node_id)
+    ModuleReducedGraphParent(@Module)
 }
 
 enum ResolveResult<T> {
@@ -465,8 +465,7 @@ class Resolver {
     fn get_module_from_parent(reduced_graph_parent: ReducedGraphParent)
                            -> @Module {
         alt reduced_graph_parent {
-            ModuleReducedGraphParent(module) |
-            BlockReducedGraphParent(module, _) {
+            ModuleReducedGraphParent(module) {
                 ret module;
             }
         }
@@ -495,20 +494,6 @@ class Resolver {
             ModuleReducedGraphParent(parent_module) {
                 module = parent_module;
             }
-            BlockReducedGraphParent(parent_module, node_id) {
-                alt parent_module.anonymous_children.find(node_id) {
-                    none {
-                        module = @Module(BlockParentLink(parent_module,
-                                                         node_id),
-                                         none);
-                        parent_module.anonymous_children.insert(node_id,
-                                                                module);
-                    }
-                    some(existing_module) {
-                        module = existing_module;
-                    }
-                }
-            }
         }
 
         // Add or reuse the child.
@@ -525,10 +510,42 @@ class Resolver {
         }
     }
 
+    fn block_needs_anonymous_module(block: blk) -> bool {
+        // If the block has view items, we need an anonymous module.
+        if block.node.view_items.len() > 0u {
+            ret true;
+        }
+
+        // Check each statement.
+        for block.node.stmts.each {
+            |statement|
+            
+            alt statement.node {
+                stmt_decl(declaration, _) {
+                    alt declaration.node {
+                        decl_item(_) {
+                            ret true;
+                        }
+                        _ {
+                            // Keep searching.
+                        }
+                    }
+                }
+                _ {
+                    // Keep searching.
+                }
+            }
+        }
+
+        // If we found neither view items nor items, we don't need to create
+        // an anonymous module.
+
+        ret false;
+    }
+
     fn get_parent_link(parent: ReducedGraphParent, name: Atom) -> ParentLink {
         alt parent {
-            ModuleReducedGraphParent(module) |
-            BlockReducedGraphParent(module, _) {
+            ModuleReducedGraphParent(module) {
                 ret ModuleParentLink(module, name);
             }
         }
@@ -766,11 +783,20 @@ class Resolver {
                                      &&visitor: vt<ReducedGraphParent>) {
 
         let mut new_parent;
-        alt parent {
-            ModuleReducedGraphParent(module) |
-            BlockReducedGraphParent(module, _) {
-                new_parent = BlockReducedGraphParent(module, block.node.id);
-            }
+        if self.block_needs_anonymous_module(block) {
+            let block_id = block.node.id;
+
+            #debug("(building reduced graph for block) creating a new \
+                    anonymous module for block %d",
+                   block_id);
+
+            let parent_module = self.get_module_from_parent(parent);
+            let new_module = @Module(BlockParentLink(parent_module, block_id),
+                                     none);
+            parent_module.anonymous_children.insert(block_id, new_module);
+            new_parent = ModuleReducedGraphParent(new_module);
+        } else {
+            new_parent = parent;
         }
 
         visit_block(block, new_parent, visitor);
@@ -1959,6 +1985,7 @@ class Resolver {
             item_enum(*) | item_ty(*) {
                 visit_item(item, (), visitor);
             }
+
             item_impl(_, _, _, _, methods) {
                 // Create a new scope for the impl-wide type parameters.
                 for methods.each {
@@ -1972,6 +1999,7 @@ class Resolver {
                                           visitor);
                 }
             }
+
             item_iface(_, _, methods) {
                 // Create a new scope for the interface-wide type parameters.
                 for methods.each {
@@ -2034,6 +2062,7 @@ class Resolver {
                                         item.id, visitor);
                 }
             }
+
             item_native_mod(native_module) {
                 let atom = (*self.atom_table).intern(@copy item.ident);
                 self.with_scope(some(atom)) {
@@ -2049,11 +2078,13 @@ class Resolver {
                     }
                 }
             }
+
             item_fn(fn_decl, ty_params, block)  |
             item_res(fn_decl, ty_params, block, _, _, _) {
                 self.resolve_function(some(@fn_decl), some(ty_params), block,
                                       NoSelfBinding, visitor);
             }
+
             item_const(*) {
                 visit_item(item, (), visitor);
             }
@@ -2143,7 +2174,8 @@ class Resolver {
         alt self.current_module.anonymous_children.find(block.node.id) {
             none { /* Nothing to do. */ }
             some(anonymous_module) {
-                #debug("(resolving block) found anonymous module");
+                #debug("(resolving block) found anonymous module, moving \
+                        down");
                 self.current_module = anonymous_module;
             }
         }
@@ -2165,8 +2197,7 @@ class Resolver {
         walk_pat(pattern) {
             |pattern|
             alt pattern.node {
-                pat_ident(path, none)
-                        if !path.global && path.idents.len() == 1u {
+                pat_ident(path, _) if !path.global && path.idents.len() == 1u {
                     // The meaning of pat_ident with no type parameters
                     // depends on whether an enum variant with that name is in
                     // scope. The probing lookup has to be careful not to emit
