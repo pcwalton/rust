@@ -33,14 +33,14 @@ import vec::pop;
 import ASTMap = syntax::ast_map::map;
 import str_eq = str::eq;
 
-type DefMap = hashmap<node_id, def>;
+type DefMap = hashmap<node_id,def>;
 
 // Implementation resolution stuff
 type MethodInfo = { did: def_id, n_tps: uint, ident: ident };
 type Impl = { did: def_id, ident: ident, methods: [@MethodInfo] };
 type ImplScope = @[@Impl];
 type ImplScopes = @list<ImplScope>;
-type ImplMap = hashmap<node_id, ImplScopes>;
+type ImplMap = hashmap<node_id,ImplScopes>;
 
 enum PatternBindingMode {
     RefutableMode,
@@ -1963,7 +1963,28 @@ class Resolver {
         }
     }
 
-    // AST resolution: We simply build up a list of scopes.
+    //
+    // AST resolution
+    //
+    // We maintain a list of value ribs and type ribs. Since ribs are
+    // somewhat expensive to allocate, we try to avoid creating ribs unless
+    // we know we need to. For instance, we don't allocate a type rib for
+    // a function with no type parameters.
+    //
+    // Simultaneously, we keep track of the current position in the module
+    // graph in the `current_module` pointer. When we go to resolve a name in
+    // the value or type namespaces, we first look through all the ribs and
+    // then query the module graph. When we resolve a name in the module
+    // namespace, we can skip all the ribs (since nested modules are not
+    // allowed within blocks in Rust) and jump straight to the current module
+    // graph node.
+    //
+    // Named implementations are handled separately. When we find a method
+    // call, we consult the module node to find all of the implementations in
+    // scope. This information is lazily cached in the module node. We then
+    // generate a fake "implementation scope" containing all the
+    // implementations thus found, for compatibility with old resolve pass.
+    //
 
     fn with_scope(name: option<Atom>, f: fn()) {
         let orig_module = self.current_module;
@@ -2592,7 +2613,12 @@ class Resolver {
         }
     }
 
+    //
     // Diagnostics
+    //
+    // Diagnostics are not particularly efficient, because they're rarely
+    // hit.
+    //
 
     #[doc="A somewhat inefficient routine to print out the name of a module."]
     fn module_to_str(module: @Module) -> str {
