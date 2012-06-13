@@ -101,6 +101,7 @@ enum TypeParameters/& {
 
 // FIXME (issue 2550): Should be a class but then it becomes not implicitly
 // copyable due to a kind bug.
+
 type Atom = uint;
 
 fn Atom(n: uint) -> Atom {
@@ -147,7 +148,7 @@ class AtomTable {
     }
 
     fn atoms_to_str(atoms: [Atom]) -> @str {
-        // FIXME: str::connect should do this
+        // FIXME: str::connect should do this.
         let mut result = "";
         let mut first = true;
         for self.atoms_to_strs(atoms) {
@@ -162,7 +163,7 @@ class AtomTable {
             result += *string;
         }
 
-        // FIXME: Shouldn't copy here. Need string builder.
+        // FIXME: Shouldn't copy here. We need string builder functionality.
         ret @result;
     }
 }
@@ -210,6 +211,7 @@ class ImportResolution {
     // The number of outstanding references to this name. When this reaches
     // zero, outside modules can count on the targets being correct. Before
     // then, all bets are off; future imports could override this name.
+
     let mut outstanding_references: uint;
 
     let mut module_target: option<Target>;
@@ -300,6 +302,7 @@ class Module {
 
 // FIXME: This is a workaround due to is_none in the standard library
 // mistakenly requiring a T:copy.
+
 fn is_none<T>(x: option<T>) -> bool {
     alt x {
         none { ret true; }
@@ -429,6 +432,7 @@ class Resolver {
 
     // The current set of local scopes, for values.
     // TODO: Reuse ribs to avoid allocation.
+
     let value_ribs: @dvec<@Rib>;
 
     // The current set of local scopes, for types.
@@ -876,6 +880,7 @@ class Resolver {
 
             // Find the module we need, creating modules along the way if we
             // need to.
+
             let mut current_module = root;
             for pieces.each {
                 |ident|
@@ -980,6 +985,7 @@ class Resolver {
 
         // Bump the reference count on the name. Or, if this is a glob, set
         // the appropriate flag.
+
         alt *subclass {
             SingleImport(target, _) {
                 alt module.import_resolutions.find(target) {
@@ -996,6 +1002,7 @@ class Resolver {
             GlobImport {
                 // Set the glob flag. This tells us that we don't know the
                 // module's exports ahead of time.
+
                 module.glob_count += 1u;
             }
         }
@@ -1121,6 +1128,7 @@ class Resolver {
 
         // One-level renaming imports of the form `import foo = bar;` are
         // handled specially.
+
         if (*module_path).len() == 0u {
             resolution_result =
                 self.resolve_one_level_renaming_import(module,
@@ -1135,7 +1143,9 @@ class Resolver {
                     resolution_result = Indeterminate;
                 }
                 Success(containing_module) {
-                    // Attempt to resolve the import.
+                    // We found the module that the target is contained
+                    // within. Attempt to resolve the import within it.
+
                     alt *import_directive.subclass {
                         SingleImport(target, source) {
                             resolution_result =
@@ -1169,6 +1179,7 @@ class Resolver {
         // the resolution result is indeterminate -- otherwise we'll stop
         // processing imports here. (See the loop in
         // resolve_imports_for_module.)
+
         if resolution_result != Indeterminate {
             alt *import_directive.subclass {
                 GlobImport {
@@ -1199,6 +1210,7 @@ class Resolver {
         //
         // TODO: See if there's some way of handling namespaces in a more
         // generic way. We have four of them; it seems worth doing...
+
         let mut module_result = UnknownResult;
         let mut value_result = UnknownResult;
         let mut type_result = UnknownResult;
@@ -1206,7 +1218,9 @@ class Resolver {
 
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
-            none { /* Continue. */ }
+            none {
+                // Continue.
+            }
             some(child_name_bindings) {
                 if (*child_name_bindings).defined_in_namespace(ModuleNS) {
                     module_result = BoundResult(containing_module,
@@ -1229,6 +1243,7 @@ class Resolver {
 
         // Unless we managed to find a result in all four namespaces
         // (exceedingly unlikely), search imports as well.
+
         alt (module_result, value_result, type_result, impl_result) {
             (BoundResult(*), BoundResult(*), BoundResult(*), BoundResult(*)) {
                 // Continue.
@@ -1237,6 +1252,7 @@ class Resolver {
                 // If there is an unresolved glob at this point in the
                 // containing module, bail out. We don't know enough to be
                 // able to resolve this import.
+
                 if containing_module.glob_count > 0u {
                     #debug("(resolving single import) unresolved glob; \
                             bailing out");
@@ -1245,12 +1261,14 @@ class Resolver {
 
                 // Now search the exported imports within the containing
                 // module.
+
                 alt containing_module.import_resolutions.find(source) {
                     none {
                         // The containing module definitely doesn't have an
                         // exported import with the name in question. We can
                         // therefore accurately report that the names are
                         // unbound.
+
                         if module_result == UnknownResult {
                             module_result = UnboundResult;
                         }
@@ -1283,8 +1301,9 @@ class Resolver {
                             }
                         }
 
-                        // The name is an import which has been fully resolved.
-                        // We can, therefore, just follow the import.
+                        // The name is an import which has been fully
+                        // resolved. We can, therefore, just follow it.
+
                         if module_result == UnknownResult {
                             module_result = get_binding(import_resolution,
                                                         ModuleNS);
@@ -1382,6 +1401,7 @@ class Resolver {
 
         // We must bail out if the node has unresolved imports of any kind
         // (including globs).
+
         if !(*containing_module).all_imports_resolved() {
             #debug("(resolving glob import) target module has unresolved \
                     imports; bailing out");
@@ -1419,29 +1439,38 @@ class Resolver {
                 some(dest_import_resolution) {
                     // Merge the two import resolutions at a finer-grained
                     // level.
+
                     alt target_import_resolution.module_target {
-                        none { /* Continue. */ }
+                        none {
+                            // Continue.
+                        }
                         some(module_target) {
                             dest_import_resolution.module_target =
                                 some(copy module_target);
                         }
                     }
                     alt target_import_resolution.value_target {
-                        none { /* Continue. */ }
+                        none {
+                            // Continue.
+                        }
                         some(value_target) {
                             dest_import_resolution.value_target =
                                 some(copy value_target);
                         }
                     }
                     alt target_import_resolution.type_target {
-                        none { /* Continue. */ }
+                        none {
+                            // Continue.
+                        }
                         some(type_target) {
                             dest_import_resolution.type_target =
                                 some(copy type_target);
                         }
                     }
                     alt target_import_resolution.impl_target {
-                        none { /* Continue. */ }
+                        none {
+                            // Continue.
+                        }
                         some(impl_target) {
                             dest_import_resolution.impl_target =
                                 some(copy impl_target);
@@ -1520,6 +1549,7 @@ class Resolver {
 
         // The first element of the module path must be in the current scope
         // chain.
+
         let first_element = (*module_path).get_elt(0u);
         let mut search_module;
         alt self.resolve_module_in_lexical_scope(module, first_element) {
@@ -1543,6 +1573,7 @@ class Resolver {
         // Now resolve the rest of the path. This does not involve looking
         // upward though scope chains; we simply resolve names directly in
         // modules as we go.
+
         let mut index = 1u;
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
@@ -1596,6 +1627,7 @@ class Resolver {
 
         // The current module node is handled specially. First, check for
         // its immediate children.
+
         alt module.children.find(name) {
             some(name_bindings)
                     if (*name_bindings).defined_in_namespace(namespace) {
@@ -1609,12 +1641,15 @@ class Resolver {
         // all its imports in the usual way; this is because chains of
         // adjacent import statements are processed as though they mutated the
         // current scope.
+
         alt module.import_resolutions.find(name) {
-            none { /* Not found; continue. */ }
+            none {
+                // Not found; continue.
+            }
             some(import_resolution) {
                 alt (*import_resolution).target_for_namespace(namespace) {
                     none {
-                        /* Not found; continue. */
+                        // Not found; continue.
                         #debug("(resolving item in lexical scope) found \
                                 import resolution, but not in namespace %?",
                                namespace);
@@ -1651,6 +1686,7 @@ class Resolver {
                 Indeterminate {
                     // We couldn't see through the higher scope because of an
                     // unresolved import higher up. Bail.
+
                     #debug("(resolving item in lexical scope) indeterminate \
                             higher scope; bailing");
                     ret Indeterminate;
@@ -1720,7 +1756,8 @@ class Resolver {
         }
 
         // Next, check the module's imports. If the module has a glob, then
-        // we bail out; we don't know its imports.
+        // we bail out; we don't know its imports yet.
+
         if module.glob_count > 0u {
             #debug("(resolving name in module) module has glob; bailing out");
             ret Indeterminate;
@@ -1789,6 +1826,7 @@ class Resolver {
         // Find the matching items in the lexical scope chain for every
         // namespace. If any of them come back indeterminate, this entire
         // import is indeterminate.
+
         let mut module_result;
         #debug("(resolving one-level naming result) searching for module");
         alt self.resolve_item_in_lexical_scope(module,
@@ -2024,6 +2062,7 @@ class Resolver {
     fn search_ribs(ribs: @dvec<@Rib>, name: Atom) -> option<def_like> {
         // FIXME: This should not use a while loop.
         // TODO: Try caching?
+
         let mut i = (*ribs).len();
         while i != 0u {
             i -= 1u;
@@ -2106,10 +2145,13 @@ class Resolver {
                     for methods.each {
                         |method|
 
+                        //
                         // Create a new rib for the method-specific type
                         // parameters.
-
+                        //
                         // FIXME: Do we need a node ID here?
+                        //
+
                         self.with_type_parameter_rib
                             (HasTypeParameters(&method.tps, item.id)) {
                             ||
@@ -2417,11 +2459,15 @@ class Resolver {
         alt ty.node {
             // Like path expressions, the interpretation of path types depends
             // on whether the path has multiple elements in it or not.
+
             ty_path(path, _) if path.idents.len() == 1u {
+
+                //
                 // This is a local path in the type namespace. Walk through
                 // scopes looking for it.
-
+                //
                 // TODO: Merge this with the expr_path code somehow, perhaps?
+                //
 
                 let name = (*self.atom_table).intern(@copy path.idents[0]);
 
@@ -2515,6 +2561,7 @@ class Resolver {
             |pattern|
             alt pattern.node {
                 pat_ident(path, _) if !path.global && path.idents.len() == 1u {
+                    //
                     // The meaning of pat_ident with no type parameters
                     // depends on whether an enum variant with that name is in
                     // scope. The probing lookup has to be careful not to emit
@@ -2522,6 +2569,9 @@ class Resolver {
                     // nullary variants. For binding patterns (let), matching
                     // such a variant is simply disallowed (since it's rarely
                     // what you want).
+                    //
+                    // FIXME: This is unimplemented.
+                    //
 
                     #debug("(resolving pattern) binding '%s'",
                            path.idents[0]);
@@ -2533,7 +2583,7 @@ class Resolver {
                     (*self.value_ribs).last().bindings.insert(atom, def_like);
                 }
                 _ {
-                    /* Nothing to do. FIXME: Handle more cases. */
+                    // Nothing to do. FIXME: Handle more cases.
                 }
             }
         }
@@ -2543,6 +2593,7 @@ class Resolver {
         alt expr.node {
             // The interpretation of paths depends on whether the path has
             // multiple elements in it or not.
+
             expr_path(path) if path.idents.len() == 1u {
                 // This is a local path in the value namespace. Walk through
                 // scopes looking for it.
