@@ -94,9 +94,9 @@ enum ResolveResult<T> {
     Success(T)      // Successfully resolved the import.
 }
 
-enum TypeParameters {
+enum TypeParameters/& {
     NoTypeParameters,                           // No type parameters.
-    HasTypeParameters(@[ty_param], node_id)     // Type parameters and ID.
+    HasTypeParameters(&[ty_param], node_id)     // Type parameters and ID.
 }
 
 // FIXME (issue 2550): Should be a class but then it becomes not implicitly
@@ -826,7 +826,7 @@ class Resolver {
                 (*name_bindings).define_value(def);
 
                 self.with_type_parameter_rib
-                        (HasTypeParameters(@copy type_parameters,
+                        (HasTypeParameters(&type_parameters,
                                            native_item.id)) {
                     ||
 
@@ -1469,7 +1469,7 @@ class Resolver {
             }
 
 
-            #error("(resolving glob import) writing resolution '%s' in '%s' \
+            #debug("(resolving glob import) writing resolution '%s' in '%s' \
                     to '%s'",
                    *(*self.atom_table).atom_to_str(atom),
                    self.module_to_str(containing_module),
@@ -1477,22 +1477,22 @@ class Resolver {
 
             // Merge the child item into the import resolution.
             if (*name_bindings).defined_in_namespace(ModuleNS) {
-                #error("(resolving glob import) ... for module target");
+                #debug("(resolving glob import) ... for module target");
                 dest_import_resolution.module_target =
                     some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ValueNS) {
-                #error("(resolving glob import) ... for value target");
+                #debug("(resolving glob import) ... for value target");
                 dest_import_resolution.value_target =
                     some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(TypeNS) {
-                #error("(resolving glob import) ... for type target");
+                #debug("(resolving glob import) ... for type target");
                 dest_import_resolution.type_target =
                     some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ImplNS) {
-                #error("(resolving glob import) ... for impl target");
+                #debug("(resolving glob import) ... for impl target");
                 dest_import_resolution.impl_target =
                     some(Target(containing_module, name_bindings));
             }
@@ -1914,7 +1914,7 @@ class Resolver {
                       import resolution name by now";
             }
             some(import_resolution) {
-                #error("(resolving one-level renaming import) writing module \
+                #debug("(resolving one-level renaming import) writing module \
                         result %? for '%s' into '%s'",
                        is_none(module_result),
                        *(*self.atom_table).atom_to_str(target_name),
@@ -2058,8 +2058,7 @@ class Resolver {
             item_enum(_, type_parameters, _) |
             item_ty(_, type_parameters, _) {
                 self.with_type_parameter_rib
-                        (HasTypeParameters(@/* FIXME: bad */ copy
-                                            type_parameters, item.id)) {
+                        (HasTypeParameters(&type_parameters, item.id)) {
                     ||
 
                     visit_item(item, (), visitor);
@@ -2080,8 +2079,7 @@ class Resolver {
 
                 // Create a new rib for the interface-wide type parameters.
                 self.with_type_parameter_rib
-                        (HasTypeParameters(@/* FIXME: bad */ copy
-                                           type_parameters, item.id)) {
+                        (HasTypeParameters(&type_parameters, item.id)) {
                     ||
 
                     for methods.each {
@@ -2092,8 +2090,7 @@ class Resolver {
 
                         // FIXME: Do we need a node ID here?
                         self.with_type_parameter_rib
-                            (HasTypeParameters(@/* FIXME: bad */ copy
-                                               method.tps, item.id)) {
+                            (HasTypeParameters(&method.tps, item.id)) {
                             ||
 
                             for method.decl.inputs.each {
@@ -2138,8 +2135,7 @@ class Resolver {
                         alt native_item.node {
                             native_item_fn(_, type_parameters) {
                                 self.with_type_parameter_rib
-                                    (HasTypeParameters(@/* FIXME: bad */ copy
-                                                       type_parameters,
+                                    (HasTypeParameters(&type_parameters,
                                                        native_item.id)) {
                                     ||
 
@@ -2155,9 +2151,7 @@ class Resolver {
             item_fn(fn_decl, ty_params, block)  |
             item_res(fn_decl, ty_params, block, _, _, _) {
                 self.resolve_function(some(@fn_decl),
-                                      HasTypeParameters(@/* FIXME: bad */ copy
-                                                            ty_params,
-                                                        item.id),
+                                      HasTypeParameters(&ty_params, item.id),
                                       block,
                                       NoSelfBinding,
                                       visitor);
@@ -2271,7 +2265,9 @@ class Resolver {
                      visitor: ResolveVisitor) {
 
         // If applicable, create a rib for the type parameters.
-        self.with_type_parameter_rib(HasTypeParameters(type_parameters, id)) {
+        let borrowed_type_parameters: &[ty_param] = &*type_parameters;
+        self.with_type_parameter_rib(HasTypeParameters
+                                     (borrowed_type_parameters, id)) {
             ||
 
             // Resolve methods.
@@ -2280,9 +2276,12 @@ class Resolver {
 
                 alt class_member.node {
                     class_method(method) {
+                        let borrowed_method_type_parameters = &method.tps;
+                        let type_parameters =
+                            HasTypeParameters(borrowed_method_type_parameters,
+                                              method.id);
                         self.resolve_function(some(@method.decl),
-                                              HasTypeParameters(@method.tps,
-                                                                method.id),
+                                              type_parameters,
                                               method.body,
                                               HasSelfBinding(id),
                                               visitor);
@@ -2331,8 +2330,10 @@ class Resolver {
             // We also need a new scope for the method-specific
             // type parameters.
 
+            let borrowed_type_parameters = &method.tps;
             self.resolve_function(some(@method.decl),
-                                  HasTypeParameters(@method.tps, method.id),
+                                  HasTypeParameters(borrowed_type_parameters,
+                                                    method.id),
                                   method.body,
                                   HasSelfBinding(id),
                                   visitor);
