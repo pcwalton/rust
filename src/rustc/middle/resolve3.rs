@@ -2,25 +2,29 @@ import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
-import syntax::ast::{_mod, arm, blk, class_ctor, class_dtor, class_member, class_method, crate};
-import syntax::ast::{crate_num, decl_item, def, def_arg, def_binding};
-import syntax::ast::{def_class, def_const, def_fn, def_id, def_local};
-import syntax::ast::{def_mod, def_native_mod, def_prim_ty, def_region};
-import syntax::ast::{def_self, def_ty, def_ty_param, def_upvar, def_use, def_variant};
-import syntax::ast::{expr, expr_fn, expr_fn_block, expr_path, fn_decl, ident};
-import syntax::ast::{impure_fn, instance_var, item, item_class, item_const};
-import syntax::ast::{item_enum, item_fn, item_iface, item_impl, item_mod};
-import syntax::ast::{item_native_mod, item_res, item_ty, local, method, native_item};
-import syntax::ast::{native_item_fn, node_id, pat, pat_ident, stmt_decl};
-import syntax::ast::{ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64, ty_float, ty_i, ty_i32, ty_i64, ty_int, ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u8, ty_u32, ty_u64, ty_uint, variant, view_item};
-import syntax::ast::{view_item_export, view_item_import, view_item_use};
-import syntax::ast::{view_path_glob, view_path_list, view_path_simple};
+import syntax::ast::{_mod, arm, blk, class_ctor, class_dtor, class_member};
+import syntax::ast::{class_method, crate, crate_num, decl_item, def, def_arg};
+import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
+import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
+import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
+import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
+import syntax::ast::{expr_path, fn_decl, ident, impure_fn, instance_var};
+import syntax::ast::{item, item_class, item_const, item_enum, item_fn};
+import syntax::ast::{item_iface, item_impl, item_mod, item_native_mod};
+import syntax::ast::{item_res, item_ty, local, method, native_item};
+import syntax::ast::{native_item_fn, node_id, pat, pat_ident, prim_ty};
+import syntax::ast::{stmt_decl, ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64};
+import syntax::ast::{ty_float, ty_i, ty_i16, ty_i32, ty_i64, ty_i8, ty_int};
+import syntax::ast::{ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64};
+import syntax::ast::{ty_u8, ty_uint, variant, view_item, view_item_export};
+import syntax::ast::{view_item_import, view_item_use, view_path_glob};
+import syntax::ast::{view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
 import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
-import syntax::visit::{visit_item, visit_mod, visit_native_item, visit_ty};
-import syntax::visit::{vt};
+import syntax::visit::{visit_item, visit_method_helper, visit_mod};
+import syntax::visit::{visit_native_item, visit_ty, vt};
 import dvec::{dvec, extensions};
 import std::list::list;
 import std::map::{hashmap, int_hash, str_hash};
@@ -166,90 +170,6 @@ class AtomTable {
 #[doc="Creates a hash table of atoms."]
 fn atom_hashmap<V:copy>() -> hashmap<Atom,V> {
     ret hashmap::<Atom,V>({ |a| a }, { |a, b| a == b });
-}
-
-// TODO: This really should be a syntax extension.
-#[doc="A gperf-generated hash function for built-in types."]
-class BuiltinTypeHash {
-    let hash_box: [u8]/256;
-
-    new() {
-        self.hash_box = [
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,  3u8,
-            39u8, 10u8, 39u8, 39u8,  0u8, 39u8,  0u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,  5u8,  0u8,
-            39u8, 39u8, 20u8, 39u8,  0u8,  5u8, 39u8, 39u8,  0u8, 39u8,
-            30u8,  5u8, 39u8, 39u8, 39u8, 15u8, 10u8,  0u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8, 39u8,
-            39u8, 39u8, 39u8, 39u8, 39u8, 39u8
-        ]/256;
-    }
-
-    fn hash(string: str) -> uint {
-        ret string.byte_len() +
-            (self.hash_box[string[1]] as uint) +
-            (self.hash_box[string[0]] as uint);
-    }
-
-    fn test(candidate: str, keyword: str, result: prim_ty)
-         -> option<prim_ty> {
-
-        if str_eq(candidate, keyword) {
-            ret some(prim_ty);
-        }
-
-        ret none;
-    }
-
-    fn get_primitive_type(string: str) -> option<prim_ty> {
-        if str.byte_len() < 2u || str.byte_len() > 5u {
-            ret none;
-        }
-
-        let key = self.hash(string);
-        if key < 2u || key > 38u {
-            ret none;
-        }
-
-        ret alt key - 2u {
-            0u  { self.test(key, "u8",      ty_uint(ty_u8))     }
-            1u  { self.test(key, "u64",     ty_uint(ty_u64))    }
-            2u  { self.test(key, "char",    ty_char)            }
-            4u  { self.test(key, "u16",     ty_uint(ty_u16))    }
-            5u  { self.test(key, "i8",      ty_int(ty_i8))      }
-            6u  { self.test(key, "u64",     ty_int(ty_i64))     }
-            7u  { self.test(key, "uint",    ty_uint(ty_u))      }
-            9u  { self.test(key, "i16",     ty_int(ty_i16))     }
-            11u { self.test(key, "u32",     ty_uint(ty_u32))    }
-            12u { self.test(key, "bool",    ty_bool)            }
-            16u { self.test(key, "i32",     ty_int(ty_i32))     }
-            21u { self.test(key, "f64",     ty_float(ty_f64))   }
-            23u { self.test(key, "float",   ty_float(ty_f))     }
-            26u { self.test(key, "str",     ty_str)             }
-            31u { self.test(key, "f32",     ty_float(ty_f32))   }
-            36u { self.test(key, "int",     ty_int(ty_i))       }
-            _   { none                                          }
-        }
-    }
 }
 
 #[doc="
@@ -460,6 +380,37 @@ class NameBindings {
     }
 }
 
+#[doc="Interns the names of the primitive types."]
+class PrimitiveTypeTable {
+    let primitive_types: hashmap<Atom,prim_ty>;
+
+    new(atom_table: @AtomTable) {
+        self.primitive_types = atom_hashmap();
+
+        self.intern(atom_table, @"bool",    ty_bool);
+        self.intern(atom_table, @"char",    ty_int(ty_char));
+        self.intern(atom_table, @"float",   ty_float(ty_f));
+        self.intern(atom_table, @"f32",     ty_float(ty_f32));
+        self.intern(atom_table, @"f64",     ty_float(ty_f64));
+        self.intern(atom_table, @"int",     ty_int(ty_i));
+        self.intern(atom_table, @"i8",      ty_int(ty_i8));
+        self.intern(atom_table, @"i16",     ty_int(ty_i16));
+        self.intern(atom_table, @"i32",     ty_int(ty_i32));
+        self.intern(atom_table, @"i64",     ty_int(ty_i64));
+        self.intern(atom_table, @"str",     ty_str);
+        self.intern(atom_table, @"uint",    ty_uint(ty_u));
+        self.intern(atom_table, @"u8",      ty_uint(ty_u8));
+        self.intern(atom_table, @"u16",     ty_uint(ty_u16));
+        self.intern(atom_table, @"u32",     ty_uint(ty_u32));
+        self.intern(atom_table, @"u64",     ty_uint(ty_u64));
+    }
+
+    fn intern(atom_table: @AtomTable, string: @str, primitive_type: prim_ty) {
+        let atom = (*atom_table).intern(string);
+        self.primitive_types.insert(atom, primitive_type);
+    }
+}
+
 #[doc="The main resolver class."]
 class Resolver {
     let session: session;
@@ -486,6 +437,9 @@ class Resolver {
     // The atom for the keyword "self".
     let self_atom: Atom;
 
+    // The atoms for the primitive types.
+    let primitive_type_table: @PrimitiveTypeTable;
+
     let def_map: DefMap;
     let impl_map: ImplMap;
 
@@ -506,6 +460,7 @@ class Resolver {
         self.type_ribs = @dvec();
 
         self.self_atom = (*self.atom_table).intern(@"self");
+        self.primitive_type_table = @PrimitiveTypeTable(self.atom_table);
 
         self.def_map = int_hash();
         self.impl_map = int_hash();
@@ -726,7 +681,10 @@ class Resolver {
                 visit_item(item, new_parent, visitor);
             }
 
-            item_iface(*) { /* TODO */ }
+            item_iface(*) {
+                (*name_bindings).define_type(def_ty(local_def(item.id)));
+                visit_item(item, new_parent, visitor);
+            }
         }
     }
 
@@ -863,13 +821,20 @@ class Resolver {
         let (name_bindings, new_parent) = self.add_child(name, parent);
 
         alt native_item.node {
-            native_item_fn(fn_decl, ty_params) {
+            native_item_fn(fn_decl, type_parameters) {
                 let def = def_fn(local_def(native_item.id), impure_fn);
                 (*name_bindings).define_value(def);
+
+                self.with_type_parameter_rib
+                        (HasTypeParameters(@copy type_parameters,
+                                           native_item.id)) {
+                    ||
+
+                    visit_native_item(native_item, new_parent, visitor);
+                }
             }
         }
 
-        visit_native_item(native_item, new_parent, visitor);
     }
 
     fn build_reduced_graph_for_block(block: blk,
@@ -960,6 +925,9 @@ class Resolver {
                                                       some(def_id));
                                 }
                                 ModuleDef(module) {
+                                    #debug("(building reduced graph for \
+                                            external crate) already created \
+                                            module");
                                     module.def_id = some(def_id);
                                 }
                             }
@@ -1501,24 +1469,30 @@ class Resolver {
             }
 
 
-            #error("(resolving glob import) writing module resolution \
-                    '%s'",
+            #error("(resolving glob import) writing resolution '%s' in '%s' \
+                    to '%s'",
+                   *(*self.atom_table).atom_to_str(atom),
+                   self.module_to_str(containing_module),
                    self.module_to_str(module));
 
             // Merge the child item into the import resolution.
             if (*name_bindings).defined_in_namespace(ModuleNS) {
+                #error("(resolving glob import) ... for module target");
                 dest_import_resolution.module_target =
                     some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ValueNS) {
+                #error("(resolving glob import) ... for value target");
                 dest_import_resolution.value_target =
                     some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(TypeNS) {
+                #error("(resolving glob import) ... for type target");
                 dest_import_resolution.type_target =
                     some(Target(containing_module, name_bindings));
             }
             if (*name_bindings).defined_in_namespace(ImplNS) {
+                #error("(resolving glob import) ... for impl target");
                 dest_import_resolution.impl_target =
                     some(Target(containing_module, name_bindings));
             }
@@ -2081,8 +2055,15 @@ class Resolver {
         #debug("(resolving item) resolving %s", copy item.ident);
 
         alt item.node {
-            item_enum(*) | item_ty(*) {
-                visit_item(item, (), visitor);
+            item_enum(_, type_parameters, _) |
+            item_ty(_, type_parameters, _) {
+                self.with_type_parameter_rib
+                        (HasTypeParameters(@/* FIXME: bad */ copy
+                                            type_parameters, item.id)) {
+                    ||
+
+                    visit_item(item, (), visitor);
+                }
             }
 
             item_impl(type_parameters, _, _, _, methods) {
@@ -2090,18 +2071,40 @@ class Resolver {
                                             methods, visitor);
             }
 
-            item_iface(_, _, methods) {
-                // Create a new scope for the interface-wide type parameters.
-                for methods.each {
-                    |method|
-                    // We also need a new scope for the method-specific
-                    // type parameters.
-                    visit_ty(method.decl.output, (), visitor);
+            item_iface(type_parameters, _, methods) {
+                // Create a new rib for the interface-wide type parameters.
+                self.with_type_parameter_rib
+                        (HasTypeParameters(@/* FIXME: bad */ copy
+                                           type_parameters, item.id)) {
+                    ||
+
+                    for methods.each {
+                        |method|
+
+                        // Create a new rib for the method-specific type
+                        // parameters.
+
+                        // FIXME: Do we need a node ID here?
+                        self.with_type_parameter_rib
+                            (HasTypeParameters(@/* FIXME: bad */ copy
+                                               method.tps, item.id)) {
+                            ||
+
+                            for method.decl.inputs.each {
+                                |argument|
+
+                                visit_ty(argument.ty, (), visitor);
+                            }
+
+                            visit_ty(method.decl.output, (), visitor);
+                        }
+                    }
                 }
             }
 
             item_class(ty_params, _, class_members, constructor,
                        optional_destructor, _) {
+
                 self.resolve_class(item.id, @copy ty_params, class_members,
                                    constructor, optional_destructor,
                                    visitor);
@@ -2125,8 +2128,16 @@ class Resolver {
                     for native_module.items.each {
                         |native_item|
                         alt native_item.node {
-                            native_item_fn(*) {
-                                visit_native_item(native_item, (), visitor);
+                            native_item_fn(_, type_parameters) {
+                                self.with_type_parameter_rib
+                                    (HasTypeParameters(@/* FIXME: bad */ copy
+                                                       type_parameters,
+                                                       native_item.id)) {
+                                    ||
+
+                                    visit_native_item(native_item, (),
+                                                      visitor);
+                                }
                             }
                         }
                     }
@@ -2150,6 +2161,45 @@ class Resolver {
         }
     }
 
+    fn with_type_parameter_rib(type_parameters: TypeParameters, f: fn()) {
+        alt type_parameters {
+            HasTypeParameters(type_parameters, node_id) 
+                    if (*type_parameters).len() >= 1u {
+
+                let function_type_rib = @Rib();
+                (*self.type_ribs).push(function_type_rib);
+
+                for (*type_parameters).eachi {
+                    |index, type_parameter|
+
+                    let name =
+                        (*self.atom_table).intern(@copy type_parameter.ident);
+                    let def_like = dl_def(def_ty_param(local_def(node_id),
+                                                       index));
+                    (*function_type_rib).bindings.insert(name, def_like);
+                }
+            }
+
+            HasTypeParameters(*) | NoTypeParameters {
+                // Nothing to do.
+            }
+        }
+
+        f();
+
+        alt type_parameters {
+            HasTypeParameters(type_parameters, _) 
+                    if (*type_parameters).len() >= 1u {
+
+                (*self.type_ribs).pop();
+            }
+
+            HasTypeParameters(*) | NoTypeParameters {
+                // Nothing to do.
+            }
+        }
+    }
+
     fn resolve_function(optional_declaration: option<@fn_decl>,
                         type_parameters: TypeParameters,
                         block: blk,
@@ -2161,74 +2211,45 @@ class Resolver {
         (*self.value_ribs).push(function_value_rib);
 
         // If this function has type parameters, add them now.
-        alt type_parameters {
-            HasTypeParameters(type_parameters, function_id) 
-                    if (*type_parameters).len() >= 1u {
+        self.with_type_parameter_rib(type_parameters) {
+            ||
 
-                let function_type_rib = @Rib();
-                (*self.type_ribs).push(function_type_rib);
-
-                for (*type_parameters).eachi {
-                    |index, type_parameter|
-
-                    let name =
-                        (*self.atom_table).intern(@copy type_parameter.ident);
-                    let def_like = dl_def(def_ty_param(local_def(function_id),
-                                                       index));
-                    (*function_type_rib).bindings.insert(name, def_like);
+            // Add self to the rib, if necessary.
+            alt self_binding {
+                NoSelfBinding {
+                    // Nothing to do.
+                }
+                HasSelfBinding(self_node_id) {
+                    let def_like = dl_def(def_self(self_node_id));
+                    (*function_value_rib).bindings.insert(self.self_atom,
+                                                          def_like);
                 }
             }
-            _ {
-                // Nothing to do.
-            }
-        }
 
-        // Add self to the rib, if necessary.
-        alt self_binding {
-            NoSelfBinding {
-                // Nothing to do.
-            }
-            HasSelfBinding(self_node_id) {
-                let def_like = dl_def(def_self(self_node_id));
-                (*function_value_rib).bindings.insert(self.self_atom,
-                                                      def_like);
-            }
-        }
+            // Add each argument to the rib.
+            alt optional_declaration {
+                none {
+                    // Nothing to do.
+                }
+                some(declaration) {
+                    for declaration.inputs.each {
+                        |argument|
 
-        // Add each argument to the rib.
-        alt optional_declaration {
-            none {
-                // Nothing to do.
-            }
-            some(declaration) {
-                for declaration.inputs.each {
-                    |argument|
+                        let name =
+                            (*self.atom_table).intern(@copy argument.ident);
+                        let def_like = dl_def(def_arg(argument.id,
+                                                      argument.mode));
+                        (*function_value_rib).bindings.insert(name, def_like);
 
-                    let name =
-                        (*self.atom_table).intern(@copy argument.ident);
-                    let def_like = dl_def(def_arg(argument.id,
-                                                  argument.mode));
-                    (*function_value_rib).bindings.insert(name, def_like);
-
-                    #debug("(resolving function) recorded argument '%s'",
-                           *(*self.atom_table).atom_to_str(name));
+                        #debug("(resolving function) recorded argument '%s'",
+                               *(*self.atom_table).atom_to_str(name));
+                    }
                 }
             }
-        }
 
-        self.resolve_block(block, visitor);
+            self.resolve_block(block, visitor);
 
-        #debug("(resolving function) leaving function");
-
-        // If this function has type parameters, remove the rib.
-        alt type_parameters {
-            HasTypeParameters(type_parameters, _) 
-                    if (*type_parameters).len() >= 1u {
-                (*self.type_ribs).pop();
-            }
-            _ {
-                // Nothing to do.
-            }
+            #debug("(resolving function) leaving function");
         }
 
         (*self.value_ribs).pop();
@@ -2242,63 +2263,49 @@ class Resolver {
                      visitor: ResolveVisitor) {
 
         // If applicable, create a rib for the type parameters.
-        if (*type_parameters).len() >= 1u {
-            let class_type_rib = @Rib();
-            (*self.type_ribs).push(class_type_rib);
+        self.with_type_parameter_rib(HasTypeParameters(type_parameters, id)) {
+            ||
 
-            for (*type_parameters).eachi {
-                |index, type_parameter|
+            // Resolve methods.
+            for class_members.each {
+                |class_member|
 
-                let name =
-                    (*self.atom_table).intern(@copy type_parameter.ident);
-                let def_like = dl_def(def_ty_param(local_def(id), index));
-                (*class_type_rib).bindings.insert(name, def_like);
+                alt class_member.node {
+                    class_method(method) {
+                        self.resolve_function(some(@method.decl),
+                                              HasTypeParameters(@method.tps,
+                                                                method.id),
+                                              method.body,
+                                              HasSelfBinding(id),
+                                              visitor);
+                    }
+                    instance_var(*) {
+                        // Don't need to do anything with this.
+                    }
+                }
             }
-        }
 
-        // Resolve methods.
-        for class_members.each {
-            |class_member|
+            // Resolve the constructor.
+            self.resolve_function(some(@constructor.node.dec),
+                                  NoTypeParameters,
+                                  constructor.node.body,
+                                  HasSelfBinding(id),
+                                  visitor);
 
-            alt class_member.node {
-                class_method(method) {
-                    self.resolve_function(some(@method.decl),
-                                          HasTypeParameters(@method.tps,
-                                                            method.id),
-                                          method.body,
+
+            // Resolve the destructor, if applicable.
+            alt optional_destructor {
+                none {
+                    // Nothing to do.
+                }
+                some(destructor) {
+                    self.resolve_function(none,
+                                          NoTypeParameters,
+                                          destructor.node.body,
                                           HasSelfBinding(id),
                                           visitor);
                 }
-                instance_var(*) {
-                    // Don't need to do anything with this.
-                }
             }
-        }
-
-        // Resolve the constructor.
-        self.resolve_function(some(@constructor.node.dec),
-                              NoTypeParameters,
-                              constructor.node.body,
-                              HasSelfBinding(id),
-                              visitor);
-
-
-        // Resolve the destructor, if applicable.
-        alt optional_destructor {
-            none {
-                // Nothing to do.
-            }
-            some(destructor) {
-                self.resolve_function(none,
-                                      NoTypeParameters,
-                                      destructor.node.body,
-                                      HasSelfBinding(id),
-                                      visitor);
-            }
-        }
-
-        if (*type_parameters).len() >= 1u {
-            (*self.type_ribs).pop();
         }
     }
 
@@ -2397,6 +2404,9 @@ class Resolver {
                         result_def = some(def);
                     }
                     some(dl_field) | some(dl_impl(_)) | none {
+                        #debug("(resolving type) resolving '%s' as an item",
+                               *(*self.atom_table).atom_to_str(name));
+
                         // Otherwise, check the items.
                         alt self.resolve_item_in_lexical_scope
                                 (self.current_module, name, TypeNS) {
@@ -2422,6 +2432,26 @@ class Resolver {
                             }
                             Failed {
                                 result_def = none;
+                            }
+                        }
+                    }
+                }
+
+                alt result_def {
+                    some(_) {
+                        // Continue.
+                    }
+                    none {
+                        alt self.primitive_type_table
+                                .primitive_types
+                                .find(name) {
+
+                            some(primitive_type) {
+                                result_def =
+                                    some(def_prim_ty(primitive_type));
+                            }
+                            none {
+                                // Continue.
                             }
                         }
                     }

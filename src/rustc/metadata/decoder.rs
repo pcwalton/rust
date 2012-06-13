@@ -402,7 +402,6 @@ fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
     let mut broken = false;
 
     // First, go through all the explicit items.
-    let explicit_item_paths: hashmap<str,()> = str_hash();
     ebml::tagged_docs(items_data, tag_items_data_item) {
         |item_doc|
 
@@ -413,16 +412,13 @@ fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
                 // Extract the def ID.
                 let def_id = class_member_id(item_doc, cdata);
 
-                // Record that we've seen this item, so we don't emit it again.
-                explicit_item_paths.insert(name, ());
-
                 // Construct the def for this item.
                 #debug("(each_path) yielding explicit item: %s", name);
                 let def_like = item_to_def_like(item_doc, def_id, cdata.cnum);
 
                 // Hand the information off to the iteratee.
                 let this_path_entry = path_entry(name, def_like);
-                if (!f(this_path_entry)) {
+                if !f(this_path_entry) {
                     broken = true;      // FIXME: This is awful.
                 }
             }
@@ -443,33 +439,27 @@ fn each_path(cdata: cmd, f: fn(path_entry) -> bool) {
 
         if !broken {
             let path = item_name(path_doc);
-            alt explicit_item_paths.find(path) {
-                some(()) {
-                    /* We already reported this item. Continue. */
-                }
+
+            // Extract the def ID.
+            let def_id = class_member_id(path_doc, cdata);
+
+            // Get the item.
+            alt maybe_find_item(def_id.node, items) {
                 none {
-                    // Extract the def ID.
-                    let def_id = class_member_id(path_doc, cdata);
+                    #debug("(each_path) ignoring implicit item: %s",
+                            path);
+                }
+                some(item_doc) {
+                    // Construct the def for this item.
+                    let def_like = item_to_def_like(item_doc, def_id,
+                                                    cdata.cnum);
 
-                    // Get the item.
-                    alt maybe_find_item(def_id.node, items) {
-                        none {
-                            #debug("(each_path) ignoring implicit item: %s",
-                                    path);
-                        }
-                        some(item_doc) {
-                            // Construct the def for this item.
-                            let def_like = item_to_def_like(item_doc, def_id,
-                                                            cdata.cnum);
-
-                            // Hand the information off to the iteratee.
-                            #debug("(each_path) yielding implicit item: %s",
-                                    path);
-                            let this_path_entry = path_entry(path, def_like);
-                            if (!f(this_path_entry)) {
-                                broken = true;      // FIXME: This is awful.
-                            }
-                        }
+                    // Hand the information off to the iteratee.
+                    #debug("(each_path) yielding implicit item: %s",
+                            path);
+                    let this_path_entry = path_entry(path, def_like);
+                    if (!f(this_path_entry)) {
+                        broken = true;      // FIXME: This is awful.
                     }
                 }
             }
