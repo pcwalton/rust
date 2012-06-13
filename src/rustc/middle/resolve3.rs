@@ -2072,6 +2072,12 @@ class Resolver {
             }
 
             item_iface(type_parameters, _, methods) {
+                // Create a new rib for the self type.
+                let self_type_rib = @Rib();
+                (*self.type_ribs).push(self_type_rib);
+                self_type_rib.bindings.insert(self.self_atom,
+                                              dl_def(def_self(item.id)));
+
                 // Create a new rib for the interface-wide type parameters.
                 self.with_type_parameter_rib
                         (HasTypeParameters(@/* FIXME: bad */ copy
@@ -2100,6 +2106,8 @@ class Resolver {
                         }
                     }
                 }
+
+                (*self.type_ribs).pop();
             }
 
             item_class(ty_params, _, class_members, constructor,
