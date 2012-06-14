@@ -1,4 +1,4 @@
-import driver::session::session;
+import driver.session.session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
@@ -26,7 +26,7 @@ import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
 import syntax::visit::{visit_item, visit_method_helper, visit_mod};
 import syntax::visit::{visit_native_item, visit_ty, vt};
 import dvec::{dvec, extensions};
-import std::list::list;
+import std::list::{list, nil};
 import std::map::{hashmap, int_hash, str_hash};
 import str::split_str;
 import vec::pop;
@@ -281,6 +281,9 @@ class Module {
     // The index of the import we're resolving.
     let mut resolved_import_count: uint;
 
+    // The list of implementation scopes, rooted from this module.
+    let mut impl_scopes: @list<ImplScope>;
+
     new(parent_link: ParentLink, def_id: option<def_id>) {
         self.parent_link = parent_link;
         self.def_id = def_id;
@@ -293,6 +296,8 @@ class Module {
         self.import_resolutions = atom_hashmap();
         self.glob_count = 0u;
         self.resolved_import_count = 0u;
+
+        self.impl_scopes = @nil;
     }
 
     fn all_imports_resolved() -> bool {
@@ -318,6 +323,8 @@ class NameBindings {
     let mut module_def: ModuleDef;      // Meaning in the module namespace.
     let mut type_def: option<def>;      // Meaning in the type namespace.
     let mut value_def: option<def>;     // Meaning in the value namespace.
+
+    // TODO: These need to be @Impl references.
     let mut impl_defs: [def_id];        // Meaning in the impl namespace.
 
     new() {
@@ -473,6 +480,7 @@ class Resolver {
     fn resolve(this: @Resolver) {
         self.build_reduced_graph(this);
         self.resolve_imports();
+        self.build_impl_scopes();
         self.resolve_crate();
     }
 
@@ -1999,6 +2007,50 @@ class Resolver {
             |_name, module|
             self.report_unresolved_imports(module);
         }
+    }
+
+    //
+    // Implementation scope creation
+    //
+    // This is a fairly simple pass that simply gathers up all the typeclass
+    // implementations in scope and threads a series of singly-linked series
+    // of impls through the tree.
+    //
+
+    fn build_impl_scopes() {
+        let root_module = (*self.graph_root).get_module();
+        self.build_impl_scopes_for_module_subtree(root_module);
+    }
+
+    fn build_impl_scopes_for_module_subtree(module: @Module) {
+        self.build_impl_scope_for_module(module);
+
+        for module.children.each {
+            |_atom, child_name_bindings|
+            alt (*child_name_bindings).get_module_if_available() {
+                none {
+                    /* Nothing to do. */
+                }
+                some(child_module) {
+                    self.build_impl_scopes_for_module_subtree(child_module);
+                }
+            }
+        }
+
+        for module.anonymous_children.each {
+            |_node_id, child_module|
+            self.build_impl_scopes_for_module_subtree(child_module);
+        }
+    }
+
+    fn build_impl_scope_for_module(module: @Module) {
+        for module.children.each {
+            |atom, child_name_bindings|
+
+            for child_name_bindings.impl_defs.each {
+                |def_id|
+                
+                // TODO
     }
 
     //
