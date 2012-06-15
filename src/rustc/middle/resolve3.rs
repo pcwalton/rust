@@ -1,4 +1,4 @@
-import driver.session.session;
+import driver::session::session;
 import metadata::csearch::{each_path, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
@@ -320,12 +320,10 @@ fn is_none<T>(x: option<T>) -> bool {
     bound to.
 "]
 class NameBindings {
-    let mut module_def: ModuleDef;      // Meaning in the module namespace.
-    let mut type_def: option<def>;      // Meaning in the type namespace.
-    let mut value_def: option<def>;     // Meaning in the value namespace.
-
-    // TODO: These need to be @Impl references.
-    let mut impl_defs: [def_id];        // Meaning in the impl namespace.
+    let mut module_def: ModuleDef;          // Meaning in the module namespace.
+    let mut type_def: option<def>;          // Meaning in the type namespace.
+    let mut value_def: option<def>;         // Meaning in the value namespace.
+    let mut impl_defs: option<ImplScope>;   // Meaning in the impl namespace.
 
     new() {
         self.module_def = NoModuleDef;
@@ -353,8 +351,8 @@ class NameBindings {
     }
 
     #[doc="Records an impl definition."]
-    fn define_impl(def_id: def_id) {
-        self.impl_defs += [def_id];
+    fn define_impl(implementation: @Impl) {
+        self.impl_defs += [implementation];
     }
 
     #[doc="Returns the module node if applicable."]
@@ -688,8 +686,31 @@ class Resolver {
                 visit_item(item, new_parent, visitor);
             }
 
-            item_impl(*) {
-                (*name_bindings).define_impl(local_def(item.id));
+            item_impl(_, _, _, _, methods) {
+                // Create the set of implementation information that the
+                // implementation scopes (ImplScopes) need and write it into
+                // the implementation definition list for this set of name
+                // bindings.
+
+                let mut method_infos = [];
+                for methods.each {
+                    |method|
+                    method_infos += [
+                        @{
+                            did: local_def(method.id),
+                            n_tps: method.tps.len(),
+                            ident: method.ident
+                        }
+                    ];
+                }
+
+                let impl_info = @{
+                    did: local_def(item.id),
+                    ident: /* FIXME: bad */ copy item.ident,
+                    methods: method_infos
+                };
+
+                (*name_bindings).define_impl(impl_info);
                 visit_item(item, new_parent, visitor);
             }
 
@@ -970,10 +991,13 @@ class Resolver {
                         }
                     }
                 }
-                dl_impl(def_id) {
+                dl_impl(_) {
+                    // Because of the infelicitous way the metadata is
+                    // written, we can't process this impl now. We'll get it
+                    // later.
+
                     #debug("(building reduced graph for external crate) \
-                            building impl %s", final_ident);
-                    (*child_name_bindings).define_impl(def_id);
+                            ignoring impl %s", final_ident);
                 }
                 dl_field {
                     #debug("(building reduced graph for external crate) \
@@ -2045,12 +2069,15 @@ class Resolver {
 
     fn build_impl_scope_for_module(module: @Module) {
         for module.children.each {
-            |atom, child_name_bindings|
+            |impl_name, child_name_bindings|
 
             for child_name_bindings.impl_defs.each {
-                |def_id|
-                
+                |impl_definition|
+
+                if self.impl_scopes.
                 // TODO
+            }
+        }
     }
 
     //
