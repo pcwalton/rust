@@ -1,5 +1,5 @@
 import driver::session::session;
-import metadata::csearch::{each_path, lookup_defs};
+import metadata::csearch::{each_path, get_impls_for_mod, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
 import syntax::ast::{_mod, arm, blk, class_ctor, class_dtor, class_member};
@@ -26,7 +26,7 @@ import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
 import syntax::visit::{visit_item, visit_method_helper, visit_mod};
 import syntax::visit::{visit_native_item, visit_ty, vt};
 import dvec::{dvec, extensions};
-import std::list::{list, nil};
+import std::list::{cons, list, nil};
 import std::map::{hashmap, int_hash, str_hash};
 import str::split_str;
 import vec::pop;
@@ -320,10 +320,10 @@ fn is_none<T>(x: option<T>) -> bool {
     bound to.
 "]
 class NameBindings {
-    let mut module_def: ModuleDef;          // Meaning in the module namespace.
-    let mut type_def: option<def>;          // Meaning in the type namespace.
-    let mut value_def: option<def>;         // Meaning in the value namespace.
-    let mut impl_defs: option<ImplScope>;   // Meaning in the impl namespace.
+    let mut module_def: ModuleDef;      // Meaning in the module namespace.
+    let mut type_def: option<def>;      // Meaning in the type namespace.
+    let mut value_def: option<def>;     // Meaning in the value namespace.
+    let mut impl_defs: [@Impl];         // Meaning in the impl namespace.
 
     new() {
         self.module_def = NoModuleDef;
@@ -383,7 +383,7 @@ class NameBindings {
             ModuleNS    { ret self.module_def != NoModuleDef; }
             TypeNS      { ret self.type_def != none;          }
             ValueNS     { ret self.value_def != none;         }
-            ImplNS      { ret self.impl_defs.len() >= 0u;     }
+            ImplNS      { ret self.impl_defs.len() >= 1u;     }
         }
     }
 }
@@ -899,6 +899,7 @@ class Resolver {
         crate.
     "]
     fn build_reduced_graph_for_external_crate(root: @Module) {
+        // Create all the items reachable by paths.
         for each_path(self.session.cstore, root.def_id.get().crate) {
             |path_entry|
             #debug("(building reduced graph for external crate) found path \
@@ -1005,6 +1006,70 @@ class Resolver {
                 }
             }
         }
+
+        // Create nodes for all the impls.
+        self.build_reduced_graph_for_impls_in_external_module_subtree(root);
+    }
+
+    fn build_reduced_graph_for_impls_in_external_module_subtree(module:
+                                                                @Module) {
+        self.build_reduced_graph_for_impls_in_external_module(module);
+
+        for module.children.each {
+            |_name, child_node|
+            alt (*child_node).get_module_if_available() {
+                none {
+                    // Nothing to do.
+                }
+                some(child_module) {
+                    self.
+                    build_reduced_graph_for_impls_in_external_module_subtree
+                        (child_module);
+                }
+            }
+        }
+    }
+
+    fn build_reduced_graph_for_impls_in_external_module(module: @Module) {
+        // FIXME: This is really unfortunate. decoder::each_path can produce
+        // false positives, since, in the crate metadata, an iface named 'bar'
+        // in module 'foo' defining a method named 'baz' will result in the
+        // creation of a (bogus) path entry named 'foo::bar::baz', and we will
+        // create a module node for "bar". We can identify these fake modules
+        // by the fact that they have no def ID, which we do here in order to
+        // skip them.
+
+        alt module.def_id {
+            none {
+                #debug("(building reduced graph for impls in external \
+                        module) no def ID for '%s', skipping",
+                       self.module_to_str(module));
+                ret;
+            }
+            some(_) {
+                // Continue.
+            }
+        }
+
+        let impls_in_module = get_impls_for_mod(self.session.cstore,
+                                                module.def_id.get(),
+                                                none);
+
+        for (*impls_in_module).each {
+            |implementation|
+
+            #debug("(building reduced graph for impls in external module) \
+                    added impl '%s' to '%s'",
+                   implementation.ident,
+                   self.module_to_str(module));
+
+            let name = (*self.atom_table).intern(@copy implementation.ident);
+
+            let (name_bindings, _) =
+                self.add_child(name, ModuleReducedGraphParent(module));
+
+            name_bindings.impl_defs += [implementation];
+        }
     }
 
     #[doc="Creates and adds an import directive to the given module."]
@@ -1094,7 +1159,9 @@ class Resolver {
         for module.children.each {
             |_name, child_node|
             alt (*child_node).get_module_if_available() {
-                none { /* Nothing to do. */ }
+                none {
+                    // Nothing to do.
+                }
                 some(child_module) {
                     self.resolve_imports_for_module_subtree(child_module);
                 }
@@ -2068,15 +2135,62 @@ class Resolver {
     }
 
     fn build_impl_scope_for_module(module: @Module) {
+        let mut impl_scope = [];
+
+        #debug("(building impl scope for module) processing module %s",
+               self.module_to_str(module));
+
+        // Gather up all direct children implementations in the module.
         for module.children.each {
-            |impl_name, child_name_bindings|
+            |_impl_name, child_name_bindings|
 
-            for child_name_bindings.impl_defs.each {
-                |impl_definition|
-
-                if self.impl_scopes.
-                // TODO
+            if child_name_bindings.impl_defs.len() >= 1u {
+                impl_scope += child_name_bindings.impl_defs;
             }
+        }
+
+        #debug("(building impl scope for module) found %u impl(s) as direct \
+                children",
+               impl_scope.len());
+
+        // Gather up all imports.
+        for module.import_resolutions.each {
+            |_impl_name, import_resolution|
+
+            alt import_resolution.impl_target {
+                none {
+                    // Nothing to do.
+                }
+                some(impl_target) {
+                    if impl_target.bindings.impl_defs.len() >= 1u {
+                        impl_scope += impl_target.bindings.impl_defs;
+                    }
+                }
+            }
+        }
+
+        #debug("(building impl scope for module) found %u impl(s) in total",
+               impl_scope.len());
+
+        // Determine the parent's implementation scope.
+        let mut parent_impl_scopes;
+        alt module.parent_link {
+            NoParentLink {
+                parent_impl_scopes = @nil;
+            }
+            ModuleParentLink(parent_module_node, _) |
+            BlockParentLink(parent_module_node, _) {
+                parent_impl_scopes = parent_module_node.impl_scopes;
+            }
+        }
+
+        // Create the new implementation scope, if it was nonempty, and chain
+        // it up to the parent.
+
+        if impl_scope.len() >= 1u {
+            module.impl_scopes = @cons(@impl_scope, parent_impl_scopes);
+        } else {
+            module.impl_scopes = parent_impl_scopes;
         }
     }
 
@@ -2639,7 +2753,9 @@ class Resolver {
         walk_pat(pattern) {
             |pattern|
             alt pattern.node {
-                pat_ident(path, _) if !path.global && path.idents.len() == 1u {
+                pat_ident(path, _)
+                        if !path.global && path.idents.len() == 1u {
+
                     //
                     // The meaning of pat_ident with no type parameters
                     // depends on whether an enum variant with that name is in
