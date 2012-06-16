@@ -7,16 +7,18 @@ import syntax::ast::{class_method, crate, crate_num, decl_item, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
 import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
-import syntax::ast::{def_use, def_variant, expr, expr_assign_op, expr_binary, expr_cast, expr_field, expr_fn, expr_fn_block};
-import syntax::ast::{expr_index, expr_new, expr_path, expr_unary, fn_decl, ident, impure_fn, instance_var};
-import syntax::ast::{item, item_class, item_const, item_enum, item_fn};
-import syntax::ast::{item_iface, item_impl, item_mod, item_native_mod};
-import syntax::ast::{item_res, item_ty, local, local_crate, method, native_item};
-import syntax::ast::{native_item_fn, node_id, pat, pat_ident, prim_ty};
-import syntax::ast::{stmt_decl, ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64};
-import syntax::ast::{ty_float, ty_i, ty_i16, ty_i32, ty_i64, ty_i8, ty_int};
-import syntax::ast::{ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64};
-import syntax::ast::{ty_u8, ty_uint, variant, view_item, view_item_export};
+import syntax::ast::{def_use, def_variant, expr, expr_assign_op, expr_binary};
+import syntax::ast::{expr_cast, expr_field, expr_fn, expr_fn_block};
+import syntax::ast::{expr_index, expr_new, expr_path, expr_unary, fn_decl};
+import syntax::ast::{ident, impure_fn, instance_var, item, item_class};
+import syntax::ast::{item_const, item_enum, item_fn, item_iface, item_impl};
+import syntax::ast::{item_mod, item_native_mod, item_res, item_ty, local};
+import syntax::ast::{local_crate, method, native_item, native_item_fn};
+import syntax::ast::{node_id, pat, pat_enum, pat_ident, path, prim_ty, stmt_decl, ty};
+import syntax::ast::{ty_bool, ty_char, ty_f, ty_f32, ty_f64, ty_float, ty_i};
+import syntax::ast::{ty_i16, ty_i32, ty_i64, ty_i8, ty_int, ty_param};
+import syntax::ast::{ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64, ty_u8};
+import syntax::ast::{ty_uint, variant, view_item, view_item_export};
 import syntax::ast::{view_item_import, view_item_use, view_path_glob};
 import syntax::ast::{view_path_list, view_path_simple};
 import syntax::ast_util::{local_def, walk_pat};
@@ -28,7 +30,7 @@ import syntax::visit::{visit_native_item, visit_ty, vt};
 import dvec::{dvec, extensions};
 import std::list::{cons, list, nil};
 import std::map::{hashmap, int_hash, str_hash};
-import str::split_str;
+import str::{connect, split_str};
 import vec::pop;
 import ASTMap = syntax::ast_map::map;
 import str_eq = str::eq;
@@ -384,6 +386,21 @@ class NameBindings {
             TypeNS      { ret self.type_def != none;          }
             ValueNS     { ret self.value_def != none;         }
             ImplNS      { ret self.impl_defs.len() >= 1u;     }
+        }
+    }
+
+    fn def_for_namespace(namespace: Namespace) -> option<def> {
+        alt namespace {
+            TypeNS {
+                ret self.type_def;
+            }
+            ValueNS {
+                ret self.value_def;
+            }
+            ModuleNS | ImplNS {
+                fail "def_for_namespace only supports type and value \
+                      namespaces";
+            }
         }
     }
 }
@@ -2674,56 +2691,19 @@ class Resolver {
             // Like path expressions, the interpretation of path types depends
             // on whether the path has multiple elements in it or not.
 
-            ty_path(path, _) if path.idents.len() == 1u {
-
-                //
-                // This is a local path in the type namespace. Walk through
+            ty_path(path, _) {
+                // This is a path in the type namespace. Walk through scopes
                 // scopes looking for it.
-                //
-                // TODO: Merge this with the expr_path code somehow, perhaps?
-                //
 
-                let name = (*self.atom_table).intern(@copy path.idents[0]);
-
-                // First, check the local set of ribs.
                 let mut result_def;
-                alt self.search_ribs(self.type_ribs, name) {
-                    some(dl_def(def)) {
-                        #debug("(resolving type) resolved '%s' to type param",
-                               *(*self.atom_table).atom_to_str(name));
+                alt self.resolve_path(path, TypeNS, true) {
+                    some(def) {
+                        #debug("(resolving type) resolved '%s' to type",
+                               path.idents.last());
                         result_def = some(def);
                     }
-                    some(dl_field) | some(dl_impl(_)) | none {
-                        #debug("(resolving type) resolving '%s' as an item",
-                               *(*self.atom_table).atom_to_str(name));
-
-                        // Otherwise, check the items.
-                        alt self.resolve_item_in_lexical_scope
-                                (self.current_module, name, TypeNS) {
-
-                            Success(target) {
-                                alt target.bindings.type_def {
-                                    none {
-                                        fail "resolved name in type \
-                                              namespace to a set of name \
-                                              bindings with no type def?!";
-                                    }
-                                    some(def) {
-                                        #debug("(resolving type) resolved \
-                                                '%s' to item",
-                                               *(*self.atom_table).
-                                                atom_to_str(name));
-                                        result_def = some(def);
-                                    }
-                                }
-                            }
-                            Indeterminate {
-                                fail "unexpected indeterminate result";
-                            }
-                            Failed {
-                                result_def = none;
-                            }
-                        }
+                    none {
+                        result_def = none;
                     }
                 }
 
@@ -2732,16 +2712,23 @@ class Resolver {
                         // Continue.
                     }
                     none {
-                        alt self.primitive_type_table
-                                .primitive_types
-                                .find(name) {
+                        // Check to see whether the name is a primitive type.
+                        if path.idents.len() == 1u {
+                            let name =
+                                (*self.atom_table).intern(@copy
+                                                          path.idents.last());
 
-                            some(primitive_type) {
-                                result_def =
-                                    some(def_prim_ty(primitive_type));
-                            }
-                            none {
-                                // Continue.
+                            alt self.primitive_type_table
+                                    .primitive_types
+                                    .find(name) {
+
+                                some(primitive_type) {
+                                    result_def =
+                                        some(def_prim_ty(primitive_type));
+                                }
+                                none {
+                                    // Continue.
+                                }
                             }
                         }
                     }
@@ -2754,9 +2741,8 @@ class Resolver {
                     }
                     none {
                         self.session.span_warn
-                            (ty.span,
-                             #fmt("use of undeclared type name '%s'",
-                                  *(*self.atom_table).atom_to_str(name)));
+                            (ty.span, #fmt("use of undeclared type name '%s'",
+                                           connect(path.idents, "::")));
                     }
                 }
             }
@@ -2777,7 +2763,6 @@ class Resolver {
                 pat_ident(path, _)
                         if !path.global && path.idents.len() == 1u {
 
-                    //
                     // The meaning of pat_ident with no type parameters
                     // depends on whether an enum variant with that name is in
                     // scope. The probing lookup has to be careful not to emit
@@ -2785,22 +2770,273 @@ class Resolver {
                     // nullary variants. For binding patterns (let), matching
                     // such a variant is simply disallowed (since it's rarely
                     // what you want).
-                    //
-                    // FIXME: This is unimplemented.
-                    //
 
-                    #debug("(resolving pattern) binding '%s'",
-                           path.idents[0]);
+                    // FIXME: This restriction is not yet implemented.
 
-                    let atom =
-                        (*self.atom_table).intern(@copy path.idents[0]);
-                    let is_mutable = mutability == Mutable;
-                    let def_like = dl_def(def_local(pattern.id, is_mutable));
-                    (*self.value_ribs).last().bindings.insert(atom, def_like);
+                    let atom = (*self.atom_table).intern(@copy
+                                                         path.idents[0]);
+
+                    alt self.resolve_enum_variant(atom) {
+                        some(def) {
+                            #debug("(resolving pattern) resolving '%s' to \
+                                    enum variant",
+                                   path.idents[0]);
+
+                            self.def_map.insert(pattern.id, def);
+                        }
+                        none {
+                            #debug("(resolving pattern) binding '%s'",
+                                   path.idents[0]);
+
+                            let is_mutable = mutability == Mutable;
+                            let def_like =
+                                dl_def(def_local(pattern.id, is_mutable));
+                            (*self.value_ribs).last().bindings.insert
+                                (atom, def_like);
+                        }
+                    }
                 }
+
+                pat_ident(path, _) | pat_enum(path, _) {
+                    // These two must be enum variants.
+                    alt self.resolve_path(path, ValueNS, false) {
+                        some(def @ def_variant(*)) {
+                            self.def_map.insert(pattern.id, def);
+                        }
+                        some(_) {
+                            self.session.span_warn(path.span,
+                                                   #fmt("not an enum \
+                                                         variant: %s",
+                                                        path.idents.last()));
+                        }
+                        none {
+                            self.session.span_warn(path.span,
+                                                   "undeclared enum variant");
+                        }
+                    }
+                }
+
                 _ {
-                    // Nothing to do. FIXME: Handle more cases.
+                    // Nothing to do.
                 }
+            }
+        }
+    }
+
+    fn resolve_enum_variant(name: Atom) -> option<def> {
+        alt self.resolve_item_in_lexical_scope(self.current_module,
+                                               name,
+                                               ValueNS) {
+
+            Success(target) {
+                alt target.bindings.value_def {
+                    none {
+                        fail "resolved name in the value namespace to a set \
+                              of name bindings with no def?!";
+                    }
+                    some(def @ def_variant(*)) {
+                        ret some(def);
+                    }
+                    some(_) {
+                        ret none;
+                    }
+                }
+            }
+
+            Indeterminate {
+                fail "unexpected indeterminate result";
+            }
+
+            Failed {
+                ret none;
+            }
+        }
+    }
+
+    #[doc="
+        If `check_ribs` is true, checks the local definitions first; i.e.
+        doesn't skip straight to the containing module.
+    "]
+    fn resolve_path(path: @path, namespace: Namespace, check_ribs: bool)
+            -> option<def> {
+
+        if path.global || path.idents.len() > 1u {
+            ret self.resolve_module_relative_path(path, namespace);
+        }
+
+        if check_ribs {
+            alt self.resolve_path_in_local_ribs(path, namespace) {
+                some(def) {
+                    ret some(def);
+                }
+                none {
+                    // Continue.
+                }
+            }
+        }
+
+        ret self.resolve_item_by_identifier_in_lexical_scope
+            (path.idents.last(), namespace);
+    }
+
+    fn resolve_module_relative_path(path: @path, namespace: Namespace)
+            -> option<def> {
+
+        let module_path_atoms = @dvec();
+        for path.idents.eachi {
+            |index, ident|
+            if index == path.idents.len() - 1u {
+                break;
+            }
+
+            (*module_path_atoms).push((*self.atom_table).intern(@copy ident));
+        }
+
+        let mut containing_module;
+        alt self.resolve_module_path_for_import(self.current_module,
+                                                module_path_atoms) {
+
+            Failed {
+                self.session.span_warn(path.span,
+                                       #fmt("use of undeclared module `%s`",
+                                             *(*self.atom_table).atoms_to_str
+                                               ((*module_path_atoms).get())));
+                ret none;
+            }
+
+            Indeterminate {
+                fail "indeterminate unexpected";
+            }
+
+            Success(resulting_module) {
+                containing_module = resulting_module;
+            }
+        }
+
+        let name = (*self.atom_table).intern(@copy path.idents.last());
+
+        // First, search children.
+        //
+        // FIXME: This really should be abstracted out into a function; it's
+        // duplicated in import resolution too.
+
+        alt containing_module.children.find(name) {
+            some(child_name_bindings) {
+                alt (*child_name_bindings).def_for_namespace(namespace) {
+                    some(def) {
+                        // Found it. Stop the search here.
+                        ret some(def);
+                    }
+                    none {
+                        // Continue.
+                    }
+                }
+            }
+            none {
+                // Continue.
+            }
+        }
+
+        // Next, search import resolutions.
+        alt containing_module.import_resolutions.find(name) {
+            some(import_resolution) {
+                alt (*import_resolution).target_for_namespace(namespace) {
+                    some(target) {
+                        alt (*target.bindings).def_for_namespace(namespace) {
+                            some(def) {
+                                // Found it.
+                                ret some(def);
+                            }
+                            none {
+                                fail "target for namespace doesn't refer to \
+                                      bindings that contain a definition for \
+                                      that namespace!";
+                            }
+                        }
+                    }
+                    none {
+                        // Continue.
+                    }
+                }
+            }
+            none {
+                // Continue.
+            }
+        }
+
+        // We failed to resolve the name. Report an error.
+        self.session.span_warn(path.span,
+                               #fmt("use of undeclared identifier: %s::%s",
+                                    *(*self.atom_table).atoms_to_str
+                                        ((*module_path_atoms).get()),
+                                    *(*self.atom_table).atom_to_str(name)));
+
+        ret none;
+    }
+
+    fn resolve_path_in_local_ribs(path: @path, namespace: Namespace)
+            -> option<def> {
+        
+        assert path.idents.len() == 1u;
+        let name = (*self.atom_table).intern(@copy path.idents[0]);
+
+        // Check the local set of ribs.
+        let mut search_result;
+        alt namespace {
+            ValueNS {
+                search_result = self.search_ribs(self.value_ribs, name);
+            }
+            TypeNS {
+                search_result = self.search_ribs(self.type_ribs, name);
+            }
+            ModuleNS | ImplNS {
+                fail "module or impl namespaces do not have local ribs";
+            }
+        }
+
+        alt search_result {
+            some(dl_def(def)) {
+                #debug("(resolving path in local ribs) resolved '%s' to \
+                        local",
+                       *(*self.atom_table).atom_to_str(name));
+                ret some(def);
+            }
+            some(dl_field) | some(dl_impl(_)) | none {
+                ret none;
+            }
+        }
+    }
+
+    fn resolve_item_by_identifier_in_lexical_scope(ident: ident,
+                                                   namespace: Namespace)
+                                                -> option<def> {
+
+        let name = (*self.atom_table).intern(@copy ident);
+
+        // Check the items.
+        alt self.resolve_item_in_lexical_scope(self.current_module,
+                                               name,
+                                               namespace) {
+
+            Success(target) {
+                alt (*target.bindings).def_for_namespace(namespace) {
+                    none {
+                        fail "resolved name in a namespace to a set of name \
+                              bindings with no def for that namespace?!";
+                    }
+                    some(def) {
+                        #debug("(resolving item path in lexical scope) \
+                                resolved '%s' to item",
+                               *(*self.atom_table).atom_to_str(name));
+                        ret some(def);
+                    }
+                }
+            }
+            Indeterminate {
+                fail "unexpected indeterminate result";
+            }
+            Failed {
+                ret none;
             }
         }
     }
@@ -2816,61 +3052,20 @@ class Resolver {
             // The interpretation of paths depends on whether the path has
             // multiple elements in it or not.
 
-            expr_path(path) if path.idents.len() == 1u {
+            expr_path(path) {
                 // This is a local path in the value namespace. Walk through
                 // scopes looking for it.
 
-                let name = (*self.atom_table).intern(@copy path.idents[0]);
-
-                // First, check the local set of ribs.
-                let mut result_def;
-                alt self.search_ribs(self.value_ribs, name) {
-                    some(dl_def(def)) {
-                        #debug("(resolving expr) resolved '%s' to local",
-                               *(*self.atom_table).atom_to_str(name));
-                        result_def = some(def);
-                    }
-                    some(dl_field) | some(dl_impl(_)) | none {
-                        // Otherwise, check the items.
-                        alt self.resolve_item_in_lexical_scope
-                                (self.current_module, name, ValueNS) {
-
-                            Success(target) {
-                                alt target.bindings.value_def {
-                                    none {
-                                        fail "resolved name in value \
-                                              to a set of name bindings with \
-                                              no def?!";
-                                    }
-                                    some(def) {
-                                        #debug("(resolving expr) resolved \
-                                                '%s' to item",
-                                               *(*self.atom_table).
-                                                atom_to_str(name));
-                                        result_def = some(def);
-                                    }
-                                }
-                            }
-                            Indeterminate {
-                                fail "unexpected indeterminate result";
-                            }
-                            Failed {
-                                result_def = none;
-                            }
-                        }
-                    }
-                }
-
-                alt result_def {
+                alt self.resolve_path(path, ValueNS, true) {
                     some(def) {
                         // Write the result into the def map.
                         self.def_map.insert(expr.id, def);
                     }
                     none {
-                        self.session.span_warn
-                            (expr.span,
-                             #fmt("use of undeclared identifier '%s'",
-                                  *(*self.atom_table).atom_to_str(name)));
+                        self.session.span_warn(expr.span,
+                                               #fmt("use of undeclared \
+                                                     identifier '%s'",
+                                               connect(path.idents, "::")));
                     }
                 }
             }
