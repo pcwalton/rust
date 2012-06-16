@@ -7,11 +7,11 @@ import syntax::ast::{class_method, crate, crate_num, decl_item, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
 import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
-import syntax::ast::{def_use, def_variant, expr, expr_fn, expr_fn_block};
-import syntax::ast::{expr_path, fn_decl, ident, impure_fn, instance_var};
+import syntax::ast::{def_use, def_variant, expr, expr_assign_op, expr_binary, expr_cast, expr_field, expr_fn, expr_fn_block};
+import syntax::ast::{expr_index, expr_new, expr_path, expr_unary, fn_decl, ident, impure_fn, instance_var};
 import syntax::ast::{item, item_class, item_const, item_enum, item_fn};
 import syntax::ast::{item_iface, item_impl, item_mod, item_native_mod};
-import syntax::ast::{item_res, item_ty, local, method, native_item};
+import syntax::ast::{item_res, item_ty, local, local_crate, method, native_item};
 import syntax::ast::{native_item_fn, node_id, pat, pat_ident, prim_ty};
 import syntax::ast::{stmt_decl, ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64};
 import syntax::ast::{ty_float, ty_i, ty_i16, ty_i32, ty_i64, ty_i8, ty_int};
@@ -2114,6 +2114,22 @@ class Resolver {
     }
 
     fn build_impl_scopes_for_module_subtree(module: @Module) {
+        // If this isn't a local crate, then bail out. We don't need to
+        // resolve implementations for external crates.
+
+        alt module.def_id {
+            some(def_id) if def_id.crate == local_crate {
+                // OK. Continue.
+            }
+            some(_) | none {
+                // Bail out.
+                #debug("(building impl scopes for module subtree) not \
+                        resolving implementations for '%s'",
+                       self.module_to_str(module));
+                ret;
+            }
+        }
+
         self.build_impl_scope_for_module(module);
 
         for module.children.each {
@@ -2192,6 +2208,11 @@ class Resolver {
         } else {
             module.impl_scopes = parent_impl_scopes;
         }
+
+        // Write the implementation scope into the implementation map.
+        assert !module.def_id.is_none();
+        assert module.def_id.get().crate == local_crate;
+        self.impl_map.insert(module.def_id.get().node, module.impl_scopes);
     }
 
     //
@@ -2785,6 +2806,12 @@ class Resolver {
     }
 
     fn resolve_expr(expr: @expr, visitor: ResolveVisitor) {
+        // First, write the implementations in scope into a table if the
+        // expression might need them.
+
+        self.record_impls_for_expr_if_necessary(expr);
+
+        // Next, resolve the node.
         alt expr.node {
             // The interpretation of paths depends on whether the path has
             // multiple elements in it or not.
@@ -2855,6 +2882,23 @@ class Resolver {
 
             _ {
                 visit_expr(expr, (), visitor);
+            }
+        }
+    }
+
+    fn record_impls_for_expr_if_necessary(expr: @expr) {
+        alt expr.node {
+            expr_field(*) | expr_path(*) | expr_cast(*) | expr_binary(*) |
+            expr_unary(*) | expr_assign_op(*) | expr_index(*) {
+                self.impl_map.insert(expr.id,
+                                     self.current_module.impl_scopes);
+            }
+            expr_new(container, _, _) {
+                self.impl_map.insert(container.id,
+                                     self.current_module.impl_scopes);
+            }
+            _ {
+                // Nothing to do.
             }
         }
     }
