@@ -21,7 +21,7 @@ import syntax::ast::{ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64, ty_u8};
 import syntax::ast::{ty_uint, variant, view_item, view_item_export};
 import syntax::ast::{view_item_import, view_item_use, view_path_glob};
 import syntax::ast::{view_path_list, view_path_simple};
-import syntax::ast_util::{local_def, walk_pat};
+import syntax::ast_util::{def_id_of_def, local_def, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
 import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
@@ -99,6 +99,17 @@ enum ResolveResult<T> {
 enum TypeParameters/& {
     NoTypeParameters,                           // No type parameters.
     HasTypeParameters(&[ty_param], node_id)     // Type parameters and ID.
+}
+
+// The rib kind controls the translation of argument or local definitions
+// (`def_arg` or `def_local`) to upvars (`def_upvar`).
+
+enum RibKind {
+    // No translation needs to be applied.
+    NormalRibKind,
+    // We passed through a function scope at the given node ID. Translate
+    // upvars as appropriate.
+    FunctionRibKind(node_id)
 }
 
 // FIXME (issue 2550): Should be a class but then it becomes not implicitly
@@ -181,9 +192,11 @@ fn atom_hashmap<V:copy>() -> hashmap<Atom,V> {
 "]
 class Rib {
     let bindings: hashmap<Atom,def_like>;
+    let kind: RibKind;
 
-    new() {
+    new(kind: RibKind) {
         self.bindings = atom_hashmap();
+        self.kind = kind;
     }
 }
 
@@ -2290,17 +2303,60 @@ class Resolver {
         self.current_module = orig_module;
     }
 
-    fn search_ribs(ribs: @dvec<@Rib>, name: Atom) -> option<def_like> {
+    fn search_ribs(ribs: @dvec<@Rib>, name: Atom, rib_kind: RibKind)
+                -> option<def_like> {
+
         // FIXME: This should not use a while loop.
         // TODO: Try caching?
 
+        let mut rib_kind = rib_kind;
         let mut i = (*ribs).len();
         while i != 0u {
             i -= 1u;
-            let Rib = (*ribs).get_elt(i);
-            alt Rib.bindings.find(name) {
-                some(def_like) { ret some(def_like); }
-                none { /* Continue. */ }
+            let rib = (*ribs).get_elt(i);
+            alt rib.bindings.find(name) {
+                some(def_like) {
+                    // Translate the definition to an upvar definition
+                    // (`def_upvar`) if necessary.
+
+                    alt rib_kind {
+                        NormalRibKind {
+                            // No translation necessary.
+                            ret some(def_like);
+                        }
+                        FunctionRibKind(function_id) {
+                            // Translate to an upvar definition if necessary.
+                            alt def_like {
+                                dl_def(def @ def_local(*)) |
+                                        dl_def(def @ def_upvar(*)) |
+                                        dl_def(def @ def_arg(*)) |
+                                        dl_def(def @ def_self(*)) {
+
+                                    #debug("(searching ribs) found upvar"); 
+                                    ret some(dl_def(def_upvar
+                                        (def_id_of_def(def).node, @def,
+                                         function_id)));
+                                }
+                                _ {
+                                    ret some(def_like);
+                                }
+                            }
+                        }
+                    }
+                }
+                none {
+                    // Continue.
+                }
+            }
+
+            // Change the rib kind if we pass through a function closure.
+            alt rib.kind {
+                FunctionRibKind(_) {
+                    rib_kind = rib.kind;
+                }
+                NormalRibKind {
+                    // Nothing to do.
+                }
             }
         }
 
@@ -2363,7 +2419,7 @@ class Resolver {
 
             item_iface(type_parameters, _, methods) {
                 // Create a new rib for the self type.
-                let self_type_rib = @Rib();
+                let self_type_rib = @Rib(NormalRibKind);
                 (*self.type_ribs).push(self_type_rib);
                 self_type_rib.bindings.insert(self.self_atom,
                                               dl_def(def_self(item.id)));
@@ -2390,10 +2446,10 @@ class Resolver {
                             for method.decl.inputs.each {
                                 |argument|
 
-                                visit_ty(argument.ty, (), visitor);
+                                self.resolve_type(argument.ty, visitor);
                             }
 
-                            visit_ty(method.decl.output, (), visitor);
+                            self.resolve_type(method.decl.output, visitor);
                         }
                     }
                 }
@@ -2444,7 +2500,8 @@ class Resolver {
 
             item_fn(fn_decl, ty_params, block)  |
             item_res(fn_decl, ty_params, block, _, _, _) {
-                self.resolve_function(some(@fn_decl),
+                self.resolve_function(NormalRibKind,
+                                      some(@fn_decl),
                                       HasTypeParameters(&ty_params, item.id),
                                       block,
                                       NoSelfBinding,
@@ -2462,7 +2519,7 @@ class Resolver {
             HasTypeParameters(type_parameters, node_id) 
                     if (*type_parameters).len() >= 1u {
 
-                let function_type_rib = @Rib();
+                let function_type_rib = @Rib(NormalRibKind);
                 (*self.type_ribs).push(function_type_rib);
 
                 for (*type_parameters).eachi {
@@ -2470,8 +2527,8 @@ class Resolver {
 
                     let name =
                         (*self.atom_table).intern(@copy type_parameter.ident);
-                    let def_like = dl_def(def_ty_param(local_def(node_id),
-                                                       index));
+                    let def_like = dl_def(def_ty_param
+                        (local_def(type_parameter.id), index));
                     (*function_type_rib).bindings.insert(name, def_like);
                 }
             }
@@ -2496,14 +2553,15 @@ class Resolver {
         }
     }
 
-    fn resolve_function(optional_declaration: option<@fn_decl>,
+    fn resolve_function(rib_kind: RibKind,
+                        optional_declaration: option<@fn_decl>,
                         type_parameters: TypeParameters,
                         block: blk,
                         self_binding: SelfBinding,
                         visitor: ResolveVisitor) {
 
         // Create a value rib for the function.
-        let function_value_rib = @Rib();
+        let function_value_rib = @Rib(rib_kind);
         (*self.value_ribs).push(function_value_rib);
 
         // If this function has type parameters, add them now.
@@ -2537,12 +2595,17 @@ class Resolver {
                                                       argument.mode));
                         (*function_value_rib).bindings.insert(name, def_like);
 
+                        self.resolve_type(argument.ty, visitor);
+
                         #debug("(resolving function) recorded argument '%s'",
                                *(*self.atom_table).atom_to_str(name));
                     }
+
+                    self.resolve_type(declaration.output, visitor);
                 }
             }
 
+            // Resolve the function body.
             self.resolve_block(block, visitor);
 
             #debug("(resolving function) leaving function");
@@ -2574,7 +2637,8 @@ class Resolver {
                         let type_parameters =
                             HasTypeParameters(borrowed_method_type_parameters,
                                               method.id);
-                        self.resolve_function(some(@method.decl),
+                        self.resolve_function(NormalRibKind,
+                                              some(@method.decl),
                                               type_parameters,
                                               method.body,
                                               HasSelfBinding(id),
@@ -2587,7 +2651,8 @@ class Resolver {
             }
 
             // Resolve the constructor.
-            self.resolve_function(some(@constructor.node.dec),
+            self.resolve_function(NormalRibKind,
+                                  some(@constructor.node.dec),
                                   NoTypeParameters,
                                   constructor.node.body,
                                   HasSelfBinding(id),
@@ -2600,7 +2665,8 @@ class Resolver {
                     // Nothing to do.
                 }
                 some(destructor) {
-                    self.resolve_function(none,
+                    self.resolve_function(NormalRibKind,
+                                          none,
                                           NoTypeParameters,
                                           destructor.node.body,
                                           HasSelfBinding(id),
@@ -2625,7 +2691,8 @@ class Resolver {
             // type parameters.
 
             let borrowed_type_parameters = &method.tps;
-            self.resolve_function(some(@method.decl),
+            self.resolve_function(NormalRibKind,
+                                  some(@method.decl),
                                   HasTypeParameters(borrowed_type_parameters,
                                                     method.id),
                                   method.body,
@@ -2640,7 +2707,7 @@ class Resolver {
         visit_mod(module, span, id, (), visitor);
     }
 
-    fn resolve_local(local: @local, _visitor: ResolveVisitor) {
+    fn resolve_local(local: @local, visitor: ResolveVisitor) {
         let mut mutability;
         if local.node.is_mutbl {
             mutability = Mutable;
@@ -2648,13 +2715,28 @@ class Resolver {
             mutability = Immutable;
         }
 
-        self.resolve_pattern(local.node.pat, IrrefutableMode, mutability);
+        // Resolve the type.
+        self.resolve_type(local.node.ty, visitor);
+
+        // Resolve the pattern.
+        self.resolve_pattern(local.node.pat, IrrefutableMode, mutability,
+                             visitor);
+
+        // Resolve the initializer, if necessary.
+        alt local.node.init {
+            none {
+                // Nothing to do.
+            }
+            some(initializer) {
+                self.resolve_expr(initializer.expr, visitor);
+            }
+        }
     }
 
     fn resolve_arm(arm: arm, visitor: ResolveVisitor) {
         for arm.pats.each {
             |pattern|
-            self.resolve_pattern(pattern, RefutableMode, Immutable);
+            self.resolve_pattern(pattern, RefutableMode, Immutable, visitor);
         }
 
         visit_expr_opt(arm.guard, (), visitor);
@@ -2663,7 +2745,7 @@ class Resolver {
 
     fn resolve_block(block: blk, visitor: ResolveVisitor) {
         #debug("(resolving block) entering block");
-        (*self.value_ribs).push(@Rib());
+        (*self.value_ribs).push(@Rib(NormalRibKind));
 
         // Move down in the graph, if there's an anonymous module rooted here.
         let orig_module = self.current_module;
@@ -2691,12 +2773,12 @@ class Resolver {
             // Like path expressions, the interpretation of path types depends
             // on whether the path has multiple elements in it or not.
 
-            ty_path(path, _) {
+            ty_path(path, path_id) {
                 // This is a path in the type namespace. Walk through scopes
                 // scopes looking for it.
 
                 let mut result_def;
-                alt self.resolve_path(path, TypeNS, true) {
+                alt self.resolve_path(path, TypeNS, true, visitor) {
                     some(def) {
                         #debug("(resolving type) resolved '%s' to type",
                                path.idents.last());
@@ -2737,7 +2819,10 @@ class Resolver {
                 alt result_def {
                     some(def) {
                         // Write the result into the def map.
-                        self.def_map.insert(ty.id, def);
+                        #debug("(resolving type) writing resolution for '%s' (id \
+                                %d)",
+                               connect(path.idents, "::"), path_id);
+                        self.def_map.insert(path_id, def);
                     }
                     none {
                         self.session.span_warn
@@ -2748,6 +2833,7 @@ class Resolver {
             }
 
             _ {
+                // Just resolve embedded types.
                 visit_ty(ty, (), visitor);
             }
         }
@@ -2755,7 +2841,8 @@ class Resolver {
 
     fn resolve_pattern(pattern: @pat,
                        _mode: PatternBindingMode,
-                       mutability: Mutability) {
+                       mutability: Mutability,
+                       visitor: ResolveVisitor) {
 
         walk_pat(pattern) {
             |pattern|
@@ -2799,7 +2886,7 @@ class Resolver {
 
                 pat_ident(path, _) | pat_enum(path, _) {
                     // These two must be enum variants.
-                    alt self.resolve_path(path, ValueNS, false) {
+                    alt self.resolve_path(path, ValueNS, false, visitor) {
                         some(def @ def_variant(*)) {
                             self.def_map.insert(pattern.id, def);
                         }
@@ -2857,8 +2944,15 @@ class Resolver {
         If `check_ribs` is true, checks the local definitions first; i.e.
         doesn't skip straight to the containing module.
     "]
-    fn resolve_path(path: @path, namespace: Namespace, check_ribs: bool)
-            -> option<def> {
+    fn resolve_path(path: @path, namespace: Namespace, check_ribs: bool,
+                    visitor: ResolveVisitor)
+                 -> option<def> {
+
+        // First, resolve the types.
+        for path.types.each {
+            |ty|
+            self.resolve_type(ty, visitor);
+        }
 
         if path.global || path.idents.len() > 1u {
             ret self.resolve_module_relative_path(path, namespace);
@@ -2984,10 +3078,14 @@ class Resolver {
         let mut search_result;
         alt namespace {
             ValueNS {
-                search_result = self.search_ribs(self.value_ribs, name);
+                search_result = self.search_ribs(self.value_ribs,
+                                                 name,
+                                                 NormalRibKind);
             }
             TypeNS {
-                search_result = self.search_ribs(self.type_ribs, name);
+                search_result = self.search_ribs(self.type_ribs,
+                                                 name,
+                                                 NormalRibKind);
             }
             ModuleNS | ImplNS {
                 fail "module or impl namespaces do not have local ribs";
@@ -3056,9 +3154,11 @@ class Resolver {
                 // This is a local path in the value namespace. Walk through
                 // scopes looking for it.
 
-                alt self.resolve_path(path, ValueNS, true) {
+                alt self.resolve_path(path, ValueNS, true, visitor) {
                     some(def) {
                         // Write the result into the def map.
+                        #debug("(resolving expr) resolved '%s'",
+                               connect(path.idents, "::"));
                         self.def_map.insert(expr.id, def);
                     }
                     none {
@@ -3068,11 +3168,17 @@ class Resolver {
                                                connect(path.idents, "::")));
                     }
                 }
+
+                visit_expr(expr, (), visitor);
             }
 
             expr_fn(_, fn_decl, block, _) | expr_fn_block(fn_decl, block, _) {
-                self.resolve_function(some(@fn_decl), NoTypeParameters, block,
-                                      NoSelfBinding, visitor);
+                self.resolve_function(FunctionRibKind(expr.id),
+                                      some(@fn_decl),
+                                      NoTypeParameters,
+                                      block,
+                                      NoSelfBinding,
+                                      visitor);
             }
 
             _ {

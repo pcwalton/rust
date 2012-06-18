@@ -1580,7 +1580,9 @@ fn type_kind(cx: ctxt, ty: t) -> kind {
       }
       ty_param(_, did) {
         // FIXME: type params shouldn't be implicitly copyable (#2449)
+        cx.sess.warn("looking up type param bounds");
         let k = param_bounds_to_kind(cx.ty_param_bounds.get(did.node));
+        cx.sess.warn("done looking up type param bounds");
         if kind_can_be_copied(k)
             { raise_kind(k, kind_implicitly_copyable()) } else { k }
       }
