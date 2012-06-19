@@ -2,7 +2,8 @@ import driver::session::session;
 import metadata::csearch::{each_path, get_impls_for_mod, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
-import syntax::ast::{_mod, arm, blk, class_ctor, class_dtor, class_member};
+import syntax::ast::{_mod, arm, blk, bound_const, bound_copy, bound_iface};
+import syntax::ast::{bound_send, class_ctor, class_dtor, class_member};
 import syntax::ast::{class_method, crate, crate_num, decl_item, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
@@ -14,11 +15,11 @@ import syntax::ast::{ident, impure_fn, instance_var, item, item_class};
 import syntax::ast::{item_const, item_enum, item_fn, item_iface, item_impl};
 import syntax::ast::{item_mod, item_native_mod, item_res, item_ty, local};
 import syntax::ast::{local_crate, method, native_item, native_item_fn};
-import syntax::ast::{node_id, pat, pat_enum, pat_ident, path, prim_ty, stmt_decl, ty};
-import syntax::ast::{ty_bool, ty_char, ty_f, ty_f32, ty_f64, ty_float, ty_i};
-import syntax::ast::{ty_i16, ty_i32, ty_i64, ty_i8, ty_int, ty_param};
-import syntax::ast::{ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64, ty_u8};
-import syntax::ast::{ty_uint, variant, view_item, view_item_export};
+import syntax::ast::{node_id, pat, pat_enum, pat_ident, path, prim_ty};
+import syntax::ast::{stmt_decl, ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64};
+import syntax::ast::{ty_float, ty_i, ty_i16, ty_i32, ty_i64, ty_i8, ty_int};
+import syntax::ast::{ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64};
+import syntax::ast::{ty_u8, ty_uint, variant, view_item, view_item_export};
 import syntax::ast::{view_item_import, view_item_use, view_path_glob};
 import syntax::ast::{view_path_list, view_path_simple};
 import syntax::ast_util::{def_id_of_def, local_def, walk_pat};
@@ -60,6 +61,12 @@ enum NamespaceResult {
     UnknownResult,
     UnboundResult,
     BoundResult(@Module, @NameBindings)
+}
+
+enum ImplNamespaceResult {
+    UnknownImplResult,
+    UnboundImplResult,
+    BoundImplResult(@dvec<@Target>)
 }
 
 enum Mutability {
@@ -232,7 +239,7 @@ class ImportResolution {
     let mut module_target: option<Target>;
     let mut value_target: option<Target>;
     let mut type_target: option<Target>;
-    let mut impl_target: option<Target>;
+    let mut impl_target: @dvec<@Target>;
 
     new() {
         self.outstanding_references = 0u;
@@ -240,15 +247,15 @@ class ImportResolution {
         self.module_target = none;
         self.value_target = none;
         self.type_target = none;
-        self.impl_target = none;
+        self.impl_target = @dvec();
     }
 
     fn target_for_namespace(namespace: Namespace) -> option<Target> {
         alt namespace {
-            ModuleNS    { ret copy self.module_target; }
-            TypeNS      { ret copy self.type_target;   }
-            ValueNS     { ret copy self.value_target;  }
-            ImplNS      { ret copy self.impl_target;   }
+            ModuleNS    { ret copy self.module_target;          }
+            TypeNS      { ret copy self.type_target;            }
+            ValueNS     { ret copy self.value_target;           }
+            ImplNS      { fail "can't use impl namespace here"; }
         }
     }
 }
@@ -1343,7 +1350,7 @@ class Resolver {
         let mut module_result = UnknownResult;
         let mut value_result = UnknownResult;
         let mut type_result = UnknownResult;
-        let mut impl_result = UnknownResult;
+        let mut impl_result = UnknownImplResult;
 
         // Search for direct children of the containing module.
         alt containing_module.children.find(source) {
@@ -1364,8 +1371,10 @@ class Resolver {
                                               child_name_bindings);
                 }
                 if (*child_name_bindings).defined_in_namespace(ImplNS) {
-                    impl_result = BoundResult(containing_module,
-                                              child_name_bindings);
+                    let targets = @dvec();
+                    (*targets).push(@Target(containing_module,
+                                            child_name_bindings));
+                    impl_result = BoundImplResult(targets);
                 }
             }
         }
@@ -1374,7 +1383,8 @@ class Resolver {
         // (exceedingly unlikely), search imports as well.
 
         alt (module_result, value_result, type_result, impl_result) {
-            (BoundResult(*), BoundResult(*), BoundResult(*), BoundResult(*)) {
+            (BoundResult(*), BoundResult(*), BoundResult(*),
+             BoundImplResult(*)) {
                 // Continue.
             }
             _ {
@@ -1407,8 +1417,8 @@ class Resolver {
                         if type_result == UnknownResult {
                             type_result = UnboundResult;
                         }
-                        if impl_result == UnknownResult {
-                            impl_result = UnboundResult;
+                        if impl_result == UnknownImplResult {
+                            impl_result = UnboundImplResult;
                         }
                     }
                     some(import_resolution)
@@ -1430,6 +1440,18 @@ class Resolver {
                             }
                         }
 
+                        fn get_import_binding(import_resolution:
+                                              @ImportResolution)
+                                           -> ImplNamespaceResult {
+
+                            if (*import_resolution.impl_target).len() == 0u {
+                                ret UnboundImplResult;
+                            }
+                            ret BoundImplResult(import_resolution.
+                                                impl_target);
+                        }
+                                              
+
                         // The name is an import which has been fully
                         // resolved. We can, therefore, just follow it.
 
@@ -1445,9 +1467,9 @@ class Resolver {
                             type_result = get_binding(import_resolution,
                                                       TypeNS);
                         }
-                        if impl_result == UnknownResult {
-                            impl_result = get_binding(import_resolution,
-                                                      ImplNS);
+                        if impl_result == UnknownImplResult {
+                            impl_result =
+                                get_import_binding(import_resolution);
                         }
                     }
                     some(_) {
@@ -1499,12 +1521,14 @@ class Resolver {
             }
         }
         alt impl_result {
-            BoundResult(target_module, name_bindings) {
-                import_resolution.impl_target =
-                    some(Target(target_module, name_bindings));
+            BoundImplResult(targets) {
+                for (*targets).each {
+                    |target|
+                    (*import_resolution.impl_target).push(target);
+                }
             }
-            UnboundResult { /* Continue. */ }
-            UnknownResult {
+            UnboundImplResult { /* Continue. */ }
+            UnknownImplResult {
                 fail "impl result should be known at this point";
             }
         }
@@ -1596,13 +1620,12 @@ class Resolver {
                                 some(copy type_target);
                         }
                     }
-                    alt target_import_resolution.impl_target {
-                        none {
-                            // Continue.
-                        }
-                        some(impl_target) {
-                            dest_import_resolution.impl_target =
-                                some(copy impl_target);
+                    if (*target_import_resolution.impl_target).len() > 0u {
+                        for (*target_import_resolution.impl_target).each {
+                            |impl_target|
+                            (*dest_import_resolution.impl_target).
+                                push(impl_target);
+                                
                         }
                     }
                 }
@@ -1651,8 +1674,8 @@ class Resolver {
             }
             if (*name_bindings).defined_in_namespace(ImplNS) {
                 #debug("(resolving glob import) ... for impl target");
-                dest_import_resolution.impl_target =
-                    some(Target(containing_module, name_bindings));
+                (*dest_import_resolution.impl_target).push
+                    (@Target(containing_module, name_bindings));
             }
         }
 
@@ -2061,7 +2084,7 @@ class Resolver {
             Success(name_bindings) {
                 #debug("(resolving one-level renaming import) impl result \
                         found");
-                impl_result = some(copy name_bindings);
+                impl_result = some(@copy name_bindings);
             }
         }
 
@@ -2090,7 +2113,15 @@ class Resolver {
                 import_resolution.module_target = module_result;
                 import_resolution.value_target = value_result;
                 import_resolution.type_target = type_result;
-                import_resolution.impl_target = impl_result;
+
+                alt impl_result {
+                    none {
+                        // Nothing to do.
+                    }
+                    some(impl_result) {
+                        (*import_resolution.impl_target).push(impl_result);
+                    }
+                }
 
                 assert import_resolution.outstanding_references >= 1u;
                 import_resolution.outstanding_references -= 1u;
@@ -2151,7 +2182,10 @@ class Resolver {
             some(def_id) if def_id.crate == local_crate {
                 // OK. Continue.
             }
-            some(_) | none {
+            none {
+                // Resolve implementation scopes for the root module.
+            }
+            some(_) {
                 // Bail out.
                 #debug("(building impl scopes for module subtree) not \
                         resolving implementations for '%s'",
@@ -2203,15 +2237,11 @@ class Resolver {
         for module.import_resolutions.each {
             |_impl_name, import_resolution|
 
-            alt import_resolution.impl_target {
-                none {
-                    // Nothing to do.
-                }
-                some(impl_target) {
-                    if impl_target.bindings.impl_defs.len() >= 1u {
-                        impl_scope += impl_target.bindings.impl_defs;
-                    }
-                }
+            for (*import_resolution.impl_target).each {
+                |impl_target|
+
+                #debug("(building impl scope for module) found impl def");
+                impl_scope += impl_target.bindings.impl_defs;
             }
         }
 
@@ -2238,11 +2268,6 @@ class Resolver {
         } else {
             module.impl_scopes = parent_impl_scopes;
         }
-
-        // Write the implementation scope into the implementation map.
-        assert !module.def_id.is_none();
-        assert module.def_id.get().crate == local_crate;
-        self.impl_map.insert(module.def_id.get().node, module.impl_scopes);
     }
 
     //
@@ -2560,6 +2585,16 @@ class Resolver {
                         self_binding: SelfBinding,
                         visitor: ResolveVisitor) {
 
+        // Resolve the type parameters.
+        alt type_parameters {
+            NoTypeParameters {
+                // Continue.
+            }
+            HasTypeParameters(type_parameters, _) {
+                self.resolve_type_parameters(*type_parameters, visitor);
+            }
+        }
+
         // Create a value rib for the function.
         let function_value_rib = @Rib(rib_kind);
         (*self.value_ribs).push(function_value_rib);
@@ -2612,6 +2647,27 @@ class Resolver {
         }
 
         (*self.value_ribs).pop();
+    }
+
+    fn resolve_type_parameters(type_parameters: [ty_param],
+                               visitor: ResolveVisitor) {
+
+        for type_parameters.each {
+            |type_parameter|
+
+            for (*type_parameter.bounds).each {
+                |bound|
+
+                alt bound {
+                    bound_copy | bound_send | bound_const {
+                        // Nothing to do.
+                    }
+                    bound_iface(interface_type) {
+                        self.resolve_type(interface_type, visitor);
+                    }
+                }
+            }
+        }
     }
 
     fn resolve_class(id: node_id,
@@ -2840,7 +2896,7 @@ class Resolver {
     }
 
     fn resolve_pattern(pattern: @pat,
-                       _mode: PatternBindingMode,
+                       mode: PatternBindingMode,
                        mutability: Mutability,
                        visitor: ResolveVisitor) {
 
@@ -2876,11 +2932,33 @@ class Resolver {
                                    path.idents[0]);
 
                             let is_mutable = mutability == Mutable;
-                            let def_like =
-                                dl_def(def_local(pattern.id, is_mutable));
+
+                            let mut def_like;
+                            alt mode {
+                                RefutableMode {
+                                    // For pattern arms, we must use
+                                    // `def_binding` definitions.
+
+                                    def_like =
+                                        dl_def(def_binding(pattern.id));
+                                }
+                                IrrefutableMode {
+                                    // But for locals, we use `def_local`.
+                                    def_like =
+                                        dl_def(def_local(pattern.id,
+                                                         is_mutable));
+                                }
+                            }
+
                             (*self.value_ribs).last().bindings.insert
                                 (atom, def_like);
                         }
+                    }
+
+                    // Check the types in the path pattern.
+                    for path.types.each {
+                        |ty|
+                        self.resolve_type(ty, visitor);
                     }
                 }
 
@@ -2900,6 +2978,12 @@ class Resolver {
                             self.session.span_warn(path.span,
                                                    "undeclared enum variant");
                         }
+                    }
+
+                    // Check the types in the path pattern.
+                    for path.types.each {
+                        |ty|
+                        self.resolve_type(ty, visitor);
                     }
                 }
 
@@ -3188,6 +3272,9 @@ class Resolver {
     }
 
     fn record_impls_for_expr_if_necessary(expr: @expr) {
+        self.session.span_warn(expr.span,
+                               "recording impls for expr if necessary");
+
         alt expr.node {
             expr_field(*) | expr_path(*) | expr_cast(*) | expr_binary(*) |
             expr_unary(*) | expr_assign_op(*) | expr_index(*) {

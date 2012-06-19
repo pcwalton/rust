@@ -413,7 +413,6 @@ fn check_imm_free_var(cx: ctx, def: def, sp: span) {
 
 fn check_copy(cx: ctx, id: node_id, ty: ty::t, sp: span,
               implicit_copy: bool) {
-    cx.tcx.sess.span_warn(sp, "checking copy here");
     let k = ty::type_kind(cx.tcx, ty);
     if !ty::kind_can_be_copied(k) {
         cx.tcx.sess.span_err(sp, "copying a noncopyable value");
