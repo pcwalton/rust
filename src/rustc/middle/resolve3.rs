@@ -11,7 +11,7 @@ import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
 import syntax::ast::{def_use, def_variant, expr, expr_assign_op, expr_binary};
 import syntax::ast::{expr_cast, expr_field, expr_fn, expr_fn_block};
 import syntax::ast::{expr_index, expr_new, expr_path, expr_unary, fn_decl};
-import syntax::ast::{ident, impure_fn, instance_var, item, item_class};
+import syntax::ast::{ident, iface_ref, impure_fn, instance_var, item, item_class};
 import syntax::ast::{item_const, item_enum, item_fn, item_iface, item_impl};
 import syntax::ast::{item_mod, item_native_mod, item_res, item_ty, local};
 import syntax::ast::{local_crate, method, native_item, native_item_fn};
@@ -255,7 +255,14 @@ class ImportResolution {
             ModuleNS    { ret copy self.module_target;          }
             TypeNS      { ret copy self.type_target;            }
             ValueNS     { ret copy self.value_target;           }
-            ImplNS      { fail "can't use impl namespace here"; }
+
+            ImplNS {
+                if (*self.impl_target).len() > 0u {
+                    ret some(copy *(*self.impl_target).get_elt(0u));
+                } else {
+                    ret none;
+                }
+            }
         }
     }
 }
@@ -2437,9 +2444,15 @@ class Resolver {
                 }
             }
 
-            item_impl(type_parameters, _, _, _, methods) {
-                self.resolve_implementation(item.id, type_parameters,
-                                            methods, visitor);
+            item_impl(type_parameters, _, interface_reference, self_type,
+                      methods) {
+                self.resolve_implementation(item.id,
+                                            item.span,
+                                            type_parameters,
+                                            interface_reference,
+                                            self_type,
+                                            methods,
+                                            visitor);
             }
 
             item_iface(type_parameters, _, methods) {
@@ -2637,6 +2650,24 @@ class Resolver {
                     }
 
                     self.resolve_type(declaration.output, visitor);
+
+                    // Resolve constraints.
+                    for declaration.constraints.each {
+                        |constraint|
+
+                        alt self.resolve_path(constraint.node.path, ValueNS,
+                                              false, visitor) {
+                            none {
+                                self.session.span_warn(constraint.span,
+                                                       "(resolving function) \
+                                                        use of unknown \
+                                                        constraint");
+                            }
+                            some(def) {
+                                self.def_map.insert(constraint.node.id, def);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2700,8 +2731,8 @@ class Resolver {
                                               HasSelfBinding(id),
                                               visitor);
                     }
-                    instance_var(*) {
-                        // Don't need to do anything with this.
+                    instance_var(_, field_type, _, _, _) {
+                        self.resolve_type(field_type, visitor);
                     }
                 }
             }
@@ -2733,27 +2764,59 @@ class Resolver {
     }
 
     fn resolve_implementation(id: node_id,
-                              _type_parameters: [ty_param],
+                              span: span,
+                              type_parameters: [ty_param],
+                              interface_reference: option<@iface_ref>,
+                              self_type: @ty,
                               methods: [@method],
                               visitor: ResolveVisitor) {
+        // Resolve the type parameters.
+        self.resolve_type_parameters(type_parameters, visitor);
 
-        // Create a new scope for the impl-wide type parameters.
-        // TODO
+        // If applicable, create a rib for the type parameters.
+        let borrowed_type_parameters: &[ty_param] = &type_parameters;
+        self.with_type_parameter_rib(HasTypeParameters
+                                     (borrowed_type_parameters, id)) {
+            ||
 
-        for methods.each {
-            |method|
+            // Resolve the interface reference, if necessary.
+            alt interface_reference {
+                none {
+                    // Nothing to do.
+                }
+                some(interface_reference) {
+                    alt self.resolve_path(interface_reference.path, TypeNS,
+                                           true, visitor) {
+                        none {
+                            self.session.span_warn(span,
+                                                   "attempt to implement an \
+                                                    unknown interface");
+                        }
+                        some(def) {
+                            self.def_map.insert(interface_reference.id, def);
+                        }
+                    }
+                }
+            }
 
-            // We also need a new scope for the method-specific
-            // type parameters.
+            // Resolve the self type.
+            self.resolve_type(self_type, visitor);
 
-            let borrowed_type_parameters = &method.tps;
-            self.resolve_function(NormalRibKind,
-                                  some(@method.decl),
-                                  HasTypeParameters(borrowed_type_parameters,
-                                                    method.id),
-                                  method.body,
-                                  HasSelfBinding(id),
-                                  visitor);
+            for methods.each {
+                |method|
+
+                // We also need a new scope for the method-specific
+                // type parameters.
+
+                let borrowed_type_parameters = &method.tps;
+                self.resolve_function(NormalRibKind,
+                                      some(@method.decl),
+                                      HasTypeParameters
+                                        (borrowed_type_parameters, method.id),
+                                      method.body,
+                                      HasSelfBinding(id),
+                                      visitor);
+            }
         }
     }
 
@@ -3272,9 +3335,6 @@ class Resolver {
     }
 
     fn record_impls_for_expr_if_necessary(expr: @expr) {
-        self.session.span_warn(expr.span,
-                               "recording impls for expr if necessary");
-
         alt expr.node {
             expr_field(*) | expr_path(*) | expr_cast(*) | expr_binary(*) |
             expr_unary(*) | expr_assign_op(*) | expr_index(*) {
