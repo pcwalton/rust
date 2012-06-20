@@ -2544,6 +2544,7 @@ fn iface_methods(cx: ctxt, id: ast::def_id) -> @[method] {
 
 fn impl_iface(cx: ctxt, id: ast::def_id) -> option<t> {
     if id.crate == ast::local_crate {
+        #debug("(impl_iface) searching for iface impl %?", id);
         alt cx.items.find(id.node) {
            some(ast_map::node_item(@{node: ast::item_impl(
               _, _, some(@{id: id, _}), _, _), _}, _)) {
@@ -2553,7 +2554,8 @@ fn impl_iface(cx: ctxt, id: ast::def_id) -> option<t> {
                            _},_)) {
              alt cx.def_map.find(id.node) {
                some(def_ty(iface_id)) {
-                   some(node_id_to_type(cx, id.node))
+                   #debug("(impl_iface) found iface id %?", iface_id);
+                   some(node_id_to_type(cx, iface_id.node))
                }
                _ {
                  cx.sess.bug("impl_iface: iface ref isn't in iface map \

@@ -374,10 +374,12 @@ fn visit_expr(expr: @expr, &&self: @ir_maps, vt: vt<@ir_maps>) {
         let proto = ty::ty_fn_proto(ty::expr_ty(self.tcx, expr));
         let cvs = capture::compute_capture_vars(self.tcx, expr.id,
                                                 proto, cap_clause);
+        #debug("(visit expr) capture vars are %?", cvs);
         let mut call_caps = [];
         for cvs.each { |cv|
             alt relevant_def(cv.def) {
               some(rv) {
+                #debug("(visit expr) found relevant capture def %?", rv);
                 let cv_ln = (*self).add_live_node(lnk_freevar(cv.span));
                 let is_move = alt cv.mode {
                   cap_move | cap_drop {true} // var must be dead afterwards

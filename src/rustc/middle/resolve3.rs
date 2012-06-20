@@ -11,12 +11,12 @@ import syntax::ast::{def_region, def_self, def_ty, def_ty_param, def_upvar};
 import syntax::ast::{def_use, def_variant, expr, expr_assign_op, expr_binary};
 import syntax::ast::{expr_cast, expr_field, expr_fn, expr_fn_block};
 import syntax::ast::{expr_index, expr_new, expr_path, expr_unary, fn_decl};
-import syntax::ast::{ident, iface_ref, impure_fn, instance_var, item, item_class};
-import syntax::ast::{item_const, item_enum, item_fn, item_iface, item_impl};
-import syntax::ast::{item_mod, item_native_mod, item_res, item_ty, local};
-import syntax::ast::{local_crate, method, native_item, native_item_fn};
+import syntax::ast::{ident, iface_ref, impure_fn, instance_var, item};
+import syntax::ast::{item_class, item_const, item_enum, item_fn, item_iface};
+import syntax::ast::{item_impl, item_mod, item_native_mod, item_res, item_ty};
+import syntax::ast::{local, local_crate, method, native_item, native_item_fn};
 import syntax::ast::{node_id, pat, pat_enum, pat_ident, path, prim_ty};
-import syntax::ast::{stmt_decl, ty, ty_bool, ty_char, ty_f, ty_f32, ty_f64};
+import syntax::ast::{stmt_decl, ty, ty_bool, ty_char, ty_constr, ty_f, ty_f32, ty_f64};
 import syntax::ast::{ty_float, ty_i, ty_i16, ty_i32, ty_i64, ty_i8, ty_int};
 import syntax::ast::{ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64};
 import syntax::ast::{ty_u8, ty_uint, variant, view_item, view_item_export};
@@ -311,7 +311,7 @@ class Module {
     let mut resolved_import_count: uint;
 
     // The list of implementation scopes, rooted from this module.
-    let mut impl_scopes: @list<ImplScope>;
+    let mut impl_scopes: ImplScopes;
 
     new(parent_link: ParentLink, def_id: option<def_id>) {
         self.parent_link = parent_link;
@@ -720,12 +720,45 @@ class Resolver {
 
                 visit_item(item, new_parent, visitor);
             }
-            item_class(_, _, _, ctor, _, _) {
+            item_class(_, _, class_members, ctor, _, _) {
                 (*name_bindings).define_type(def_ty(local_def(item.id)));
 
                 let purity = ctor.node.dec.purity;
                 let ctor_def = def_fn(local_def(ctor.node.id), purity);
                 (*name_bindings).define_value(ctor_def);
+
+                // Create the set of implementation information that the
+                // implementation scopes (ImplScopes) need and write it into
+                // the implementation definition list for this set of name
+                // bindings.
+
+                let mut method_infos = [];
+                for class_members.each {
+                    |class_member|
+                    alt class_member.node {
+                        class_method(method) {
+                            // FIXME: Combine with impl method code below.
+                            method_infos += [
+                                @{
+                                    did: local_def(method.id),
+                                    n_tps: method.tps.len(),
+                                    ident: method.ident
+                                }
+                            ];
+                        }
+                        instance_var(*) {
+                            // Don't need to do anything with this.
+                        }
+                    }
+                }
+
+                let impl_info = @{
+                    did: local_def(item.id),
+                    ident: /* FIXME: bad */ copy item.ident,
+                    methods: method_infos
+                };
+
+                (*name_bindings).define_impl(impl_info);
 
                 visit_item(item, new_parent, visitor);
             }
@@ -2335,59 +2368,58 @@ class Resolver {
         self.current_module = orig_module;
     }
 
-    fn search_ribs(ribs: @dvec<@Rib>, name: Atom, rib_kind: RibKind)
-                -> option<def_like> {
+    // Wraps the given definition in the appropriate number of `def_upvar`
+    // wrappers.
+
+    fn upvarify(ribs: @dvec<@Rib>, rib_index: uint, def_like: def_like)
+             -> def_like {
+
+        let mut def;
+        alt def_like {
+            dl_def(d @ def_local(*)) | dl_def(d @ def_upvar(*)) |
+            dl_def(d @ def_arg(*)) | dl_def(d @ def_self(*)) {
+                def = d;
+            }
+            _ {
+                ret def_like;
+            }
+        }
+
+        let mut rib_index = rib_index + 1u;
+        while rib_index < (*ribs).len() {
+            let rib = (*ribs).get_elt(rib_index);
+            alt rib.kind {
+                NormalRibKind {
+                    // Nothing to do. Continue.
+                }
+                FunctionRibKind(function_id) {
+                    def = def_upvar(def_id_of_def(def).node,
+                                    @def,
+                                    function_id);
+                }
+            }
+
+            rib_index += 1u;
+        }
+
+        ret dl_def(def);
+    }
+
+    fn search_ribs(ribs: @dvec<@Rib>, name: Atom) -> option<def_like> {
 
         // FIXME: This should not use a while loop.
         // TODO: Try caching?
 
-        let mut rib_kind = rib_kind;
         let mut i = (*ribs).len();
         while i != 0u {
             i -= 1u;
             let rib = (*ribs).get_elt(i);
             alt rib.bindings.find(name) {
                 some(def_like) {
-                    // Translate the definition to an upvar definition
-                    // (`def_upvar`) if necessary.
-
-                    alt rib_kind {
-                        NormalRibKind {
-                            // No translation necessary.
-                            ret some(def_like);
-                        }
-                        FunctionRibKind(function_id) {
-                            // Translate to an upvar definition if necessary.
-                            alt def_like {
-                                dl_def(def @ def_local(*)) |
-                                        dl_def(def @ def_upvar(*)) |
-                                        dl_def(def @ def_arg(*)) |
-                                        dl_def(def @ def_self(*)) {
-
-                                    #debug("(searching ribs) found upvar"); 
-                                    ret some(dl_def(def_upvar
-                                        (def_id_of_def(def).node, @def,
-                                         function_id)));
-                                }
-                                _ {
-                                    ret some(def_like);
-                                }
-                            }
-                        }
-                    }
+                    ret some(self.upvarify(ribs, i, def_like));
                 }
                 none {
                     // Continue.
-                }
-            }
-
-            // Change the rib kind if we pass through a function closure.
-            alt rib.kind {
-                FunctionRibKind(_) {
-                    rib_kind = rib.kind;
-                }
-                NormalRibKind {
-                    // Nothing to do.
                 }
             }
         }
@@ -2495,11 +2527,15 @@ class Resolver {
                 (*self.type_ribs).pop();
             }
 
-            item_class(ty_params, _, class_members, constructor,
+            item_class(ty_params, interfaces, class_members, constructor,
                        optional_destructor, _) {
 
-                self.resolve_class(item.id, @copy ty_params, class_members,
-                                   constructor, optional_destructor,
+                self.resolve_class(item.id,
+                                   @copy ty_params,
+                                   interfaces,
+                                   class_members,
+                                   constructor,
+                                   optional_destructor,
                                    visitor);
             }
 
@@ -2660,11 +2696,11 @@ class Resolver {
                             none {
                                 self.session.span_warn(constraint.span,
                                                        "(resolving function) \
-                                                        use of unknown \
+                                                        use of undeclared \
                                                         constraint");
                             }
                             some(def) {
-                                self.def_map.insert(constraint.node.id, def);
+                                self.record_def(constraint.node.id, def);
                             }
                         }
                     }
@@ -2703,16 +2739,46 @@ class Resolver {
 
     fn resolve_class(id: node_id,
                      type_parameters: @[ty_param],
+                     interfaces: [@iface_ref],
                      class_members: [@class_member],
                      constructor: class_ctor,
                      optional_destructor: option<class_dtor>,
                      visitor: ResolveVisitor) {
+
+        // Add a type into the def map. This is needed to prevent an ICE in
+        // ty::impl_iface.
+
+        // Resolve the type parameters.
+        self.resolve_type_parameters(*type_parameters, visitor);
 
         // If applicable, create a rib for the type parameters.
         let borrowed_type_parameters: &[ty_param] = &*type_parameters;
         self.with_type_parameter_rib(HasTypeParameters
                                      (borrowed_type_parameters, id)) {
             ||
+
+            // Resolve implemented interfaces.
+            for interfaces.each {
+                |interface|
+
+                alt self.resolve_path(interface.path, TypeNS, true, visitor) {
+                    none {
+                        self.session.span_warn(interface.path.span,
+                                               "attempt to implement an \
+                                                unknown interface");
+                    }
+                    some(def) {
+                        // Write a mapping from the interface ID to the
+                        // definition of the interface into the definition
+                        // map.
+
+                        #debug("(resolving class) found iface def: %?", def);
+
+                        self.record_def(interface.id, def);
+                        self.record_def(id, def);
+                    }
+                }
+            }
 
             // Resolve methods.
             for class_members.each {
@@ -2786,14 +2852,14 @@ class Resolver {
                 }
                 some(interface_reference) {
                     alt self.resolve_path(interface_reference.path, TypeNS,
-                                           true, visitor) {
+                                          true, visitor) {
                         none {
                             self.session.span_warn(span,
                                                    "attempt to implement an \
                                                     unknown interface");
                         }
                         some(def) {
-                            self.def_map.insert(interface_reference.id, def);
+                            self.record_def(interface_reference.id, def);
                         }
                     }
                 }
@@ -2837,10 +2903,6 @@ class Resolver {
         // Resolve the type.
         self.resolve_type(local.node.ty, visitor);
 
-        // Resolve the pattern.
-        self.resolve_pattern(local.node.pat, IrrefutableMode, mutability,
-                             visitor);
-
         // Resolve the initializer, if necessary.
         alt local.node.init {
             none {
@@ -2850,6 +2912,10 @@ class Resolver {
                 self.resolve_expr(initializer.expr, visitor);
             }
         }
+
+        // Resolve the pattern.
+        self.resolve_pattern(local.node.pat, IrrefutableMode, mutability,
+                             visitor);
     }
 
     fn resolve_arm(arm: arm, visitor: ResolveVisitor) {
@@ -2941,12 +3007,33 @@ class Resolver {
                         #debug("(resolving type) writing resolution for '%s' (id \
                                 %d)",
                                connect(path.idents, "::"), path_id);
-                        self.def_map.insert(path_id, def);
+                        self.record_def(path_id, def);
                     }
                     none {
                         self.session.span_warn
                             (ty.span, #fmt("use of undeclared type name '%s'",
                                            connect(path.idents, "::")));
+                    }
+                }
+            }
+
+            ty_constr(base_type, constraints) {
+                self.resolve_type(base_type, visitor);
+
+                for constraints.each {
+                    |constraint|
+
+                    alt self.resolve_path(constraint.node.path, ValueNS,
+                                          false, visitor) {
+                        none {
+                            self.session.span_warn(constraint.span,
+                                                   "(resolving function) \
+                                                    use of undeclared \
+                                                    constraint");
+                        }
+                        some(def) {
+                            self.record_def(constraint.node.id, def);
+                        }
                     }
                 }
             }
@@ -2988,7 +3075,7 @@ class Resolver {
                                     enum variant",
                                    path.idents[0]);
 
-                            self.def_map.insert(pattern.id, def);
+                            self.record_def(pattern.id, def);
                         }
                         none {
                             #debug("(resolving pattern) binding '%s'",
@@ -2996,25 +3083,28 @@ class Resolver {
 
                             let is_mutable = mutability == Mutable;
 
-                            let mut def_like;
+                            let mut def;
                             alt mode {
                                 RefutableMode {
                                     // For pattern arms, we must use
                                     // `def_binding` definitions.
 
-                                    def_like =
-                                        dl_def(def_binding(pattern.id));
+                                    def = def_binding(pattern.id);
                                 }
                                 IrrefutableMode {
                                     // But for locals, we use `def_local`.
-                                    def_like =
-                                        dl_def(def_local(pattern.id,
-                                                         is_mutable));
+                                    def = def_local(pattern.id, is_mutable);
                                 }
                             }
 
+                            // Record the definition so that later passes
+                            // will be able to distinguish variants from
+                            // locals in patterns. Also, add the binding to
+                            // the local ribs.
+
+                            self.record_def(pattern.id, def);
                             (*self.value_ribs).last().bindings.insert
-                                (atom, def_like);
+                                (atom, dl_def(def));
                         }
                     }
 
@@ -3029,7 +3119,7 @@ class Resolver {
                     // These two must be enum variants.
                     alt self.resolve_path(path, ValueNS, false, visitor) {
                         some(def @ def_variant(*)) {
-                            self.def_map.insert(pattern.id, def);
+                            self.record_def(pattern.id, def);
                         }
                         some(_) {
                             self.session.span_warn(path.span,
@@ -3225,14 +3315,10 @@ class Resolver {
         let mut search_result;
         alt namespace {
             ValueNS {
-                search_result = self.search_ribs(self.value_ribs,
-                                                 name,
-                                                 NormalRibKind);
+                search_result = self.search_ribs(self.value_ribs, name);
             }
             TypeNS {
-                search_result = self.search_ribs(self.type_ribs,
-                                                 name,
-                                                 NormalRibKind);
+                search_result = self.search_ribs(self.type_ribs, name);
             }
             ModuleNS | ImplNS {
                 fail "module or impl namespaces do not have local ribs";
@@ -3242,8 +3328,9 @@ class Resolver {
         alt search_result {
             some(dl_def(def)) {
                 #debug("(resolving path in local ribs) resolved '%s' to \
-                        local",
-                       *(*self.atom_table).atom_to_str(name));
+                        local: %?",
+                       *(*self.atom_table).atom_to_str(name),
+                       def);
                 ret some(def);
             }
             some(dl_field) | some(dl_impl(_)) | none {
@@ -3306,7 +3393,7 @@ class Resolver {
                         // Write the result into the def map.
                         #debug("(resolving expr) resolved '%s'",
                                connect(path.idents, "::"));
-                        self.def_map.insert(expr.id, def);
+                        self.record_def(expr.id, def);
                     }
                     none {
                         self.session.span_warn(expr.span,
@@ -3338,10 +3425,12 @@ class Resolver {
         alt expr.node {
             expr_field(*) | expr_path(*) | expr_cast(*) | expr_binary(*) |
             expr_unary(*) | expr_assign_op(*) | expr_index(*) {
+                self.dump_impl_scopes(self.current_module.impl_scopes);
                 self.impl_map.insert(expr.id,
                                      self.current_module.impl_scopes);
             }
             expr_new(container, _, _) {
+                self.dump_impl_scopes(self.current_module.impl_scopes);
                 self.impl_map.insert(container.id,
                                      self.current_module.impl_scopes);
             }
@@ -3349,6 +3438,11 @@ class Resolver {
                 // Nothing to do.
             }
         }
+    }
+
+    fn record_def(node_id: node_id, def: def) {
+        #debug("(recording def) recording %? for %?", def, node_id);
+        self.def_map.insert(node_id, def);
     }
 
     //
@@ -3452,6 +3546,31 @@ class Resolver {
             #debug("* %s:%s%s%s%s",
                    *(*self.atom_table).atom_to_str(name),
                    module_repr, value_repr, type_repr, impl_repr);
+        }
+    }
+
+    fn dump_impl_scopes(impl_scopes: ImplScopes) {
+        #debug("Dump of impl scopes:");
+
+        let mut i = 0u;
+        let mut impl_scopes = impl_scopes;
+        loop {
+            alt *impl_scopes {
+                cons(impl_scope, rest_impl_scopes) {
+                    #debug("Impl scope %u:", i);
+
+                    for (*impl_scope).each {
+                        |implementation|
+                        #debug("Impl: %s", implementation.ident);
+                    }
+
+                    i += 1u;
+                    impl_scopes = rest_impl_scopes;
+                }
+                nil {
+                    break;
+                }
+            }
         }
     }
 }
