@@ -3,7 +3,7 @@ import metadata::csearch::{each_path, get_impls_for_mod, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
 import syntax::ast::{_mod, arm, blk, bound_const, bound_copy, bound_iface};
-import syntax::ast::{bound_send, class_ctor, class_dtor, class_member};
+import syntax::ast::{bound_send, capture_clause, class_ctor, class_dtor, class_member};
 import syntax::ast::{class_method, crate, crate_num, decl_item, def, def_arg};
 import syntax::ast::{def_binding, def_class, def_const, def_fn, def_id};
 import syntax::ast::{def_local, def_mod, def_native_mod, def_prim_ty};
@@ -77,6 +77,11 @@ enum Mutability {
 enum SelfBinding {
     NoSelfBinding,
     HasSelfBinding(node_id)
+}
+
+enum CaptureClause {
+    NoCaptureClause,
+    HasCaptureClause(capture_clause)
 }
 
 type ResolveVisitor = vt<()>;
@@ -2579,6 +2584,7 @@ class Resolver {
                                       HasTypeParameters(&ty_params, item.id),
                                       block,
                                       NoSelfBinding,
+                                      NoCaptureClause,
                                       visitor);
             }
 
@@ -2632,6 +2638,7 @@ class Resolver {
                         type_parameters: TypeParameters,
                         block: blk,
                         self_binding: SelfBinding,
+                        capture_clause: CaptureClause,
                         visitor: ResolveVisitor) {
 
         // Resolve the type parameters.
@@ -2695,12 +2702,37 @@ class Resolver {
                                               false, visitor) {
                             none {
                                 self.session.span_warn(constraint.span,
-                                                       "(resolving function) \
-                                                        use of undeclared \
+                                                       "use of undeclared \
                                                         constraint");
                             }
                             some(def) {
                                 self.record_def(constraint.node.id, def);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check each element of the capture clause.
+            alt capture_clause {
+                NoCaptureClause {
+                    // Nothing to do.
+                }
+                HasCaptureClause(capture_clause) {
+                    // Resolve each captured item.
+                    for (*capture_clause).each {
+                        |capture_item|
+                        alt self.resolve_identifier(capture_item.name,
+                                                    ValueNS,
+                                                    true) {
+                            none {
+                                self.session.span_warn(capture_item.span,
+                                                       "use of undeclared \
+                                                        identifier in \
+                                                        capture clause");
+                            }
+                            some(def) {
+                                self.record_def(capture_item.id, def);
                             }
                         }
                     }
@@ -2795,6 +2827,7 @@ class Resolver {
                                               type_parameters,
                                               method.body,
                                               HasSelfBinding(id),
+                                              NoCaptureClause,
                                               visitor);
                     }
                     instance_var(_, field_type, _, _, _) {
@@ -2809,6 +2842,7 @@ class Resolver {
                                   NoTypeParameters,
                                   constructor.node.body,
                                   HasSelfBinding(id),
+                                  NoCaptureClause,
                                   visitor);
 
 
@@ -2823,6 +2857,7 @@ class Resolver {
                                           NoTypeParameters,
                                           destructor.node.body,
                                           HasSelfBinding(id),
+                                          NoCaptureClause,
                                           visitor);
                 }
             }
@@ -2881,6 +2916,7 @@ class Resolver {
                                         (borrowed_type_parameters, method.id),
                                       method.body,
                                       HasSelfBinding(id),
+                                      NoCaptureClause,
                                       visitor);
             }
         }
@@ -3195,8 +3231,18 @@ class Resolver {
             ret self.resolve_module_relative_path(path, namespace);
         }
 
+        ret self.resolve_identifier(path.idents.last(),
+                                    namespace,
+                                    check_ribs);
+    }
+
+    fn resolve_identifier(identifier: ident,
+                          namespace: Namespace,
+                          check_ribs: bool)
+                       -> option<def> {
+
         if check_ribs {
-            alt self.resolve_path_in_local_ribs(path, namespace) {
+            alt self.resolve_identifier_in_local_ribs(identifier, namespace) {
                 some(def) {
                     ret some(def);
                 }
@@ -3206,8 +3252,8 @@ class Resolver {
             }
         }
 
-        ret self.resolve_item_by_identifier_in_lexical_scope
-            (path.idents.last(), namespace);
+        ret self.resolve_item_by_identifier_in_lexical_scope(identifier,
+                                                             namespace);
     }
 
     fn resolve_module_relative_path(path: @path, namespace: Namespace)
@@ -3305,11 +3351,11 @@ class Resolver {
         ret none;
     }
 
-    fn resolve_path_in_local_ribs(path: @path, namespace: Namespace)
-            -> option<def> {
+    fn resolve_identifier_in_local_ribs(identifier: ident,
+                                        namespace: Namespace)
+                                     -> option<def> {
         
-        assert path.idents.len() == 1u;
-        let name = (*self.atom_table).intern(@copy path.idents[0]);
+        let name = (*self.atom_table).intern(@copy identifier);
 
         // Check the local set of ribs.
         let mut search_result;
@@ -3406,12 +3452,14 @@ class Resolver {
                 visit_expr(expr, (), visitor);
             }
 
-            expr_fn(_, fn_decl, block, _) | expr_fn_block(fn_decl, block, _) {
+            expr_fn(_, fn_decl, block, capture_clause) |
+            expr_fn_block(fn_decl, block, capture_clause) {
                 self.resolve_function(FunctionRibKind(expr.id),
                                       some(@fn_decl),
                                       NoTypeParameters,
                                       block,
                                       NoSelfBinding,
+                                      HasCaptureClause(capture_clause),
                                       visitor);
             }
 
