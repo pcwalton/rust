@@ -717,9 +717,9 @@ class Resolver {
                                                          visitor);
                 }
             }
-            item_res(decl, _, _, _, _, _) {
+            item_res(decl, _, _, _, constructor_id, _) {
                 let purity = decl.purity;
-                let value_def = def_fn(local_def(item.id), purity);
+                let value_def = def_fn(local_def(constructor_id), purity);
                 (*name_bindings).define_value(value_def);
                 (*name_bindings).define_type(def_ty(local_def(item.id)));
 
@@ -942,7 +942,8 @@ class Resolver {
 
                 self.with_type_parameter_rib
                         (HasTypeParameters(&type_parameters,
-                                           native_item.id)) {
+                                           native_item.id),
+                         0u) {
                     ||
 
                     visit_native_item(native_item, new_parent, visitor);
@@ -2474,7 +2475,8 @@ class Resolver {
             item_enum(_, type_parameters, _) |
             item_ty(_, type_parameters, _) {
                 self.with_type_parameter_rib
-                        (HasTypeParameters(&type_parameters, item.id)) {
+                        (HasTypeParameters(&type_parameters, item.id),
+                         0u) {
                     ||
 
                     visit_item(item, (), visitor);
@@ -2501,7 +2503,8 @@ class Resolver {
 
                 // Create a new rib for the interface-wide type parameters.
                 self.with_type_parameter_rib
-                        (HasTypeParameters(&type_parameters, item.id)) {
+                        (HasTypeParameters(&type_parameters, item.id),
+                         0u) {
                     ||
 
                     for methods.each {
@@ -2515,7 +2518,8 @@ class Resolver {
                         //
 
                         self.with_type_parameter_rib
-                            (HasTypeParameters(&method.tps, item.id)) {
+                                (HasTypeParameters(&method.tps, item.id),
+                                 type_parameters.len()) {
                             ||
 
                             for method.decl.inputs.each {
@@ -2565,7 +2569,9 @@ class Resolver {
                             native_item_fn(_, type_parameters) {
                                 self.with_type_parameter_rib
                                     (HasTypeParameters(&type_parameters,
-                                                       native_item.id)) {
+                                                       native_item.id),
+                                     0u) {
+
                                     ||
 
                                     visit_native_item(native_item, (),
@@ -2594,7 +2600,10 @@ class Resolver {
         }
     }
 
-    fn with_type_parameter_rib(type_parameters: TypeParameters, f: fn()) {
+    fn with_type_parameter_rib(type_parameters: TypeParameters,
+                               initial_index: uint,
+                               f: fn()) {
+
         alt type_parameters {
             HasTypeParameters(type_parameters, node_id) 
                     if (*type_parameters).len() >= 1u {
@@ -2608,7 +2617,8 @@ class Resolver {
                     let name =
                         (*self.atom_table).intern(@copy type_parameter.ident);
                     let def_like = dl_def(def_ty_param
-                        (local_def(type_parameter.id), index));
+                        (local_def(type_parameter.id),
+                         index + initial_index));
                     (*function_type_rib).bindings.insert(name, def_like);
                 }
             }
@@ -2641,13 +2651,29 @@ class Resolver {
                         capture_clause: CaptureClause,
                         visitor: ResolveVisitor) {
 
-        // Resolve the type parameters.
-        alt type_parameters {
-            NoTypeParameters {
-                // Continue.
+        // Check each element of the capture clause.
+        alt capture_clause {
+            NoCaptureClause {
+                // Nothing to do.
             }
-            HasTypeParameters(type_parameters, _) {
-                self.resolve_type_parameters(*type_parameters, visitor);
+            HasCaptureClause(capture_clause) {
+                // Resolve each captured item.
+                for (*capture_clause).each {
+                    |capture_item|
+                    alt self.resolve_identifier(capture_item.name,
+                                                ValueNS,
+                                                true) {
+                        none {
+                            self.session.span_warn(capture_item.span,
+                                                   "use of undeclared \
+                                                    identifier in \
+                                                    capture clause");
+                        }
+                        some(def) {
+                            self.record_def(capture_item.id, def);
+                        }
+                    }
+                }
             }
         }
 
@@ -2656,8 +2682,18 @@ class Resolver {
         (*self.value_ribs).push(function_value_rib);
 
         // If this function has type parameters, add them now.
-        self.with_type_parameter_rib(type_parameters) {
+        self.with_type_parameter_rib(type_parameters, 0u) {
             ||
+
+            // Resolve the type parameters.
+            alt type_parameters {
+                NoTypeParameters {
+                    // Continue.
+                }
+                HasTypeParameters(type_parameters, _) {
+                    self.resolve_type_parameters(*type_parameters, visitor);
+                }
+            }
 
             // Add self to the rib, if necessary.
             alt self_binding {
@@ -2713,32 +2749,6 @@ class Resolver {
                 }
             }
 
-            // Check each element of the capture clause.
-            alt capture_clause {
-                NoCaptureClause {
-                    // Nothing to do.
-                }
-                HasCaptureClause(capture_clause) {
-                    // Resolve each captured item.
-                    for (*capture_clause).each {
-                        |capture_item|
-                        alt self.resolve_identifier(capture_item.name,
-                                                    ValueNS,
-                                                    true) {
-                            none {
-                                self.session.span_warn(capture_item.span,
-                                                       "use of undeclared \
-                                                        identifier in \
-                                                        capture clause");
-                            }
-                            some(def) {
-                                self.record_def(capture_item.id, def);
-                            }
-                        }
-                    }
-                }
-            }
-
             // Resolve the function body.
             self.resolve_block(block, visitor);
 
@@ -2780,14 +2790,15 @@ class Resolver {
         // Add a type into the def map. This is needed to prevent an ICE in
         // ty::impl_iface.
 
-        // Resolve the type parameters.
-        self.resolve_type_parameters(*type_parameters, visitor);
-
         // If applicable, create a rib for the type parameters.
         let borrowed_type_parameters: &[ty_param] = &*type_parameters;
         self.with_type_parameter_rib(HasTypeParameters
-                                     (borrowed_type_parameters, id)) {
+                                     (borrowed_type_parameters, id),
+                                     0u) {
             ||
+
+            // Resolve the type parameters.
+            self.resolve_type_parameters(*type_parameters, visitor);
 
             // Resolve implemented interfaces.
             for interfaces.each {
@@ -2807,6 +2818,10 @@ class Resolver {
                         #debug("(resolving class) found iface def: %?", def);
 
                         self.record_def(interface.id, def);
+
+                        // FIXME: This is wrong but is needed for tests to
+                        // pass.
+
                         self.record_def(id, def);
                     }
                 }
@@ -2871,14 +2886,15 @@ class Resolver {
                               self_type: @ty,
                               methods: [@method],
                               visitor: ResolveVisitor) {
-        // Resolve the type parameters.
-        self.resolve_type_parameters(type_parameters, visitor);
-
         // If applicable, create a rib for the type parameters.
         let borrowed_type_parameters: &[ty_param] = &type_parameters;
         self.with_type_parameter_rib(HasTypeParameters
-                                     (borrowed_type_parameters, id)) {
+                                     (borrowed_type_parameters, id),
+                                     0u) {
             ||
+
+            // Resolve the type parameters.
+            self.resolve_type_parameters(type_parameters, visitor);
 
             // Resolve the interface reference, if necessary.
             alt interface_reference {

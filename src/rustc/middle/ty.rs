@@ -2554,6 +2554,7 @@ fn impl_iface(cx: ctxt, id: ast::def_id) -> option<t> {
                            _},_)) {
              alt cx.def_map.find(id.node) {
                some(def_ty(iface_id)) {
+                   // FIXME: Doesn't work cross-crate.
                    #debug("(impl_iface) found iface id %?", iface_id);
                    some(node_id_to_type(cx, iface_id.node))
                }
