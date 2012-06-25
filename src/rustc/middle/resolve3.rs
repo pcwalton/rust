@@ -1729,6 +1729,56 @@ class Resolver {
         ret Success(());
     }
 
+    fn resolve_module_path_from_root(module: @Module,
+                                     module_path: @dvec<Atom>,
+                                     index: uint)
+                                  -> ResolveResult<@Module> {
+        let mut search_module = module;
+        let mut index = index;
+        let module_path_len = (*module_path).len();
+
+        // Resolve the module part of the path. This does not involve looking
+        // upward though scope chains; we simply resolve names directly in
+        // modules as we go.
+
+        while index < module_path_len {
+            let name = (*module_path).get_elt(index);
+            alt self.resolve_name_in_module(search_module, name, ModuleNS) {
+
+                Failed {
+                    #debug("!!! (resolving module path for import) module \
+                           resolution failed: %s",
+                           *(*self.atom_table).atom_to_str(name));
+                    ret Failed;
+                }
+                Indeterminate {
+                    #debug("(resolving module path for import) module \
+                           resolution is indeterminate: %s",
+                           *(*self.atom_table).atom_to_str(name));
+                    ret Indeterminate;
+                }
+                Success(target) {
+                    alt target.bindings.module_def {
+                        NoModuleDef {
+                            // Not a module.
+                            #debug("!!! (resolving module path for import) \
+                                   not a module: %s",
+                                   *(*self.atom_table).atom_to_str(name));
+                            ret Failed;
+                        }
+                        ModuleDef(module) {
+                            search_module = module;
+                        }
+                    }
+                }
+            }
+
+            index += 1u;
+        }
+
+        ret Success(search_module);
+    }
+
     #[doc="
         Attempts to resolve the module part of an import directive rooted at
         the given module.
@@ -1768,48 +1818,9 @@ class Resolver {
             }
         }
 
-        // Now resolve the rest of the path. This does not involve looking
-        // upward though scope chains; we simply resolve names directly in
-        // modules as we go.
-
-        let mut index = 1u;
-        while index < module_path_len {
-            let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module, name, ModuleNS) {
-
-                Failed {
-                    #debug("!!! (resolving module path for import) module \
-                           resolution failed: %s",
-                           *(*self.atom_table).atom_to_str(name));
-                    ret Failed;
-                }
-                Indeterminate {
-                    #debug("(resolving module path for import) module \
-                           resolution is indeterminate: %s",
-                           *(*self.atom_table).atom_to_str(name));
-                    ret Indeterminate;
-                }
-                Success(target) {
-                    alt target.bindings.module_def {
-                        NoModuleDef {
-                            // Not a module.
-                            #debug("!!! (resolving module path for import) \
-                                   not a module: %s",
-                                   *(*self.atom_table).atom_to_str(name));
-                            ret Failed;
-                        }
-                        ModuleDef(module) {
-                            search_module = module;
-                        }
-                    }
-                }
-            }
-
-            index += 1u;
-        }
-
-        #debug("(resolving module path for import) resolved module");
-        ret Success(search_module);
+        ret self.resolve_module_path_from_root(search_module,
+                                               module_path,
+                                               1u);
     }
 
     fn resolve_item_in_lexical_scope(module: @Module,
@@ -3268,7 +3279,11 @@ class Resolver {
             self.resolve_type(ty, visitor);
         }
 
-        if path.global || path.idents.len() > 1u {
+        if path.global {
+            ret self.resolve_crate_relative_path(path, namespace);
+        }
+
+        if path.idents.len() > 1u {
             ret self.resolve_module_relative_path(path, namespace);
         }
 
@@ -3297,47 +3312,13 @@ class Resolver {
                                                              namespace);
     }
 
-    fn resolve_module_relative_path(path: @path, namespace: Namespace)
-            -> option<def> {
-
-        let module_path_atoms = @dvec();
-        for path.idents.eachi {
-            |index, ident|
-            if index == path.idents.len() - 1u {
-                break;
-            }
-
-            (*module_path_atoms).push((*self.atom_table).intern(@copy ident));
-        }
-
-        let mut containing_module;
-        alt self.resolve_module_path_for_import(self.current_module,
-                                                module_path_atoms) {
-
-            Failed {
-                self.session.span_warn(path.span,
-                                       #fmt("use of undeclared module `%s`",
-                                             *(*self.atom_table).atoms_to_str
-                                               ((*module_path_atoms).get())));
-                ret none;
-            }
-
-            Indeterminate {
-                fail "indeterminate unexpected";
-            }
-
-            Success(resulting_module) {
-                containing_module = resulting_module;
-            }
-        }
-
-        let name = (*self.atom_table).intern(@copy path.idents.last());
+    // TODO: Merge me with resolve_name_in_module?
+    fn resolve_definition_of_name_in_module(containing_module: @Module,
+                                            name: Atom,
+                                            namespace: Namespace)
+                                         -> option<def> {
 
         // First, search children.
-        //
-        // FIXME: This really should be abstracted out into a function; it's
-        // duplicated in import resolution too.
-
         alt containing_module.children.find(name) {
             some(child_name_bindings) {
                 alt (*child_name_bindings).def_for_namespace(namespace) {
@@ -3373,23 +3354,125 @@ class Resolver {
                         }
                     }
                     none {
-                        // Continue.
+                        ret none;
                     }
                 }
             }
             none {
-                // Continue.
+                ret none;
+            }
+        }
+    }
+
+    fn intern_module_part_of_path(path: @path) -> @dvec<Atom> {
+        let module_path_atoms = @dvec();
+        for path.idents.eachi {
+            |index, ident|
+            if index == path.idents.len() - 1u {
+                break;
+            }
+
+            (*module_path_atoms).push((*self.atom_table).intern(@copy ident));
+        }
+
+        ret module_path_atoms;
+    }
+
+    fn resolve_module_relative_path(path: @path, namespace: Namespace)
+                                 -> option<def> {
+
+        let module_path_atoms = self.intern_module_part_of_path(path);
+
+        let mut containing_module;
+        alt self.resolve_module_path_for_import(self.current_module,
+                                                module_path_atoms) {
+
+            Failed {
+                self.session.span_warn(path.span,
+                                       #fmt("use of undeclared module `%s`",
+                                             *(*self.atom_table).atoms_to_str
+                                               ((*module_path_atoms).get())));
+                ret none;
+            }
+
+            Indeterminate {
+                fail "indeterminate unexpected";
+            }
+
+            Success(resulting_module) {
+                containing_module = resulting_module;
             }
         }
 
-        // We failed to resolve the name. Report an error.
-        self.session.span_warn(path.span,
-                               #fmt("use of undeclared identifier: %s::%s",
-                                    *(*self.atom_table).atoms_to_str
-                                        ((*module_path_atoms).get()),
-                                    *(*self.atom_table).atom_to_str(name)));
+        let name = (*self.atom_table).intern(@copy path.idents.last());
+        alt self.resolve_definition_of_name_in_module(containing_module,
+                                                      name,
+                                                      namespace) {
+            none {
+                // We failed to resolve the name. Report an error.
+                self.session.span_warn(path.span,
+                                       #fmt("use of undeclared identifier: \
+                                             %s::%s",
+                                            *(*self.atom_table).atoms_to_str
+                                                ((*module_path_atoms).get()),
+                                            *(*self.atom_table).atom_to_str
+                                                (name)));
+                ret none;
+            }
+            some(def) {
+                ret some(def);
+            }
+        }
+    }
 
-        ret none;
+    fn resolve_crate_relative_path(path: @path, namespace: Namespace)
+                                -> option<def> {
+
+        let module_path_atoms = self.intern_module_part_of_path(path);
+
+        let root_module = (*self.graph_root).get_module();
+
+        let mut containing_module;
+        alt self.resolve_module_path_from_root(root_module,
+                                               module_path_atoms,
+                                               0u) {
+
+            Failed {
+                self.session.span_warn(path.span,
+                                       #fmt("use of undeclared module `::%s`",
+                                             *(*self.atom_table).atoms_to_str
+                                               ((*module_path_atoms).get())));
+                ret none;
+            }
+
+            Indeterminate {
+                fail "indeterminate unexpected";
+            }
+
+            Success(resulting_module) {
+                containing_module = resulting_module;
+            }
+        }
+
+        let name = (*self.atom_table).intern(@copy path.idents.last());
+        alt self.resolve_definition_of_name_in_module(containing_module,
+                                                      name,
+                                                      namespace) {
+            none {
+                // We failed to resolve the name. Report an error.
+                self.session.span_warn(path.span,
+                                       #fmt("use of undeclared identifier: \
+                                             %s::%s",
+                                            *(*self.atom_table).atoms_to_str
+                                                ((*module_path_atoms).get()),
+                                            *(*self.atom_table).atom_to_str
+                                                (name)));
+                ret none;
+            }
+            some(def) {
+                ret some(def);
+            }
+        }
     }
 
     fn resolve_identifier_in_local_ribs(identifier: ident,
