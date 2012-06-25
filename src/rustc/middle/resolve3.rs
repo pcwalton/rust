@@ -2383,7 +2383,8 @@ class Resolver {
         let mut def;
         alt def_like {
             dl_def(d @ def_local(*)) | dl_def(d @ def_upvar(*)) |
-            dl_def(d @ def_arg(*)) | dl_def(d @ def_self(*)) {
+            dl_def(d @ def_arg(*)) | dl_def(d @ def_self(*)) |
+            dl_def(d @ def_binding(*)) {
                 def = d;
             }
             _ {
@@ -2967,13 +2968,15 @@ class Resolver {
 
         // Resolve the pattern.
         self.resolve_pattern(local.node.pat, IrrefutableMode, mutability,
-                             visitor);
+                             none, visitor);
     }
 
     fn resolve_arm(arm: arm, visitor: ResolveVisitor) {
+        let bindings_list = atom_hashmap();
         for arm.pats.each {
             |pattern|
-            self.resolve_pattern(pattern, RefutableMode, Immutable, visitor);
+            self.resolve_pattern(pattern, RefutableMode, Immutable,
+                                 some(bindings_list), visitor);
         }
 
         visit_expr_opt(arm.guard, (), visitor);
@@ -3100,6 +3103,7 @@ class Resolver {
     fn resolve_pattern(pattern: @pat,
                        mode: PatternBindingMode,
                        mutability: Mutability,
+                       bindings_list: option<hashmap<Atom,()>>,
                        visitor: ResolveVisitor) {
 
         walk_pat(pattern) {
@@ -3151,12 +3155,33 @@ class Resolver {
 
                             // Record the definition so that later passes
                             // will be able to distinguish variants from
-                            // locals in patterns. Also, add the binding to
-                            // the local ribs.
+                            // locals in patterns.
 
                             self.record_def(pattern.id, def);
-                            (*self.value_ribs).last().bindings.insert
-                                (atom, dl_def(def));
+
+                            // Add the binding to the local ribs, if it
+                            // doesn't already exist in the bindings list. (We
+                            // must not add it if it's in the bindings list
+                            // because that breaks the assumptions later
+                            // passes make about or-patterns.)
+
+                            alt bindings_list {
+                                some(bindings_list)
+                                        if !bindings_list.contains_key(atom) {
+                                    let last_rib = (*self.value_ribs).last();
+                                    last_rib.bindings.insert(atom,
+                                                             dl_def(def));
+                                    bindings_list.insert(atom, ());
+                                }
+                                some(_) {
+                                    // Do nothing.
+                                }
+                                none {
+                                    let last_rib = (*self.value_ribs).last();
+                                    last_rib.bindings.insert(atom,
+                                                             dl_def(def));
+                                }
+                            }
                         }
                     }
 
