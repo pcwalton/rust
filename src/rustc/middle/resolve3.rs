@@ -109,8 +109,23 @@ enum ResolveResult<T> {
 }
 
 enum TypeParameters/& {
-    NoTypeParameters,                           // No type parameters.
-    HasTypeParameters(&[ty_param], node_id)     // Type parameters and ID.
+    NoTypeParameters,       // No type parameters.
+    HasTypeParameters(&[ty_param],  //< Type parameters
+                      node_id,      //< ID of the enclosing item
+
+                      // The index to start numbering the type parameters at.
+                      // This is zero if this is the outermost set of type
+                      // parameters, or equal to the number of outer type
+                      // parameters. For example, if we have:
+                      //
+                      //   impl I<T> {
+                      //     fn method<U>() { ... }
+                      //   }
+                      //
+                      // The index at the method site will be 1, because the
+                      // outer T had index 0.
+
+                      uint)
 }
 
 // The rib kind controls the translation of argument or local definitions
@@ -942,8 +957,8 @@ class Resolver {
 
                 self.with_type_parameter_rib
                         (HasTypeParameters(&type_parameters,
-                                           native_item.id),
-                         0u) {
+                                           native_item.id,
+                                           0u)) {
                     ||
 
                     visit_native_item(native_item, new_parent, visitor);
@@ -2487,8 +2502,7 @@ class Resolver {
             item_enum(_, type_parameters, _) |
             item_ty(_, type_parameters, _) {
                 self.with_type_parameter_rib
-                        (HasTypeParameters(&type_parameters, item.id),
-                         0u) {
+                        (HasTypeParameters(&type_parameters, item.id, 0u)) {
                     ||
 
                     visit_item(item, (), visitor);
@@ -2515,8 +2529,7 @@ class Resolver {
 
                 // Create a new rib for the interface-wide type parameters.
                 self.with_type_parameter_rib
-                        (HasTypeParameters(&type_parameters, item.id),
-                         0u) {
+                        (HasTypeParameters(&type_parameters, item.id, 0u)) {
                     ||
 
                     for methods.each {
@@ -2530,9 +2543,13 @@ class Resolver {
                         //
 
                         self.with_type_parameter_rib
-                                (HasTypeParameters(&method.tps, item.id),
-                                 type_parameters.len()) {
+                                (HasTypeParameters(&method.tps,
+                                                   item.id,
+                                                   type_parameters.len())) {
                             ||
+
+                            // Resolve the method-specific type parameters.
+                            self.resolve_type_parameters(method.tps, visitor);
 
                             for method.decl.inputs.each {
                                 |argument|
@@ -2581,8 +2598,8 @@ class Resolver {
                             native_item_fn(_, type_parameters) {
                                 self.with_type_parameter_rib
                                     (HasTypeParameters(&type_parameters,
-                                                       native_item.id),
-                                     0u) {
+                                                       native_item.id,
+                                                       0u)) {
 
                                     ||
 
@@ -2599,7 +2616,9 @@ class Resolver {
             item_res(fn_decl, ty_params, block, _, _, _) {
                 self.resolve_function(NormalRibKind,
                                       some(@fn_decl),
-                                      HasTypeParameters(&ty_params, item.id),
+                                      HasTypeParameters(&ty_params,
+                                                        item.id,
+                                                        0u),
                                       block,
                                       NoSelfBinding,
                                       NoCaptureClause,
@@ -2612,12 +2631,10 @@ class Resolver {
         }
     }
 
-    fn with_type_parameter_rib(type_parameters: TypeParameters,
-                               initial_index: uint,
-                               f: fn()) {
+    fn with_type_parameter_rib(type_parameters: TypeParameters, f: fn()) {
 
         alt type_parameters {
-            HasTypeParameters(type_parameters, node_id) 
+            HasTypeParameters(type_parameters, node_id, initial_index) 
                     if (*type_parameters).len() >= 1u {
 
                 let function_type_rib = @Rib(NormalRibKind);
@@ -2643,7 +2660,7 @@ class Resolver {
         f();
 
         alt type_parameters {
-            HasTypeParameters(type_parameters, _) 
+            HasTypeParameters(type_parameters, _, _) 
                     if (*type_parameters).len() >= 1u {
 
                 (*self.type_ribs).pop();
@@ -2694,7 +2711,7 @@ class Resolver {
         (*self.value_ribs).push(function_value_rib);
 
         // If this function has type parameters, add them now.
-        self.with_type_parameter_rib(type_parameters, 0u) {
+        self.with_type_parameter_rib(type_parameters) {
             ||
 
             // Resolve the type parameters.
@@ -2702,7 +2719,7 @@ class Resolver {
                 NoTypeParameters {
                     // Continue.
                 }
-                HasTypeParameters(type_parameters, _) {
+                HasTypeParameters(type_parameters, _, _) {
                     self.resolve_type_parameters(*type_parameters, visitor);
                 }
             }
@@ -2803,10 +2820,10 @@ class Resolver {
         // ty::impl_iface.
 
         // If applicable, create a rib for the type parameters.
+        let outer_type_parameter_count = (*type_parameters).len();
         let borrowed_type_parameters: &[ty_param] = &*type_parameters;
         self.with_type_parameter_rib(HasTypeParameters
-                                     (borrowed_type_parameters, id),
-                                     0u) {
+                                     (borrowed_type_parameters, id, 0u)) {
             ||
 
             // Resolve the type parameters.
@@ -2848,7 +2865,8 @@ class Resolver {
                         let borrowed_method_type_parameters = &method.tps;
                         let type_parameters =
                             HasTypeParameters(borrowed_method_type_parameters,
-                                              method.id);
+                                              method.id,
+                                              outer_type_parameter_count);
                         self.resolve_function(NormalRibKind,
                                               some(@method.decl),
                                               type_parameters,
@@ -2898,11 +2916,12 @@ class Resolver {
                               self_type: @ty,
                               methods: [@method],
                               visitor: ResolveVisitor) {
+
         // If applicable, create a rib for the type parameters.
+        let outer_type_parameter_count = type_parameters.len();
         let borrowed_type_parameters: &[ty_param] = &type_parameters;
         self.with_type_parameter_rib(HasTypeParameters
-                                     (borrowed_type_parameters, id),
-                                     0u) {
+                                     (borrowed_type_parameters, id, 0u)) {
             ||
 
             // Resolve the type parameters.
@@ -2941,7 +2960,9 @@ class Resolver {
                 self.resolve_function(NormalRibKind,
                                       some(@method.decl),
                                       HasTypeParameters
-                                        (borrowed_type_parameters, method.id),
+                                        (borrowed_type_parameters,
+                                         method.id,
+                                         outer_type_parameter_count),
                                       method.body,
                                       HasSelfBinding(id),
                                       NoCaptureClause,
