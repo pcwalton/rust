@@ -28,6 +28,8 @@ import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
 import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
 import syntax::visit::{visit_item, visit_method_helper, visit_mod};
 import syntax::visit::{visit_native_item, visit_ty, vt};
+
+import box::ptr_eq;
 import dvec::{dvec, extensions};
 import std::list::{cons, list, nil};
 import std::map::{hashmap, int_hash, str_hash};
@@ -1681,7 +1683,9 @@ class Resolver {
                                 some(copy type_target);
                         }
                     }
-                    if (*target_import_resolution.impl_target).len() > 0u {
+                    if (*target_import_resolution.impl_target).len() > 0u &&
+                            !ptr_eq(target_import_resolution.impl_target,
+                                    dest_import_resolution.impl_target) {
                         for (*target_import_resolution.impl_target).each {
                             |impl_target|
                             (*dest_import_resolution.impl_target).
