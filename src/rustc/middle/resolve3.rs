@@ -2468,6 +2468,11 @@ class Resolver {
     fn resolve_crate() unsafe {
         #debug("(resolving crate) starting");
 
+        // To avoid a failure in metadata encoding later, we have to add a
+        // useless nullary set of implementation scopes.
+
+        self.impl_map.insert(0, @cons(@[], @nil));
+
         // FIXME: This is awful!
         let this = ptr::addr_of(self);
         visit_crate(*self.crate, (), mk_vt(@{
@@ -2977,6 +2982,10 @@ class Resolver {
 
     fn resolve_module(module: _mod, span: span, _name: ident, id: node_id,
                       visitor: ResolveVisitor) {
+
+        // Write the implementations in scope into the module metadata.
+        #debug("(resolving module) resolving module ID %d", id);
+        self.impl_map.insert(id, self.current_module.impl_scopes);
 
         visit_mod(module, span, id, (), visitor);
     }
@@ -3622,12 +3631,10 @@ class Resolver {
         alt expr.node {
             expr_field(*) | expr_path(*) | expr_cast(*) | expr_binary(*) |
             expr_unary(*) | expr_assign_op(*) | expr_index(*) {
-                self.dump_impl_scopes(self.current_module.impl_scopes);
                 self.impl_map.insert(expr.id,
                                      self.current_module.impl_scopes);
             }
             expr_new(container, _, _) {
-                self.dump_impl_scopes(self.current_module.impl_scopes);
                 self.impl_map.insert(container.id,
                                      self.current_module.impl_scopes);
             }

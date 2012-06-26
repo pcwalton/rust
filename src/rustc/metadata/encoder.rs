@@ -396,6 +396,7 @@ fn encode_info_for_mod(ecx: @encode_ctxt, ebml_w: ebml::writer, md: _mod,
     encode_def_id(ebml_w, local_def(id));
     encode_family(ebml_w, 'm');
     encode_name(ebml_w, name);
+    #debug("(encoding info for module) encoding info for module ID %d", id);
     let impls = ecx.impl_map(id);
     for impls.each {|i|
         let (ident, did) = i;
