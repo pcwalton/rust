@@ -9,7 +9,6 @@ import uv::iotask::iotask;
 import comm::*;
 import result::*;
 import str::*;
-import future::*;
 import libc::size_t;
 
 // data
