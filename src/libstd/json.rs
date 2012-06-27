@@ -8,7 +8,7 @@ import io;
 import io::{reader_util, writer_util};
 import map;
 import map::hashmap;
-import core::vec::extensions_for_vec;
+import core::vec::extensions;
 
 export json;
 export error;

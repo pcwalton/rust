@@ -79,7 +79,7 @@ export unpack_slice;
 export unpack_const_slice;
 export unsafe;
 export u8;
-export extensions_for_vec;
+export extensions;
 
 #[abi = "cdecl"]
 native mod rustrt {
@@ -1030,7 +1030,7 @@ pure fn unpack_mut_slice<T,U>(s: [mut T]/&,
 }
 
 #[doc = "Extension methods for vectors"]
-impl extensions_for_vec/&<T> for [const T]/& {
+impl extensions/&<T> for [const T]/& {
     #[doc = "Returns true if a vector contains no elements"]
     #[inline]
     pure fn is_empty() -> bool { is_empty(self) }
@@ -1043,7 +1043,7 @@ impl extensions_for_vec/&<T> for [const T]/& {
 }
 
 #[doc = "Extension methods for vectors"]
-impl extensions_for_vec/&<T: copy> for [const T]/& {
+impl extensions/&<T: copy> for [const T]/& {
     #[doc = "Returns the first element of a vector"]
     #[inline]
     pure fn head() -> T { head(self) }
@@ -1064,7 +1064,7 @@ impl extensions_for_vec/&<T: copy> for [const T]/& {
 }
 
 #[doc = "Extension methods for vectors"]
-impl extensions_for_vec/&<T> for [T]/& {
+impl extensions/&<T> for [T]/& {
     #[doc = "Reduce a vector from right to left"]
     #[inline]
     pure fn foldr<U: copy>(z: U, p: fn(T, U) -> U) -> U { foldr(self, z, p) }
@@ -1161,7 +1161,7 @@ impl extensions_for_vec/&<T> for [T]/& {
 }
 
 #[doc = "Extension methods for vectors"]
-impl extensions_for_vec/&<T: copy> for [T]/& {
+impl extensions/&<T: copy> for [T]/& {
     #[doc = "
     Construct a new vector from the elements of a vector for which some
     predicate holds.
@@ -1320,7 +1320,7 @@ mod u8 {
 //
 // This cannot be used with iter-trait.rs because of the region pointer
 // required in the slice.
-impl extensions_for_vec/&<A> of iter::base_iter<A> for [A]/& {
+impl extensions/&<A> of iter::base_iter<A> for [A]/& {
     fn each(blk: fn(A) -> bool) { each(self, blk) }
     fn size_hint() -> option<uint> { some(len(self)) }
     fn eachi(blk: fn(uint, A) -> bool) { iter::eachi(self, blk) }
@@ -1332,7 +1332,7 @@ impl extensions_for_vec/&<A> of iter::base_iter<A> for [A]/& {
     fn contains(x: A) -> bool { iter::contains(self, x) }
     fn count(x: A) -> uint { iter::count(self, x) }
 }
-impl extensions_for_vec/&<A:copy> for [A]/& {
+impl extensions/&<A:copy> for [A]/& {
     fn filter_to_vec(pred: fn(A) -> bool) -> [A] {
         iter::filter_to_vec(self, pred)
     }

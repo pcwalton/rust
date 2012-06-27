@@ -525,8 +525,12 @@ class Resolver {
 
         self.atom_table = @AtomTable();
 
+        // The outermost module has def ID 0; this is not reflected in the
+        // AST.
+
         self.graph_root = @NameBindings();
-        (*self.graph_root).define_module(NoParentLink, none);
+        (*self.graph_root).define_module(NoParentLink,
+                                         some({ crate: 0, node: 0 }));
 
         self.unresolved_imports = 0u;
 
@@ -2302,8 +2306,9 @@ class Resolver {
     fn build_impl_scope_for_module(module: @Module) {
         let mut impl_scope = [];
 
-        #debug("(building impl scope for module) processing module %s",
-               self.module_to_str(module));
+        #debug("(building impl scope for module) processing module %s (%?)",
+               self.module_to_str(module),
+               module.def_id);
 
         // Gather up all direct children implementations in the module.
         for module.children.each {
@@ -2477,10 +2482,10 @@ class Resolver {
     fn resolve_crate() unsafe {
         #debug("(resolving crate) starting");
 
-        // To avoid a failure in metadata encoding later, we have to add a
-        // useless nullary set of implementation scopes.
+        // To avoid a failure in metadata encoding later, we have to add the
+        // crate-level implementation scopes
 
-        self.impl_map.insert(0, @cons(@[], @nil));
+        self.impl_map.insert(0, (*self.graph_root).get_module().impl_scopes);
 
         // FIXME: This is awful!
         let this = ptr::addr_of(self);

@@ -4,12 +4,12 @@ import comm::send;
 import comm::recv;
 import future_spawn = future::spawn;
 import future::future;
-import core::vec::extensions_for_vec;
+import core::vec::extensions;
 
 export map, mapi, alli, any, mapi_factory;
 
 #[doc="The maximum number of tasks this module will spawn for a single
-operationg."]
+operation."]
 const max_tasks : uint = 32u;
 
 #[doc="The minimum number of elements each task will process."]
