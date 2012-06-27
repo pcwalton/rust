@@ -3031,6 +3031,8 @@ class Resolver {
     }
 
     fn resolve_arm(arm: arm, visitor: ResolveVisitor) {
+        (*self.value_ribs).push(@Rib(NormalRibKind));
+
         let bindings_list = atom_hashmap();
         for arm.pats.each {
             |pattern|
@@ -3040,6 +3042,8 @@ class Resolver {
 
         visit_expr_opt(arm.guard, (), visitor);
         self.resolve_block(arm.body, visitor);
+
+        (*self.value_ribs).pop();
     }
 
     fn resolve_block(block: blk, visitor: ResolveVisitor) {
