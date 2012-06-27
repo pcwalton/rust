@@ -42,11 +42,12 @@ import metadata::common::link_meta;
 import util::ppaux::{ty_to_str, ty_to_short_str};
 import syntax::diagnostic::expect;
 
-import common::*;
 import build::*;
 import shape::*;
 import type_of::*;
+import common::*;
 import type_of::type_of; // Issue #1873
+import common::result;
 import syntax::ast_map::{path, path_mod, path_name};
 
 import std::smallintmap;
