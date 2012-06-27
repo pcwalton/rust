@@ -383,10 +383,10 @@ fn malloc_general(bcx: block, t: ty::t, heap: heap) ->
     let _icx = bcx.insn_ctxt("malloc_general");
     let mk_ty = alt heap { heap_shared { ty::mk_imm_box }
                            heap_exchange { ty::mk_imm_uniq } };
-    let box = malloc_raw(bcx, t, heap);
-    let non_gc_box = non_gc_box_cast(bcx, box, mk_ty(bcx.tcx(), t));
+    let llbox = malloc_raw(bcx, t, heap);
+    let non_gc_box = non_gc_box_cast(bcx, llbox, mk_ty(bcx.tcx(), t));
     let body = GEPi(bcx, non_gc_box, [0u, abi::box_field_body]);
-    ret {box: box, body: body};
+    ret {box: llbox, body: body};
 }
 
 fn malloc_boxed(bcx: block, t: ty::t) -> {box: ValueRef, body: ValueRef} {
@@ -417,9 +417,9 @@ fn malloc_unique_dyn_raw(bcx: block, t: ty::t, size: ValueRef) -> ValueRef {
 fn malloc_unique_dyn(bcx: block, t: ty::t, size: ValueRef
                     ) -> {box: ValueRef, body: ValueRef} {
     let _icx = bcx.insn_ctxt("malloc_unique_dyn");
-    let box = malloc_unique_dyn_raw(bcx, t, size);
-    let body = GEPi(bcx, box, [0u, abi::box_field_body]);
-    ret {box: box, body: body};
+    let llbox = malloc_unique_dyn_raw(bcx, t, size);
+    let body = GEPi(bcx, llbox, [0u, abi::box_field_body]);
+    ret {box: llbox, body: body};
 }
 
 // Type descriptor and type glue stuff
@@ -670,8 +670,8 @@ fn make_take_glue(bcx: block, v: ValueRef, t: ty::t) {
         closure::make_fn_glue(bcx, v, t, take_ty)
       }
       ty::ty_iface(_, _) {
-        let box = Load(bcx, GEPi(bcx, v, [0u, 1u]));
-        incr_refcnt_of_boxed(bcx, box);
+        let llbox = Load(bcx, GEPi(bcx, v, [0u, 1u]));
+        incr_refcnt_of_boxed(bcx, llbox);
         bcx
       }
       ty::ty_opaque_closure_ptr(ck) {
@@ -820,8 +820,8 @@ fn make_drop_glue(bcx: block, v0: ValueRef, t: ty::t) {
         closure::make_fn_glue(bcx, v0, t, drop_ty)
       }
       ty::ty_iface(_, _) {
-        let box = Load(bcx, GEPi(bcx, v0, [0u, 1u]));
-        decr_refcnt_maybe_free(bcx, box, ty::mk_opaque_box(ccx.tcx))
+        let llbox = Load(bcx, GEPi(bcx, v0, [0u, 1u]));
+        decr_refcnt_maybe_free(bcx, llbox, ty::mk_opaque_box(ccx.tcx))
       }
       ty::ty_opaque_closure_ptr(ck) {
         closure::make_opaque_cbox_drop_glue(bcx, ck, v0)
@@ -1528,14 +1528,14 @@ fn trans_unary(bcx: block, op: ast::unop, e: @ast::expr,
       }
       ast::neg {
         let {bcx, val} = trans_temp_expr(bcx, e);
-        let neg = if ty::type_is_fp(e_ty) {
+        let llneg = if ty::type_is_fp(e_ty) {
             FNeg(bcx, val)
         } else { Neg(bcx, val) };
-        ret store_in_dest(bcx, neg, dest);
+        ret store_in_dest(bcx, llneg, dest);
       }
       ast::box(_) {
-        let mut {box, body} = malloc_boxed(bcx, e_ty);
-        add_clean_free(bcx, box, false);
+        let mut {box: llbox, body: body} = malloc_boxed(bcx, e_ty);
+        add_clean_free(bcx, llbox, false);
         // Cast the body type to the type of the value. This is needed to
         // make enums work, since enums have a different LLVM type depending
         // on whether they're boxed or not
@@ -1543,8 +1543,8 @@ fn trans_unary(bcx: block, op: ast::unop, e: @ast::expr,
         let llety = T_ptr(type_of(ccx, e_ty));
         body = PointerCast(bcx, body, llety);
         let bcx = trans_expr_save_in(bcx, e, body);
-        revoke_clean(bcx, box);
-        ret store_in_dest(bcx, box, dest);
+        revoke_clean(bcx, llbox);
+        ret store_in_dest(bcx, llbox, dest);
       }
       ast::uniq(_) {
         ret uniq::trans_uniq(bcx, e, un_expr.id, dest);
@@ -2114,7 +2114,7 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
     }
 
     let tpt = ty::lookup_item_type(ccx.tcx, fn_id);
-    let mut item_ty = tpt.ty;
+    let mut llitem_ty = tpt.ty;
 
     let map_node = session::expect(ccx.sess, ccx.tcx.items.find(fn_id.node),
      {|| #fmt("While monomorphizing %?, couldn't find it in the item map \
@@ -2125,7 +2125,7 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
       ast_map::node_item(i, pt) {
         alt i.node {
           ast::item_res(_, _, _, dtor_id, _, _) {
-            item_ty = ty::node_id_to_type(ccx.tcx, dtor_id);
+            llitem_ty = ty::node_id_to_type(ccx.tcx, dtor_id);
           }
           _ {}
         }
@@ -2156,7 +2156,7 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
           ccx.tcx.sess.bug("Can't monomorphize a local")
       }
     };
-    let mono_ty = ty::subst_tps(ccx.tcx, substs, item_ty);
+    let mono_ty = ty::subst_tps(ccx.tcx, substs, llitem_ty);
     let llfty = type_of_fn_from_ty(ccx, mono_ty);
 
     let depth = option::get_default(ccx.monomorphizing.find(fn_id), 0u);
@@ -2515,12 +2515,12 @@ fn trans_rec_field(bcx: block, base: @ast::expr,
 
 fn trans_rec_field_inner(bcx: block, val: ValueRef, ty: ty::t,
                          field: ast::ident, sp: span) -> lval_result {
-    let mut deref = false;
+    let mut llderef = false;
     let fields = alt ty::get(ty).struct {
        ty::ty_rec(fs) { fs }
        ty::ty_class(did, substs) {
          if option::is_some(ty::ty_dtor(bcx.tcx(), did)) {
-           deref = true;
+           llderef = true;
          }
          ty::class_items_as_fields(bcx.tcx(), did, substs)
        }
@@ -2534,7 +2534,7 @@ fn trans_rec_field_inner(bcx: block, val: ValueRef, ty: ty::t,
        have to select out the object itself
        (If any other code does the same thing, that's
        a bug */
-    let val = if deref {
+    let val = if llderef {
         GEPi(bcx, GEPi(bcx, val, [0u, 1u]), [0u, ix])
     }
     else { GEPi(bcx, val, [0u, ix]) };

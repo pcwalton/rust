@@ -461,9 +461,9 @@ fn compile_submatch(bcx: block, m: match, vals: [ValueRef],
 
     // Unbox in case of a box field
     if any_box_pat(m, col) {
-        let box = Load(bcx, val);
+        let llbox = Load(bcx, val);
         let box_ty = node_id_type(bcx, pat_id);
-        let box_no_addrspace = non_gc_box_cast(bcx, box, box_ty);
+        let box_no_addrspace = non_gc_box_cast(bcx, llbox, box_ty);
         let unboxed = GEPi(bcx, box_no_addrspace, [0u, abi::box_field_body]);
         compile_submatch(bcx, enter_box(dm, m, col, val), [unboxed]
                          + vals_left, chk, exits);
@@ -471,9 +471,9 @@ fn compile_submatch(bcx: block, m: match, vals: [ValueRef],
     }
 
     if any_uniq_pat(m, col) {
-        let box = Load(bcx, val);
+        let llbox = Load(bcx, val);
         let box_ty = node_id_type(bcx, pat_id);
-        let box_no_addrspace = non_gc_box_cast(bcx, box, box_ty);
+        let box_no_addrspace = non_gc_box_cast(bcx, llbox, box_ty);
         let unboxed = GEPi(bcx, box_no_addrspace, [0u, abi::box_field_body]);
         compile_submatch(bcx, enter_uniq(dm, m, col, val),
                          [unboxed] + vals_left, chk, exits);
@@ -553,11 +553,11 @@ fn compile_submatch(bcx: block, m: match, vals: [ValueRef],
                             trans_compare(bcx, ast::eq, test_val, t, val, t)
                           }
                           range_result({val: vbegin, _}, {bcx, val: vend}) {
-                            let {bcx, val: ge} = trans_compare(
+                            let {bcx, val: llge} = trans_compare(
                                 bcx, ast::ge, test_val, t, vbegin, t);
-                            let {bcx, val: le} = trans_compare(
+                            let {bcx, val: llle} = trans_compare(
                                 bcx, ast::le, test_val, t, vend, t);
-                            {bcx: bcx, val: And(bcx, ge, le)}
+                            {bcx: bcx, val: And(bcx, llge, llle)}
                           }
                         }
                     }
@@ -759,15 +759,15 @@ fn bind_irrefutable_pat(bcx: block, pat: @ast::pat, val: ValueRef,
         }
       }
       ast::pat_box(inner) {
-        let box = Load(bcx, val);
+        let llbox = Load(bcx, val);
         let unboxed =
-            GEPi(bcx, box, [0u, abi::box_field_body]);
+            GEPi(bcx, llbox, [0u, abi::box_field_body]);
         bcx = bind_irrefutable_pat(bcx, inner, unboxed, true);
       }
       ast::pat_uniq(inner) {
-        let box = Load(bcx, val);
+        let llbox = Load(bcx, val);
         let unboxed =
-            GEPi(bcx, box, [0u, abi::box_field_body]);
+            GEPi(bcx, llbox, [0u, abi::box_field_body]);
         bcx = bind_irrefutable_pat(bcx, inner, unboxed, true);
       }
       ast::pat_wild | ast::pat_lit(_) | ast::pat_range(_, _) { }
