@@ -11,11 +11,11 @@ import syntax::codemap::span;
 import metadata::csearch;
 import util::ppaux::region_to_str;
 import util::ppaux::vstore_to_str;
-import util::ppaux::{ty_to_str, tys_to_str, ty_constr_to_str};
 import middle::lint::{get_warning_level, vecs_not_implicitly_copyable,
                       ignore};
 import syntax::ast::*;
 import syntax::print::pprust::*;
+import util::ppaux::{ty_to_str, tys_to_str, ty_constr_to_str};
 
 export ty_vid, region_vid, vid;
 export br_hashmap;
