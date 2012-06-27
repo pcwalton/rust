@@ -22,7 +22,7 @@ import syntax::ast::{ty_param, ty_path, ty_str, ty_u, ty_u16, ty_u32, ty_u64};
 import syntax::ast::{ty_u8, ty_uint, variant, view_item, view_item_export};
 import syntax::ast::{view_item_import, view_item_use, view_path_glob};
 import syntax::ast::{view_path_list, view_path_simple};
-import syntax::ast_util::{def_id_of_def, local_def, walk_pat};
+import syntax::ast_util::{def_id_of_def, local_def, new_def_hash, walk_pat};
 import syntax::codemap::span;
 import syntax::visit::{default_visitor, fk_method, mk_vt, visit_block};
 import syntax::visit::{visit_crate, visit_expr, visit_expr_opt, visit_fn};
@@ -1155,12 +1155,21 @@ class Resolver {
                                                 module.def_id.get(),
                                                 none);
 
+        // Intern def IDs to prevent duplicates.
+        let def_ids = new_def_hash();
+
         for (*impls_in_module).each {
             |implementation|
 
+            if def_ids.contains_key(implementation.did) {
+                cont;
+            }
+            def_ids.insert(implementation.did, ());
+
             #debug("(building reduced graph for impls in external module) \
-                    added impl '%s' to '%s'",
+                    added impl '%s' (%?) to '%s'",
                    implementation.ident,
+                   implementation.did,
                    self.module_to_str(module));
 
             let name = (*self.atom_table).intern(@copy implementation.ident);

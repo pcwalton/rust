@@ -400,6 +400,7 @@ fn encode_info_for_mod(ecx: @encode_ctxt, ebml_w: ebml::writer, md: _mod,
     let impls = ecx.impl_map(id);
     for impls.each {|i|
         let (ident, did) = i;
+        #debug("(encoding info for module) ... encoding impl %s", ident);
         if ast_util::is_exported(ident, md) {
             ebml_w.start_tag(tag_mod_impl);
             /* If did stands for an iface

@@ -6,14 +6,14 @@ import option::{some, none};
 import option = option::option;
 import path = path::path;
 import str::extensions;
-import vec::extensions;
+import vec::extensions_for_vec;
 import option::extensions;
 import option_iter::extensions;
 import ptr::extensions;
 import rand::extensions;
 
 export path, option, some, none, unreachable;
-export extensions;
+export extensions, extensions_for_vec;
 
 // Export the log levels as global constants. Higher levels mean
 // more-verbosity. Error is the bottom level, default logging level is

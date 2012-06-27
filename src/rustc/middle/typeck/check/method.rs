@@ -199,9 +199,14 @@ impl methods for lookup {
     fn method_from_scope() -> option<method_origin> {
         let impls_vecs = self.fcx.ccx.impl_map.get(self.expr.id);
 
+        #debug("starting method lookup...");
+
         for list::each(impls_vecs) {|impls|
+            #debug("... next impl scope ...");
             let mut results = [];
             for vec::each(*impls) {|im|
+                #debug("... ... %s", im.ident);
+
                 // Check whether this impl has a method with the right name.
                 for im.methods.find({|m| m.ident == self.m_name}).each {|m|
 
