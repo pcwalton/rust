@@ -1,6 +1,8 @@
 /* Code to handle method lookups (which can be quite complex) */
 
+import syntax::ast::def_id;
 import syntax::ast_map;
+import syntax::ast_util::new_def_hash;
 import middle::typeck::infer::methods; // next_ty_vars
 
 enum lookup = {
@@ -204,6 +206,7 @@ impl methods for lookup {
         for list::each(impls_vecs) {|impls|
             #debug("... next impl scope ...");
             let mut results = [];
+            let result_impls = new_def_hash();
             for vec::each(*impls) {|im|
                 #debug("... ... %s", im.ident);
 
@@ -222,7 +225,10 @@ impl methods for lookup {
                         self.self_ty, impl_ty) {
                       result::err(_) { /* keep looking */ }
                       result::ok(_) {
-                        results += [(impl_ty, impl_substs, m.n_tps, m.did)];
+                        if !result_impls.contains_key(im.did) {
+                            results += [(impl_ty, impl_substs, m.n_tps, m.did)];
+                            result_impls.insert(im.did, ());
+                        }
                       }
                     }
                 }
