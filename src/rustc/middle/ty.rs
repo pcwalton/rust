@@ -2556,9 +2556,12 @@ fn impl_iface(cx: ctxt, id: ast::def_id) -> option<t> {
                    #debug("(impl_iface) found iface id %?", iface_id);
                    some(node_id_to_type(cx, iface_id.node))
                }
-               _ {
-                 cx.sess.bug("impl_iface: iface ref isn't in iface map \
-                         and isn't bound to a def_ty");
+               some(x) {
+                 cx.sess.bug(#fmt("impl_iface: iface ref is in iface map \
+                                   but is bound to %?", x));
+               }
+               none {
+                 none
                }
              }
            }

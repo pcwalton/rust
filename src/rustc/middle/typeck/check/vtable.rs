@@ -117,6 +117,7 @@ fn lookup_vtable(fcx: @fn_ctxt, isc: resolve::iscopes, sp: span,
                 for vec::each(*impls) {|im|
                     // im = one specific impl
                     // find the iface that im implements (if any)
+                    #debug("(check_vtable) looking for %s", im.ident);
                     let of_ty = alt ty::impl_iface(tcx, im.did) {
                       some(of_ty) { of_ty }
                       _ { cont; }
