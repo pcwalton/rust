@@ -2093,10 +2093,12 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
         }
     });
 
-    #debug["monomorphic_fn(fn_id=%? (%s), real_substs=%?, substs=%?",
+    #debug["monomorphic_fn(fn_id=%? (%s), real_substs=%?, substs=%?, \
+                           must_cast=%?",
            fn_id, ty::item_path_str(ccx.tcx, fn_id),
            real_substs.map({|s| ppaux::ty_to_str(ccx.tcx, s)}),
-           substs.map({|s| ppaux::ty_to_str(ccx.tcx, s)})];
+           substs.map({|s| ppaux::ty_to_str(ccx.tcx, s)}),
+           must_cast];
 
     for real_substs.each() {|s| assert !ty::type_has_params(s); };
     for substs.each() {|s| assert !ty::type_has_params(s); };
@@ -2109,6 +2111,8 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
     }
     alt ccx.monomorphized.find(hash_id) {
       some(val) {
+        #debug["leaving monomorphic fn %s",
+               ty::item_path_str(ccx.tcx, fn_id)];
         ret {val: val, must_cast: must_cast};
       }
       none {}
@@ -2138,6 +2142,8 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
       { (pt, i.ident, i.span) }
       ast_map::node_native_item(_, abi, _) {
         // Natives don't have to be monomorphized.
+        #debug["leaving monomorphic fn %s",
+               ty::item_path_str(ccx.tcx, fn_id)];
         ret {val: get_item_val(ccx, fn_id.node),
              must_cast: true};
       }
@@ -2264,6 +2270,8 @@ fn monomorphic_fn(ccx: @crate_ctxt, fn_id: ast::def_id, real_substs: [ty::t],
       }
     };
     ccx.monomorphizing.insert(fn_id, depth);
+
+    #debug["leaving monomorphic fn %s", ty::item_path_str(ccx.tcx, fn_id)];
     {val: lldecl, must_cast: must_cast}
 }
 

@@ -2894,7 +2894,7 @@ class Resolver {
                                               some(@method.decl),
                                               type_parameters,
                                               method.body,
-                                              HasSelfBinding(id),
+                                              HasSelfBinding(method.self_id),
                                               NoCaptureClause,
                                               visitor);
                     }
@@ -2909,7 +2909,7 @@ class Resolver {
                                   some(@constructor.node.dec),
                                   NoTypeParameters,
                                   constructor.node.body,
-                                  HasSelfBinding(id),
+                                  HasSelfBinding(constructor.node.self_id),
                                   NoCaptureClause,
                                   visitor);
 
@@ -2924,7 +2924,8 @@ class Resolver {
                                           none,
                                           NoTypeParameters,
                                           destructor.node.body,
-                                          HasSelfBinding(id),
+                                          HasSelfBinding
+                                            (destructor.node.self_id),
                                           NoCaptureClause,
                                           visitor);
                 }
@@ -2987,7 +2988,7 @@ class Resolver {
                                          method.id,
                                          outer_type_parameter_count),
                                       method.body,
-                                      HasSelfBinding(id),
+                                      HasSelfBinding(method.self_id),
                                       NoCaptureClause,
                                       visitor);
             }
