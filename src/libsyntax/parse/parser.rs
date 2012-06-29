@@ -17,6 +17,8 @@ export file_type;
 export parser;
 export parse_expr;
 export parse_pat;
+export CRATE_FILE;
+export SOURCE_FILE;
 
 // FIXME: #ast expects to find this here but it's actually defined in `parse`
 // Fixing this will be easier when we have export decls on individual items --

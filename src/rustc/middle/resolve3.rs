@@ -110,6 +110,11 @@ enum ResolveResult<T> {
     Success(T)      // Successfully resolved the import.
 }
 
+enum PrivacyFilter {
+    PrivateOrPublic,    //< Will match both public and private items.
+    PublicOnly          //< Will match only public items.
+}
+
 enum TypeParameters/& {
     NoTypeParameters,       // No type parameters.
     HasTypeParameters(&[ty_param],  //< Type parameters
@@ -274,16 +279,15 @@ class ImportResolution {
 
     fn target_for_namespace(namespace: Namespace) -> option<Target> {
         alt namespace {
-            ModuleNS    { ret copy self.module_target;          }
-            TypeNS      { ret copy self.type_target;            }
-            ValueNS     { ret copy self.value_target;           }
+            ModuleNS    { ret copy self.module_target; }
+            TypeNS      { ret copy self.type_target;   }
+            ValueNS     { ret copy self.value_target;  }
 
             ImplNS {
                 if (*self.impl_target).len() > 0u {
                     ret some(copy *(*self.impl_target).get_elt(0u));
-                } else {
-                    ret none;
                 }
+                ret none;
             }
         }
     }
@@ -304,7 +308,6 @@ class Module {
     let children: hashmap<Atom,@NameBindings>;
     let imports: dvec<@ImportDirective>;
 
-    //
     // The anonymous children of this node. Anonymous children are pseudo-
     // modules that are implicitly created around items contained within
     // blocks.
@@ -319,9 +322,12 @@ class Module {
     //
     // There will be an anonymous module created around `g` with the ID of the
     // entry block for `f`.
-    //
 
     let anonymous_children: hashmap<node_id,@Module>;
+
+    // TODO: This is about to be reworked so that exports are on individual
+    // items, not names.
+    let exported_names: hashmap<Atom,()>;
 
     // The status of resolving each import in this module.
     let import_resolutions: hashmap<Atom,@ImportResolution>;
@@ -343,6 +349,8 @@ class Module {
         self.imports = dvec();
 
         self.anonymous_children = int_hash();
+
+        self.exported_names = atom_hashmap();
 
         self.import_resolutions = atom_hashmap();
         self.glob_count = 0u;
@@ -920,7 +928,69 @@ class Resolver {
                     }
                 }
             }
-            view_item_export(*) { /* TODO */ }
+
+            view_item_export(view_paths) {
+                let module = self.get_module_from_parent(parent);
+                for view_paths.each {
+                    |view_path|
+
+                    alt view_path.node {
+                        view_path_simple(ident, full_path, _) {
+                            let last_ident = full_path.idents.last();
+                            if last_ident != ident {
+                                self.session.span_err(view_item.span,
+                                                      "cannot export under \
+                                                       a new name");
+                            }
+                            if full_path.idents.len() != 1u {
+                                self.session.span_err(view_item.span,
+                                                      "cannot export an item \
+                                                       that is not in this \
+                                                       module");
+                            }
+
+                            let atom = (*self.atom_table).intern(@copy ident);
+                            module.exported_names.insert(atom, ());
+                        }
+
+                        view_path_glob(*) {
+                            self.session.span_err(view_item.span,
+                                                  "export globs are \
+                                                   unsupported");
+                        }
+
+                        view_path_list(path, path_list_idents, _) {
+                            if path.idents.len() == 1u &&
+                                    path_list_idents.len() == 0u {
+
+                                self.session.span_warn(view_item.span,
+                                                       "this syntax for \
+                                                        exporting no \
+                                                        variants is \
+                                                        unsupported; export \
+                                                        variants \
+                                                        individually");
+                            } else {
+                                if path.idents.len() != 0u {
+                                    self.session.span_err(view_item.span,
+                                                          "cannot export an \
+                                                           item that is not \
+                                                           in this module");
+                                }
+
+                                for path_list_idents.each {
+                                    |path_list_ident|
+
+                                    let atom = (*self.atom_table).intern
+                                        (@copy path_list_ident.node.name);
+                                    module.exported_names.insert(atom, ());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             view_item_use(name, _, node_id) {
                 alt find_use_stmt_cnum(self.session.cstore, node_id) {
                     some(crate_id) {
@@ -1220,7 +1290,6 @@ class Resolver {
         self.unresolved_imports += 1u;
     }
 
-    //
     // Import resolution
     //
     // This is a fixed-point algorithm. We resolve imports until our efforts
@@ -1228,7 +1297,6 @@ class Resolver {
     // module and continue. We terminate successfully once no more imports
     // remain or unsuccessfully when no forward progress in resolving imports
     // is made.
-    //
 
     #[doc="
         Resolves all imports for the crate. This method performs the fixed-
@@ -1250,7 +1318,7 @@ class Resolver {
             }
 
             if self.unresolved_imports == prev_unresolved_imports {
-                #debug("!!! (resolving imports) failure");
+                self.session.warn("failed to resolve imports");
                 self.report_unresolved_imports(module_root);
                 break;
             }
@@ -1303,8 +1371,8 @@ class Resolver {
             alt self.resolve_import_for_module(module, import_directive) {
                 Failed {
                     // We presumably emitted an error. Continue.
-                    #debug("!!! (resolving imports for module) error: %s",
-                           self.module_to_str(module));
+                    self.session.warn(#fmt("failed to resolve import in: %s",
+                                           self.module_to_str(module)));
                 }
                 Indeterminate {
                     // Bail out. We'll come around next time.
@@ -1417,6 +1485,12 @@ class Resolver {
                self.module_to_str(containing_module),
                *(*self.atom_table).atom_to_str(source),
                self.module_to_str(module));
+
+        if !self.name_is_exported(containing_module, source) {
+            #debug("(resolving single import) name '%s' is unexported",
+                   *(*self.atom_table).atom_to_str(source));
+            ret Failed;
+        }
 
         // We need to resolve all four namespaces for this to succeed.
         //
@@ -1643,6 +1717,12 @@ class Resolver {
         for containing_module.import_resolutions.each {
             |atom, target_import_resolution|
 
+            if !self.name_is_exported(containing_module, atom) {
+                #debug("(resolving glob import) name '%s' is unexported",
+                       *(*self.atom_table).atom_to_str(atom));
+                cont;
+            }
+
             #debug("(resolving glob import) writing module resolution \
                     %? into '%s'",
                    is_none(target_import_resolution.module_target),
@@ -1775,27 +1855,28 @@ class Resolver {
 
         while index < module_path_len {
             let name = (*module_path).get_elt(index);
-            alt self.resolve_name_in_module(search_module, name, ModuleNS) {
+            alt self.resolve_name_in_module(search_module, name, ModuleNS,
+                                            PublicOnly) {
 
                 Failed {
-                    #debug("!!! (resolving module path for import) module \
-                           resolution failed: %s",
-                           *(*self.atom_table).atom_to_str(name));
+                    self.session.warn(#fmt("module resolution failed: %s",
+                                           *(*self.atom_table)
+                                                .atom_to_str(name)));
                     ret Failed;
                 }
                 Indeterminate {
                     #debug("(resolving module path for import) module \
-                           resolution is indeterminate: %s",
-                           *(*self.atom_table).atom_to_str(name));
+                            resolution is indeterminate: %s",
+                            *(*self.atom_table).atom_to_str(name));
                     ret Indeterminate;
                 }
                 Success(target) {
                     alt target.bindings.module_def {
                         NoModuleDef {
                             // Not a module.
-                            #debug("!!! (resolving module path for import) \
-                                   not a module: %s",
-                                   *(*self.atom_table).atom_to_str(name));
+                            self.session.warn(#fmt("not a module: %s",
+                                                   *(*self.atom_table).
+                                                     atom_to_str(name)));
                             ret Failed;
                         }
                         ModuleDef(module) {
@@ -1834,10 +1915,9 @@ class Resolver {
         let mut search_module;
         alt self.resolve_module_in_lexical_scope(module, first_element) {
             Failed {
-                #error("(resolving module path for import) !!! unresolved \
-                        name: %s",
-                       *(*self.atom_table).atom_to_str(first_element));
-
+                self.session.warn(#fmt("unresolved name: %s",
+                                       *(*self.atom_table).
+                                            atom_to_str(first_element)));
                 ret Failed;
             }
             Indeterminate {
@@ -1920,7 +2000,8 @@ class Resolver {
             }
 
             // Resolve the name in the parent module.
-            alt self.resolve_name_in_module(search_module, name, namespace) {
+            alt self.resolve_name_in_module(search_module, name, namespace,
+                                            PrivateOrPublic) {
                 Failed {
                     // Continue up the search chain.
                 }
@@ -1969,6 +2050,11 @@ class Resolver {
         }
     }
 
+    fn name_is_exported(module: @Module, name: Atom) -> bool {
+        ret module.exported_names.size() == 0u ||
+                module.exported_names.contains_key(name);
+    }
+
     #[doc="
         Attempts to resolve the supplied name in the given module for the
         given namespace. If successful, returns the target corresponding to
@@ -1976,12 +2062,21 @@ class Resolver {
     "]
     fn resolve_name_in_module(module: @Module,
                               name: Atom,
-                              namespace: Namespace)
+                              namespace: Namespace,
+                              privacy_filter: PrivacyFilter)
                            -> ResolveResult<Target> {
 
         #debug("(resolving name in module) resolving '%s' in '%s'",
                *(*self.atom_table).atom_to_str(name),
                self.module_to_str(module));
+
+        if privacy_filter == PublicOnly &&
+                !self.name_is_exported(module, name) {
+
+            #debug("(resolving name in module) name '%s' is unexported",
+                   *(*self.atom_table).atom_to_str(name));
+            ret Failed;
+        }
 
         // First, check the direct children of the module.
         alt module.children.find(name) {
@@ -2180,8 +2275,8 @@ class Resolver {
         // If nothing at all was found, that's an error.
         if is_none(module_result) && is_none(value_result) &&
                 is_none(type_result) && is_none(impl_result) {
-            #error("!!! (resolving one-level renaming import) couldn't find \
-                    anything with that name");
+
+            self.session.warn("couldn't find anything with that name");
             ret Failed;
         }
 
@@ -2226,9 +2321,10 @@ class Resolver {
         let import_count = module.imports.len();
         if index != import_count {
             let module_path = module.imports.get_elt(index).module_path;
-            #error("!!! unresolved import in %s: %s",
-                   self.module_to_str(module),
-                   *(*self.atom_table).atoms_to_str((*module_path).get()));
+            self.session.warn(#fmt("!!! unresolved import in %s: %s",
+                                   self.module_to_str(module),
+                                   *(*self.atom_table)
+                                        .atoms_to_str((*module_path).get())));
         }
 
         // Descend into children and anonymous children.
@@ -2250,13 +2346,11 @@ class Resolver {
         }
     }
 
-    //
     // Implementation scope creation
     //
     // This is a fairly simple pass that simply gathers up all the typeclass
     // implementations in scope and threads a series of singly-linked series
     // of impls through the tree.
-    //
 
     fn build_impl_scopes() {
         let root_module = (*self.graph_root).get_module();
@@ -2360,7 +2454,6 @@ class Resolver {
         }
     }
 
-    //
     // AST resolution
     //
     // We maintain a list of value ribs and type ribs. Since ribs are
@@ -2381,7 +2474,6 @@ class Resolver {
     // scope. This information is lazily cached in the module node. We then
     // generate a fake "implementation scope" containing all the
     // implementations thus found, for compatibility with old resolve pass.
-    //
 
     fn with_scope(name: option<Atom>, f: fn()) {
         let orig_module = self.current_module;
