@@ -38,14 +38,19 @@ import vec::pop;
 import ASTMap = syntax::ast_map::map;
 import str_eq = str::eq;
 
+// Definition mapping
 type DefMap = hashmap<node_id,def>;
 
-// Implementation resolution stuff
+// Implementation resolution
 type MethodInfo = { did: def_id, n_tps: uint, ident: ident };
 type Impl = { did: def_id, ident: ident, methods: [@MethodInfo] };
 type ImplScope = @[@Impl];
 type ImplScopes = @list<ImplScope>;
 type ImplMap = hashmap<node_id,ImplScopes>;
+
+// Export mapping
+type Export = { reexp: bool, id: def_id };
+type ExportMap = hashmap<node_id, [Export]>;
 
 enum PatternBindingMode {
     RefutableMode,
@@ -69,6 +74,13 @@ enum ImplNamespaceResult {
     UnknownImplResult,
     UnboundImplResult,
     BoundImplResult(@dvec<@Target>)
+}
+
+enum NameDefinition {
+    NoNameDefinition,           //< The name was unbound.
+    ChildNameDefinition(def),   //< The name identifies an immediate child.
+    ImportNameDefinition(def)   //< The name identifies an import.
+
 }
 
 enum Mutability {
@@ -327,7 +339,11 @@ class Module {
 
     // TODO: This is about to be reworked so that exports are on individual
     // items, not names.
-    let exported_names: hashmap<Atom,()>;
+    //
+    // The atom is the name of the exported item, while the node ID is the
+    // ID of the export path.
+
+    let exported_names: hashmap<Atom,node_id>;
 
     // The status of resolving each import in this module.
     let import_resolutions: hashmap<Atom,@ImportResolution>;
@@ -454,9 +470,31 @@ class NameBindings {
             ValueNS {
                 ret self.value_def;
             }
-            ModuleNS | ImplNS {
-                fail "def_for_namespace only supports type and value \
-                      namespaces";
+            ModuleNS {
+                alt self.module_def {
+                    NoModuleDef {
+                        ret none;
+                    }
+                    ModuleDef(module) {
+                        alt module.def_id {
+                            none {
+                                ret none;
+                            }
+                            some(def_id) {
+                                ret some(def_mod(def_id));
+                            }
+                        }
+                    }
+                }
+            }
+            ImplNS {
+                // Danger: Be careful what you use this for! def_ty is not
+                // necessarily the right def.
+
+                if self.impl_defs.len() == 0u {
+                    ret none;
+                }
+                ret some(def_ty(self.impl_defs[0].did));
             }
         }
     }
@@ -523,8 +561,12 @@ class Resolver {
     // The atoms for the primitive types.
     let primitive_type_table: @PrimitiveTypeTable;
 
+    // The four namespaces.
+    let namespaces: [Namespace];
+
     let def_map: DefMap;
     let impl_map: ImplMap;
+    let export_map: ExportMap;
 
     new(session: session, ast_map: ASTMap, crate: @crate) {
         self.session = session;
@@ -549,13 +591,18 @@ class Resolver {
         self.self_atom = (*self.atom_table).intern(@"self");
         self.primitive_type_table = @PrimitiveTypeTable(self.atom_table);
 
+        self.namespaces = [ ModuleNS, TypeNS, ValueNS, ImplNS ];
+
         self.def_map = int_hash();
         self.impl_map = int_hash();
+        self.export_map = int_hash();
     }
 
+    #[doc="The main name resolution procedure."]
     fn resolve(this: @Resolver) {
         self.build_reduced_graph(this);
         self.resolve_imports();
+        self.record_exports();
         self.build_impl_scopes();
         self.resolve_crate();
     }
@@ -935,7 +982,7 @@ class Resolver {
                     |view_path|
 
                     alt view_path.node {
-                        view_path_simple(ident, full_path, _) {
+                        view_path_simple(ident, full_path, ident_id) {
                             let last_ident = full_path.idents.last();
                             if last_ident != ident {
                                 self.session.span_err(view_item.span,
@@ -950,7 +997,7 @@ class Resolver {
                             }
 
                             let atom = (*self.atom_table).intern(@copy ident);
-                            module.exported_names.insert(atom, ());
+                            module.exported_names.insert(atom, ident_id);
                         }
 
                         view_path_glob(*) {
@@ -983,7 +1030,8 @@ class Resolver {
 
                                     let atom = (*self.atom_table).intern
                                         (@copy path_list_ident.node.name);
-                                    module.exported_names.insert(atom, ());
+                                    let id = path_list_ident.node.id;
+                                    module.exported_names.insert(atom, id);
                                 }
                             }
                         }
@@ -2346,6 +2394,100 @@ class Resolver {
         }
     }
 
+    // Export recording
+    //
+    // This pass simply determines what all "export" keywords refer to and
+    // writes the results into the export map.
+    //
+    // TODO: This pass will be removed once exports change to per-item. Then
+    // this operation can simply be performed as part of item (or import)
+    // processing.
+
+    fn record_exports() {
+        let root_module = (*self.graph_root).get_module();
+        self.record_exports_for_module_subtree(root_module);
+    }
+
+    fn record_exports_for_module_subtree(module: @Module) {
+        // If this isn't a local crate, then bail out. We don't need to record
+        // exports for local crates.
+
+        alt module.def_id {
+            some(def_id) if def_id.crate == local_crate {
+                // OK. Continue.
+            }
+            none {
+                // Record exports for the root module.
+            }
+            some(_) {
+                // Bail out.
+                #debug("(recording exports for module subtree) not recording \
+                        exports for '%s'",
+                       self.module_to_str(module));
+                ret;
+            }
+        }
+
+        self.record_exports_for_module(module);
+
+        for module.children.each {
+            |_atom, child_name_bindings|
+            alt (*child_name_bindings).get_module_if_available() {
+                none {
+                    // Nothing to do.
+                }
+                some(child_module) {
+                    self.record_exports_for_module_subtree(child_module);
+                }
+            }
+        }
+
+        for module.anonymous_children.each {
+            |_node_id, child_module|
+            self.record_exports_for_module_subtree(child_module);
+        }
+    }
+
+    fn record_exports_for_module(module: @Module) {
+        for module.exported_names.each {
+            |name, node_id|
+
+            let mut exports = [];
+            for self.namespaces.each {
+                |namespace|
+
+                // Ignore impl namespaces; they cause the original resolve
+                // to fail.
+
+                if namespace == ImplNS {
+                    cont;
+                }
+
+                alt self.resolve_definition_of_name_in_module(module,
+                                                              name,
+                                                              namespace) {
+                    NoNameDefinition {
+                        // Nothing to do.
+                    }
+                    ChildNameDefinition(target_def) {
+                        vec::push(exports, {
+                            reexp: false,
+                            id: def_id_of_def(target_def)
+                        });
+                    }
+                    ImportNameDefinition(target_def) {
+                        vec::push(exports, {
+                            reexp: true,
+                            id: def_id_of_def(target_def)
+                        });
+                    }
+                }
+            }
+
+            self.export_map.insert(node_id, exports);
+        }
+    }
+
     // Implementation scope creation
     //
     // This is a fairly simple pass that simply gathers up all the typeclass
@@ -3461,7 +3603,7 @@ class Resolver {
     fn resolve_definition_of_name_in_module(containing_module: @Module,
                                             name: Atom,
                                             namespace: Namespace)
-                                         -> option<def> {
+                                         -> NameDefinition {
 
         // First, search children.
         alt containing_module.children.find(name) {
@@ -3469,7 +3611,7 @@ class Resolver {
                 alt (*child_name_bindings).def_for_namespace(namespace) {
                     some(def) {
                         // Found it. Stop the search here.
-                        ret some(def);
+                        ret ChildNameDefinition(def);
                     }
                     none {
                         // Continue.
@@ -3489,7 +3631,7 @@ class Resolver {
                         alt (*target.bindings).def_for_namespace(namespace) {
                             some(def) {
                                 // Found it.
-                                ret some(def);
+                                ret ImportNameDefinition(def);
                             }
                             none {
                                 fail "target for namespace doesn't refer to \
@@ -3499,12 +3641,12 @@ class Resolver {
                         }
                     }
                     none {
-                        ret none;
+                        ret NoNameDefinition;
                     }
                 }
             }
             none {
-                ret none;
+                ret NoNameDefinition;
             }
         }
     }
@@ -3553,7 +3695,7 @@ class Resolver {
         alt self.resolve_definition_of_name_in_module(containing_module,
                                                       name,
                                                       namespace) {
-            none {
+            NoNameDefinition {
                 // We failed to resolve the name. Report an error.
                 self.session.span_warn(path.span,
                                        #fmt("use of undeclared identifier: \
@@ -3564,7 +3706,7 @@ class Resolver {
                                                 (name)));
                 ret none;
             }
-            some(def) {
+            ChildNameDefinition(def) | ImportNameDefinition(def) {
                 ret some(def);
             }
         }
@@ -3603,7 +3745,7 @@ class Resolver {
         alt self.resolve_definition_of_name_in_module(containing_module,
                                                       name,
                                                       namespace) {
-            none {
+            NoNameDefinition {
                 // We failed to resolve the name. Report an error.
                 self.session.span_warn(path.span,
                                        #fmt("use of undeclared identifier: \
@@ -3614,7 +3756,7 @@ class Resolver {
                                                 (name)));
                 ret none;
             }
-            some(def) {
+            ChildNameDefinition(def) | ImportNameDefinition(def) {
                 ret some(def);
             }
         }
@@ -3892,10 +4034,14 @@ class Resolver {
 
 #[doc="Entry point to crate resolution."]
 fn resolve_crate(session: session, ast_map: ASTMap, crate: @crate)
-              -> { def_map: DefMap, impl_map: ImplMap } {
+              -> { def_map: DefMap, exp_map: ExportMap, impl_map: ImplMap } {
 
     let resolver = @Resolver(session, ast_map, crate);
     (*resolver).resolve(resolver);
-    ret { def_map: resolver.def_map, impl_map: resolver.impl_map };
+    ret {
+        def_map: resolver.def_map,
+        exp_map: resolver.export_map,
+        impl_map: resolver.impl_map
+    };
 }
 

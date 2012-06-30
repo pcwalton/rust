@@ -173,21 +173,24 @@ fn compile_upto(sess: session, cfg: ast::crate_cfg,
              session::sess_os_to_meta_os(sess.targ_cfg.os),
              sess.opts.static));
 
-    let {def_map: fast_dm, impl_map: fast_im} = time(time_passes,
+    let {def_map: fast_dm, exp_map: fast_em, impl_map: fast_im} = time(time_passes,
         "fast resolution",
          bind middle::resolve3::resolve_crate(sess, ast_map, crate));
-    let {def_map: normal_dm, exp_map: exp_map, impl_map: normal_im} =
+    let {def_map: normal_dm, exp_map: normal_em, impl_map: normal_im} =
         time(time_passes, "resolution",
              bind resolve::resolve_crate(sess, ast_map, crate));
 
     let mut def_map;
     let mut impl_map;
+    let mut exp_map;
     if sess.fast_resolve() {
         def_map = fast_dm;
         impl_map = fast_im;
+        exp_map = fast_em;
     } else {
         def_map = normal_dm;
         impl_map = normal_im;
+        exp_map = normal_em;
     }
 
     let freevars =
