@@ -1366,7 +1366,7 @@ class Resolver {
             }
 
             if self.unresolved_imports == prev_unresolved_imports {
-                self.session.warn("failed to resolve imports");
+                self.session.err("failed to resolve imports");
                 self.report_unresolved_imports(module_root);
                 break;
             }
@@ -1419,8 +1419,9 @@ class Resolver {
             alt self.resolve_import_for_module(module, import_directive) {
                 Failed {
                     // We presumably emitted an error. Continue.
-                    self.session.warn(#fmt("failed to resolve import in: %s",
-                                           self.module_to_str(module)));
+                    // FIXME: span_err
+                    self.session.err(#fmt("failed to resolve import in: %s",
+                                          self.module_to_str(module)));
                 }
                 Indeterminate {
                     // Bail out. We'll come around next time.
@@ -1907,8 +1908,9 @@ class Resolver {
                                             PublicOnly) {
 
                 Failed {
-                    self.session.warn(#fmt("module resolution failed: %s",
-                                           *(*self.atom_table)
+                    // FIXME: span_err
+                    self.session.err(#fmt("module resolution failed: %s",
+                                          *(*self.atom_table)
                                                 .atom_to_str(name)));
                     ret Failed;
                 }
@@ -1922,9 +1924,10 @@ class Resolver {
                     alt target.bindings.module_def {
                         NoModuleDef {
                             // Not a module.
-                            self.session.warn(#fmt("not a module: %s",
-                                                   *(*self.atom_table).
-                                                     atom_to_str(name)));
+                            // FIXME: span_err
+                            self.session.err(#fmt("not a module: %s",
+                                                  *(*self.atom_table).
+                                                    atom_to_str(name)));
                             ret Failed;
                         }
                         ModuleDef(module) {
@@ -1963,7 +1966,8 @@ class Resolver {
         let mut search_module;
         alt self.resolve_module_in_lexical_scope(module, first_element) {
             Failed {
-                self.session.warn(#fmt("unresolved name: %s",
+                // FIXME: span_err
+                self.session.err(#fmt("unresolved name: %s",
                                        *(*self.atom_table).
                                             atom_to_str(first_element)));
                 ret Failed;
@@ -2324,7 +2328,8 @@ class Resolver {
         if is_none(module_result) && is_none(value_result) &&
                 is_none(type_result) && is_none(impl_result) {
 
-            self.session.warn("couldn't find anything with that name");
+            // FIXME: span_err, better error
+            self.session.err("couldn't find anything with that name");
             ret Failed;
         }
 
@@ -2369,10 +2374,12 @@ class Resolver {
         let import_count = module.imports.len();
         if index != import_count {
             let module_path = module.imports.get_elt(index).module_path;
-            self.session.warn(#fmt("!!! unresolved import in %s: %s",
-                                   self.module_to_str(module),
-                                   *(*self.atom_table)
-                                        .atoms_to_str((*module_path).get())));
+
+            // FIXME: span_err
+            self.session.err(#fmt("unresolved import in %s: %s",
+                                  self.module_to_str(module),
+                                  *(*self.atom_table)
+                                       .atoms_to_str((*module_path).get())));
         }
 
         // Descend into children and anonymous children.
@@ -2950,10 +2957,10 @@ class Resolver {
                                                 ValueNS,
                                                 true) {
                         none {
-                            self.session.span_warn(capture_item.span,
-                                                   "use of undeclared \
-                                                    identifier in \
-                                                    capture clause");
+                            self.session.span_err(capture_item.span,
+                                                  "use of undeclared \
+                                                   identifier in \
+                                                   capture clause");
                         }
                         some(def) {
                             self.record_def(capture_item.id, def);
@@ -3023,9 +3030,9 @@ class Resolver {
                         alt self.resolve_path(constraint.node.path, ValueNS,
                                               false, visitor) {
                             none {
-                                self.session.span_warn(constraint.span,
-                                                       "use of undeclared \
-                                                        constraint");
+                                self.session.span_err(constraint.span,
+                                                      "use of undeclared \
+                                                       constraint");
                             }
                             some(def) {
                                 self.record_def(constraint.node.id, def);
@@ -3092,9 +3099,9 @@ class Resolver {
 
                 alt self.resolve_path(interface.path, TypeNS, true, visitor) {
                     none {
-                        self.session.span_warn(interface.path.span,
-                                               "attempt to implement an \
-                                                unknown interface");
+                        self.session.span_err(interface.path.span,
+                                              "attempt to implement an \
+                                               unknown interface");
                     }
                     some(def) {
                         // Write a mapping from the interface ID to the
@@ -3194,9 +3201,9 @@ class Resolver {
                     alt self.resolve_path(interface_reference.path, TypeNS,
                                           true, visitor) {
                         none {
-                            self.session.span_warn(span,
-                                                   "attempt to implement an \
-                                                    unknown interface");
+                            self.session.span_err(span,
+                                                  "attempt to implement an \
+                                                   unknown interface");
                         }
                         some(def) {
                             self.record_def(interface_reference.id, def);
@@ -3363,7 +3370,7 @@ class Resolver {
                         self.record_def(path_id, def);
                     }
                     none {
-                        self.session.span_warn
+                        self.session.span_err
                             (ty.span, #fmt("use of undeclared type name '%s'",
                                            connect(path.idents, "::")));
                     }
@@ -3379,10 +3386,10 @@ class Resolver {
                     alt self.resolve_path(constraint.node.path, ValueNS,
                                           false, visitor) {
                         none {
-                            self.session.span_warn(constraint.span,
-                                                   "(resolving function) \
-                                                    use of undeclared \
-                                                    constraint");
+                            self.session.span_err(constraint.span,
+                                                  "(resolving function) \
+                                                   use of undeclared \
+                                                   constraint");
                         }
                         some(def) {
                             self.record_def(constraint.node.id, def);
@@ -3497,14 +3504,14 @@ class Resolver {
                             self.record_def(pattern.id, def);
                         }
                         some(_) {
-                            self.session.span_warn(path.span,
-                                                   #fmt("not an enum \
-                                                         variant: %s",
-                                                        path.idents.last()));
+                            self.session.span_err(path.span,
+                                                  #fmt("not an enum \
+                                                        variant: %s",
+                                                       path.idents.last()));
                         }
                         none {
-                            self.session.span_warn(path.span,
-                                                   "undeclared enum variant");
+                            self.session.span_err(path.span,
+                                                  "undeclared enum variant");
                         }
                     }
 
@@ -3675,10 +3682,10 @@ class Resolver {
                                                 module_path_atoms) {
 
             Failed {
-                self.session.span_warn(path.span,
-                                       #fmt("use of undeclared module `%s`",
-                                             *(*self.atom_table).atoms_to_str
-                                               ((*module_path_atoms).get())));
+                self.session.span_err(path.span,
+                                      #fmt("use of undeclared module `%s`",
+                                            *(*self.atom_table).atoms_to_str
+                                              ((*module_path_atoms).get())));
                 ret none;
             }
 
@@ -3697,13 +3704,13 @@ class Resolver {
                                                       namespace) {
             NoNameDefinition {
                 // We failed to resolve the name. Report an error.
-                self.session.span_warn(path.span,
-                                       #fmt("use of undeclared identifier: \
-                                             %s::%s",
-                                            *(*self.atom_table).atoms_to_str
-                                                ((*module_path_atoms).get()),
-                                            *(*self.atom_table).atom_to_str
-                                                (name)));
+                self.session.span_err(path.span,
+                                      #fmt("use of undeclared identifier: \
+                                            %s::%s",
+                                           *(*self.atom_table).atoms_to_str
+                                               ((*module_path_atoms).get()),
+                                           *(*self.atom_table).atom_to_str
+                                               (name)));
                 ret none;
             }
             ChildNameDefinition(def) | ImportNameDefinition(def) {
@@ -3725,10 +3732,10 @@ class Resolver {
                                                0u) {
 
             Failed {
-                self.session.span_warn(path.span,
-                                       #fmt("use of undeclared module `::%s`",
-                                             *(*self.atom_table).atoms_to_str
-                                               ((*module_path_atoms).get())));
+                self.session.span_err(path.span,
+                                      #fmt("use of undeclared module `::%s`",
+                                            *(*self.atom_table).atoms_to_str
+                                              ((*module_path_atoms).get())));
                 ret none;
             }
 
@@ -3747,13 +3754,13 @@ class Resolver {
                                                       namespace) {
             NoNameDefinition {
                 // We failed to resolve the name. Report an error.
-                self.session.span_warn(path.span,
-                                       #fmt("use of undeclared identifier: \
-                                             %s::%s",
-                                            *(*self.atom_table).atoms_to_str
-                                                ((*module_path_atoms).get()),
-                                            *(*self.atom_table).atom_to_str
-                                                (name)));
+                self.session.span_err(path.span,
+                                      #fmt("use of undeclared identifier: \
+                                            %s::%s",
+                                           *(*self.atom_table).atoms_to_str
+                                               ((*module_path_atoms).get()),
+                                           *(*self.atom_table).atom_to_str
+                                               (name)));
                 ret none;
             }
             ChildNameDefinition(def) | ImportNameDefinition(def) {
@@ -3853,10 +3860,10 @@ class Resolver {
                         self.record_def(expr.id, def);
                     }
                     none {
-                        self.session.span_warn(expr.span,
-                                               #fmt("use of undeclared \
-                                                     identifier '%s'",
-                                               connect(path.idents, "::")));
+                        self.session.span_err(expr.span,
+                                              #fmt("use of undeclared \
+                                                    identifier '%s'",
+                                              connect(path.idents, "::")));
                     }
                 }
 
