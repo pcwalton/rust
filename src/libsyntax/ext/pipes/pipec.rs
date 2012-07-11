@@ -355,7 +355,12 @@ impl of to_source for @ast::expr {
     }
 }
 
-impl parse_utils for ext_ctxt {
+trait ext_ctxt_parse_utils {
+    fn parse_item(s: str) -> @ast::item;
+    fn parse_expr(s: str) -> @ast::expr;
+}
+
+impl parse_utils of ext_ctxt_parse_utils for ext_ctxt {
     fn parse_item(s: str) -> @ast::item {
         let res = parse::parse_item_from_source_str(
             "***protocol expansion***",
@@ -382,7 +387,12 @@ impl parse_utils for ext_ctxt {
     }
 }
 
-impl methods<A: copy, B: copy> for ([A]/~, [B]/~) {
+trait two_vector_utils<A, B> {
+    fn zip() -> [(A, B)]/~;
+    fn map<C>(f: fn(A, B) -> C) -> [C]/~;
+}
+
+impl methods<A: copy, B: copy> of two_vector_utils<A, B> for ([A]/~, [B]/~) {
     fn zip() -> [(A, B)]/~ {
         let (a, b) = self;
         vec::zip(a, b)
