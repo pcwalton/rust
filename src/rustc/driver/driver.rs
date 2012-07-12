@@ -168,7 +168,10 @@ fn compile_upto(sess: session, cfg: ast::crate_cfg,
                              session::sess_os_to_meta_os(sess.targ_cfg.os),
                              sess.opts.static));
 
-    let { def_map: def_map, exp_map: exp_map, impl_map: impl_map } =
+    let { def_map: def_map,
+          exp_map: exp_map,
+          impl_map: impl_map,
+          trait_map: trait_map } =
         time(time_passes, "resolution", ||
              middle::resolve3::resolve_crate(sess, ast_map, crate));
 
@@ -183,6 +186,7 @@ fn compile_upto(sess: session, cfg: ast::crate_cfg,
     let (method_map, vtable_map) = time(time_passes, "typechecking", ||
                                         typeck::check_crate(ty_cx,
                                                             impl_map,
+                                                            trait_map,
                                                             crate));
 
     time(time_passes, "const checking", ||

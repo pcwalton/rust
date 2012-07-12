@@ -154,6 +154,7 @@ type ty_param_substs_and_ty = {substs: ty::substs, ty: ty::t};
 type ty_table = hashmap<ast::def_id, ty::t>;
 
 type crate_ctxt = {impl_map: resolve::impl_map,
+                   trait_map: resolve3::TraitMap,
                    method_map: method_map,
                    vtable_map: vtable_map,
                    tcx: ty::ctxt};
@@ -284,9 +285,14 @@ fn check_for_main_fn(ccx: @crate_ctxt) {
     }
 }
 
-fn check_crate(tcx: ty::ctxt, impl_map: resolve::impl_map,
-               crate: @ast::crate) -> (method_map, vtable_map) {
+fn check_crate(tcx: ty::ctxt,
+               impl_map: resolve::impl_map,
+               trait_map: resolve3::TraitMap,
+               crate: @ast::crate)
+            -> (method_map, vtable_map) {
+
     let ccx = @{impl_map: impl_map,
+                trait_map: trait_map,
                 method_map: std::map::int_hash(),
                 vtable_map: std::map::int_hash(),
                 tcx: tcx};

@@ -1,5 +1,6 @@
 import driver::session::session;
-import metadata::csearch::{each_path, get_impls_for_mod, lookup_defs};
+import metadata::csearch::{each_path, get_impls_for_mod};
+import metadata::csearch::{get_method_names_if_trait, lookup_defs};
 import metadata::cstore::find_use_stmt_cnum;
 import metadata::decoder::{def_like, dl_def, dl_field, dl_impl};
 import middle::lint::{error, ignore, level, unused_imports, warn};
@@ -56,6 +57,9 @@ type Impl = { did: def_id, ident: ident, methods: ~[@MethodInfo] };
 type ImplScope = @~[@Impl];
 type ImplScopes = @list<ImplScope>;
 type ImplMap = hashmap<node_id,ImplScopes>;
+
+// Trait method resolution
+type TraitMap = @hashmap<node_id,@dvec<def_id>>;
 
 // Export mapping
 type Export = { reexp: bool, id: def_id };
@@ -595,6 +599,8 @@ class Resolver {
 
     let unused_import_lint_level: level;
 
+    let trait_info: hashmap<def_id,@hashmap<Atom,()>>;
+
     // The number of imports that are currently unresolved.
     let mut unresolved_imports: uint;
 
@@ -625,6 +631,7 @@ class Resolver {
     let def_map: DefMap;
     let impl_map: ImplMap;
     let export_map: ExportMap;
+    let trait_map: TraitMap;
 
     new(session: session, ast_map: ASTMap, crate: @crate) {
         self.session = session;
@@ -642,6 +649,8 @@ class Resolver {
 
         self.unused_import_lint_level = unused_import_lint_level(session);
 
+        self.trait_info = new_def_hash();
+
         self.unresolved_imports = 0u;
 
         self.current_module = (*self.graph_root).get_module();
@@ -657,6 +666,7 @@ class Resolver {
         self.def_map = int_hash();
         self.impl_map = int_hash();
         self.export_map = int_hash();
+        self.trait_map = @int_hash();
     }
 
     /// The main name resolution procedure.
@@ -926,14 +936,24 @@ class Resolver {
                 visit_item(item, new_parent, visitor);
             }
 
-            item_trait(*) {
-                (*name_bindings).define_type(def_ty(local_def(item.id)));
+            item_trait(_, _, methods) {
+                // Add the names of all the methods to the trait info.
+                let method_names = @atom_hashmap();
+                for methods.each |method| {
+                    let atom = (*self.atom_table).intern(method.ident);
+                    (*method_names).insert(atom, ());
+                }
+
+                let def_id = local_def(item.id);
+                self.trait_info.insert(def_id, method_names);
+
+                (*name_bindings).define_type(def_ty(def_id));
                 visit_item(item, new_parent, visitor);
             }
 
-          item_mac(*) {
-            fail "item macros unimplemented"
-          }
+            item_mac(*) {
+                fail "item macros unimplemented"
+            }
         }
     }
 
@@ -1295,6 +1315,34 @@ class Resolver {
                         def_ty(def_id) {
                             #debug("(building reduced graph for external \
                                     crate) building type %s", final_ident);
+
+                            // If this is a trait, add all the method names
+                            // to the trait info.
+
+                            alt get_method_names_if_trait(self.session.cstore,
+                                                          def_id) {
+                                none {
+                                    // Nothing to do.
+                                }
+                                some(method_names) {
+                                    let interned_method_names =
+                                        @atom_hashmap();
+                                    for method_names.each |method_name| {
+                                        #debug("(building reduced graph for \
+                                                 external crate) ... adding \
+                                                 trait method '%s'",
+                                               *method_name);
+                                        let atom =
+                                            (*self.atom_table).intern
+                                                (method_name);
+                                        (*interned_method_names).insert(atom,
+                                                                        ());
+                                    }
+                                    self.trait_info.insert
+                                        (def_id, interned_method_names);
+                                }
+                            }
+
                             (*child_name_bindings).define_type(def);
                         }
                         def_class(def_id) {
@@ -2718,7 +2766,9 @@ class Resolver {
 
         // Move down in the graph.
         alt name {
-            none { /* Nothing to do. */ }
+            none {
+                // Nothing to do.
+            }
             some(name) {
                 alt orig_module.children.find(name) {
                     none {
@@ -4042,6 +4092,11 @@ class Resolver {
 
         self.record_impls_for_expr_if_necessary(expr);
 
+        // Then record candidate traits for this expression if it could result
+        // in the invocation of a method call.
+
+        self.record_candidate_traits_for_expr_if_necessary(expr);
+
         // Next, resolve the node.
         alt expr.node {
             // The interpretation of paths depends on whether the path has
@@ -4099,6 +4154,97 @@ class Resolver {
             }
             _ {
                 // Nothing to do.
+            }
+        }
+    }
+
+    fn record_candidate_traits_for_expr_if_necessary(expr: @expr) {
+        alt expr.node {
+            expr_field(_, ident, _) {
+                let atom = (*self.atom_table).intern(ident);
+                let traits = self.search_for_traits_containing_method(atom);
+                self.trait_map.insert(expr.id, traits);
+            }
+            _ {
+                // Nothing to do.
+                //
+                // XXX: Handle more here... operator overloading, placement
+                // new, etc.
+            }
+        }
+    }
+
+    fn search_for_traits_containing_method(name: Atom) -> @dvec<def_id> {
+        let found_traits = @dvec();
+        let mut search_module = self.current_module;
+        loop {
+            // Look for trait children.
+            for search_module.children.each |_name, child_name_bindings| {
+                alt child_name_bindings.def_for_namespace(TypeNS) {
+                    some(def_ty(trait_def_id)) {
+                        self.add_trait_info_if_containing_method(found_traits,
+                                                                 trait_def_id,
+                                                                 name);
+                    }
+                    some(_) | none {
+                        // Continue.
+                    }
+                }
+            }
+
+            // Look for imports.
+            for search_module.import_resolutions.each
+                    |_atom, import_resolution| {
+
+                alt import_resolution.target_for_namespace(TypeNS) {
+                    none {
+                        // Continue.
+                    }
+                    some(target) {
+                        alt target.bindings.def_for_namespace(TypeNS) {
+                            some(def_ty(trait_def_id)) {
+                                self.add_trait_info_if_containing_method
+                                    (found_traits, trait_def_id, name);
+                            }
+                            some(_) | none {
+                                // Continue.
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Move to the next parent.
+            alt search_module.parent_link {
+                NoParentLink {
+                    // Done.
+                    break;
+                }
+                ModuleParentLink(parent_module, _) |
+                BlockParentLink(parent_module, _) {
+                    search_module = parent_module;
+                }
+            }
+        }
+
+        ret found_traits;
+    }
+
+    fn add_trait_info_if_containing_method(found_traits: @dvec<def_id>,
+                                           trait_def_id: def_id,
+                                           name: Atom) {
+
+        alt self.trait_info.find(trait_def_id) {
+            some(trait_info) if trait_info.contains_key(name) {
+                #debug("(adding trait info if containing method) found trait \
+                        %d:%d for method '%s'",
+                       trait_def_id.crate,
+                       trait_def_id.node,
+                       *(*self.atom_table).atom_to_str(name));
+                (*found_traits).push(trait_def_id);
+            }
+            some(_) | none {
+                // Continue.
             }
         }
     }
@@ -4312,14 +4458,18 @@ class Resolver {
 
 /// Entry point to crate resolution.
 fn resolve_crate(session: session, ast_map: ASTMap, crate: @crate)
-              -> { def_map: DefMap, exp_map: ExportMap, impl_map: ImplMap } {
+              -> { def_map: DefMap,
+                   exp_map: ExportMap,
+                   impl_map: ImplMap,
+                   trait_map: TraitMap } {
 
     let resolver = @Resolver(session, ast_map, crate);
     (*resolver).resolve(resolver);
     ret {
         def_map: resolver.def_map,
         exp_map: resolver.export_map,
-        impl_map: resolver.impl_map
+        impl_map: resolver.impl_map,
+        trait_map: resolver.trait_map
     };
 }
 
