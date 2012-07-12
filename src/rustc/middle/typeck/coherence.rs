@@ -9,7 +9,7 @@ import middle::ty::{ty_class, ty_nil, ty_bot, ty_bool, ty_int, ty_uint};
 import middle::ty::{ty_float, ty_str, ty_estr, ty_vec, ty_evec, ty_rec};
 import middle::ty::{ty_fn, ty_trait, ty_tup, ty_var, ty_var_integral};
 import middle::ty::{ty_param, ty_self, ty_constr, ty_type, ty_opaque_box};
-import middle::ty::{ty_opaque_closure_ptr, ty_unboxed_vec, new_ty_hash};
+import middle::ty::{ty_opaque_closure_ptr, ty_unboxed_vec};
 import middle::ty::{subst};
 import middle::typeck::infer::{infer_ctxt, mk_subty, new_infer_ctxt};
 import syntax::ast::{crate, def_id, item, item_class, item_const, item_enum};
@@ -27,17 +27,62 @@ import result::{extensions};
 import std::map::{hashmap, int_hash};
 import uint::range;
 
+fn get_base_type(original_type: t) -> option<t> {
+    alt get(original_type).struct {
+        ty_box(base_mutability_and_type) |
+        ty_uniq(base_mutability_and_type) |
+        ty_ptr(base_mutability_and_type) |
+        ty_rptr(_, base_mutability_and_type) {
+            get_base_type(base_mutability_and_type.ty)
+        }
+
+        ty_enum(*) | ty_trait(*) | ty_class(*) {
+            some(original_type)
+        }
+
+        ty_nil | ty_bot | ty_bool | ty_int(*) | ty_uint(*) | ty_float(*) |
+        ty_str | ty_estr(*) | ty_vec(*) | ty_evec(*) | ty_rec(*) |
+        ty_fn(*) | ty_tup(*) | ty_var(*) | ty_var_integral(*) |
+        ty_param(*) | ty_self | ty_constr(*) | ty_type | ty_opaque_box |
+        ty_opaque_closure_ptr(*) | ty_unboxed_vec(*) {
+            none
+        }
+    }
+}
+
+// Returns the def ID of the base type, if there is one.
+fn get_base_type_def_id(original_type: t) -> option<def_id> {
+    alt get_base_type(original_type) {
+        none {
+            ret none;
+        }
+        some(base_type) {
+            alt get(base_type).struct {
+                ty_enum(def_id, _) |
+                ty_class(def_id, _) |
+                ty_trait(def_id, _) {
+                    ret some(def_id);
+                }
+                _ {
+                    fail "get_base_type() returned a type that wasn't an \
+                          enum, class, or trait";
+                }
+            }
+        }
+    }
+}
+
 class CoherenceInfo {
     // Contains implementations of methods that are inherent to a type.
     // Methods in these implementations don't need to be exported.
-    let inherent_methods: hashmap<t,@dvec<@item>>;
+    let inherent_methods: hashmap<def_id,@dvec<@item>>;
 
     // Contains implementations of methods associated with a trait. For these,
     // the associated trait must be imported at the call site.
     let extension_methods: hashmap<def_id,@dvec<@item>>;
 
     new() {
-        self.inherent_methods = new_ty_hash();
+        self.inherent_methods = new_def_hash();
         self.extension_methods = new_def_hash();
     }
 }
@@ -45,7 +90,6 @@ class CoherenceInfo {
 class CoherenceChecker {
     let crate_context: @crate_ctxt;
     let inference_context: infer_ctxt;
-    let info: @CoherenceInfo;
 
     // A mapping from implementations to the corresponding base type
     // definition ID.
@@ -62,7 +106,6 @@ class CoherenceChecker {
     new(crate_context: @crate_ctxt) {
         self.crate_context = crate_context;
         self.inference_context = new_infer_ctxt(crate_context.tcx);
-        self.info = @CoherenceInfo();
 
         self.base_type_def_ids = int_hash();
         self.privileged_implementations = int_hash();
@@ -88,7 +131,9 @@ class CoherenceChecker {
         }));
 
         // Check trait coherence.
-        for self.info.extension_methods.each |def_id, items| {
+        for self.crate_context.coherence_info.extension_methods.each
+                |def_id, items| {
+
             self.check_implementation_coherence(def_id, items);
         }
 
@@ -102,7 +147,7 @@ class CoherenceChecker {
         let self_type = self.crate_context.tcx.tcache.get(local_def(item.id));
         alt optional_associated_trait {
             none {
-                alt self.get_base_type(self_type.ty) {
+                alt get_base_type_def_id(self_type.ty) {
                     none {
                         let session = self.crate_context.tcx.sess;
                         session.span_warn(item.span,
@@ -110,11 +155,19 @@ class CoherenceChecker {
                                            implementation; implement a trait \
                                            instead");
                     }
-                    some(base_type) {
+                    some(base_def_id) {
                         let implementation_list;
-                        alt self.info.inherent_methods.find(base_type) {
+                        alt self.crate_context
+                                .coherence_info
+                                .inherent_methods
+                                .find(base_def_id) {
+
                             none {
                                 implementation_list = @dvec();
+                                self.crate_context
+                                    .coherence_info
+                                    .inherent_methods
+                                    .insert(base_def_id, implementation_list);
                             }
                             some(existing_implementation_list) {
                                 implementation_list =
@@ -132,7 +185,11 @@ class CoherenceChecker {
                 let def_id = def_id_of_def(def);
 
                 let implementation_list;
-                alt self.info.extension_methods.find(def_id) {
+                alt self.crate_context
+                        .coherence_info
+                        .extension_methods
+                        .find(def_id) {
+
                     none {
                         implementation_list = @dvec();
                     }
@@ -147,57 +204,12 @@ class CoherenceChecker {
 
         // Add the implementation to the mapping from implementation to base
         // type def ID, if there is a base type for this implementation.
-        alt self.get_base_type_def_id(self_type.ty) {
+        alt get_base_type_def_id(self_type.ty) {
             none {
                 // Nothing to do.
             }
             some(base_type_def_id) {
                 self.base_type_def_ids.insert(item.id, base_type_def_id);
-            }
-        }
-    }
-
-    fn get_base_type(original_type: t) -> option<t> {
-        alt get(original_type).struct {
-            ty_box(base_mutability_and_type) |
-            ty_uniq(base_mutability_and_type) |
-            ty_ptr(base_mutability_and_type) |
-            ty_rptr(_, base_mutability_and_type) {
-                self.get_base_type(base_mutability_and_type.ty)
-            }
-
-            ty_enum(*) | ty_trait(*) | ty_class(*) {
-                some(original_type)
-            }
-
-            ty_nil | ty_bot | ty_bool | ty_int(*) | ty_uint(*) | ty_float(*) |
-            ty_str | ty_estr(*) | ty_vec(*) | ty_evec(*) | ty_rec(*) |
-            ty_fn(*) | ty_tup(*) | ty_var(*) | ty_var_integral(*) |
-            ty_param(*) | ty_self | ty_constr(*) | ty_type | ty_opaque_box |
-            ty_opaque_closure_ptr(*) | ty_unboxed_vec(*) {
-                none
-            }
-        }
-    }
-
-    // Returns the def ID of the base type.
-    fn get_base_type_def_id(original_type: t) -> option<def_id> {
-        alt self.get_base_type(original_type) {
-            none {
-                ret none;
-            }
-            some(base_type) {
-                alt get(base_type).struct {
-                    ty_enum(def_id, _) |
-                    ty_class(def_id, _) |
-                    ty_trait(def_id, _) {
-                        ret some(def_id);
-                    }
-                    _ {
-                        fail "get_base_type() returned a type that wasn't an \
-                              enum, class, or trait";
-                    }
-                }
             }
         }
     }

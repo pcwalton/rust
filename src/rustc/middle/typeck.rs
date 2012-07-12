@@ -157,6 +157,7 @@ type crate_ctxt = {impl_map: resolve::impl_map,
                    trait_map: resolve3::TraitMap,
                    method_map: method_map,
                    vtable_map: vtable_map,
+                   coherence_info: @coherence::CoherenceInfo,
                    tcx: ty::ctxt};
 
 // Functions that write types into the node type table
@@ -295,6 +296,7 @@ fn check_crate(tcx: ty::ctxt,
                 trait_map: trait_map,
                 method_map: std::map::int_hash(),
                 vtable_map: std::map::int_hash(),
+                coherence_info: @coherence::CoherenceInfo(),
                 tcx: tcx};
     collect::collect_item_types(ccx, crate);
 
