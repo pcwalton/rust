@@ -4,6 +4,7 @@
 // has at most one implementation for each type. Then we build a mapping from
 // each trait in the system to its implementations.
 
+import middle::resolve3::Impl;
 import middle::ty::{get, t, ty_box, ty_uniq, ty_ptr, ty_rptr, ty_enum};
 import middle::ty::{ty_class, ty_nil, ty_bot, ty_bool, ty_int, ty_uint};
 import middle::ty::{ty_float, ty_str, ty_estr, ty_vec, ty_evec, ty_rec};
@@ -15,8 +16,11 @@ import middle::typeck::infer::{infer_ctxt, mk_subty, new_infer_ctxt};
 import syntax::ast::{crate, def_id, item, item_class, item_const, item_enum};
 import syntax::ast::{item_fn, item_foreign_mod, item_impl, item_mac};
 import syntax::ast::{item_mod, item_trait, item_ty, local_crate, method};
-import syntax::ast::{node_id, region_param, rp_none, rp_self, trait_ref};
+import syntax::ast::{node_id, region_param, rp_none, rp_self};
+import syntax::ast::{trait_ref};
+import syntax::ast_map::node_item;
 import syntax::ast_util::{def_id_of_def, new_def_hash};
+import syntax::codemap::span;
 import syntax::visit::{default_simple_visitor, default_visitor};
 import syntax::visit::{mk_simple_visitor, mk_vt, visit_crate, visit_item};
 import syntax::visit::{visit_mod};
@@ -26,6 +30,7 @@ import dvec::{dvec, extensions};
 import result::{extensions};
 import std::map::{hashmap, int_hash};
 import uint::range;
+import vec::push;
 
 fn get_base_type(original_type: t) -> option<t> {
     alt get(original_type).struct {
@@ -75,11 +80,11 @@ fn get_base_type_def_id(original_type: t) -> option<def_id> {
 class CoherenceInfo {
     // Contains implementations of methods that are inherent to a type.
     // Methods in these implementations don't need to be exported.
-    let inherent_methods: hashmap<def_id,@dvec<@item>>;
+    let inherent_methods: hashmap<def_id,@dvec<@Impl>>;
 
     // Contains implementations of methods associated with a trait. For these,
     // the associated trait must be imported at the call site.
-    let extension_methods: hashmap<def_id,@dvec<@item>>;
+    let extension_methods: hashmap<def_id,@dvec<@Impl>>;
 
     new() {
         self.inherent_methods = new_def_hash();
@@ -175,7 +180,8 @@ class CoherenceChecker {
                             }
                         }
 
-                        implementation_list.push(item);
+                        let implementation = self.create_impl_from_item(item);
+                        implementation_list.push(implementation);
                     }
                 }
             }
@@ -198,7 +204,7 @@ class CoherenceChecker {
                     }
                 }
 
-                implementation_list.push(item);
+                implementation_list.push(self.create_impl_from_item(item));
             }
         }
 
@@ -215,7 +221,7 @@ class CoherenceChecker {
     }
 
     fn check_implementation_coherence(_trait_def_id: def_id,
-                                      implementations: @dvec<@item>) {
+                                      implementations: @dvec<@Impl>) {
 
         // Unify pairs of polytypes.
         for implementations.eachi |i, implementation_a| {
@@ -228,10 +234,10 @@ class CoherenceChecker {
 
                 if self.polytypes_unify(polytype_a, polytype_b) {
                     let session = self.crate_context.tcx.sess;
-                    session.span_err(implementation_b.span,
+                    session.span_err(self.span_of_impl(implementation_b),
                                      "conflicting implementations for a \
                                       trait");
-                    session.span_note(implementation_a.span,
+                    session.span_note(self.span_of_impl(implementation_a),
                                       "note conflicting implementation here");
                 }
             }
@@ -274,19 +280,10 @@ class CoherenceChecker {
         ret subst(self.crate_context.tcx, substitutions, polytype.ty);
     }
 
-    fn get_self_type_for_implementation(implementation: @item)
+    fn get_self_type_for_implementation(implementation: @Impl)
                                      -> ty_param_bounds_and_ty {
 
-        alt implementation.node {
-            item_impl(*) {
-                let def = local_def(implementation.id);
-                ret self.crate_context.tcx.tcache.get(def);
-            }
-            _ {
-                self.crate_context.tcx.sess.span_bug(implementation.span,
-                                                     "not an implementation");
-            }
-        }
+        ret self.crate_context.tcx.tcache.get(implementation.did);
     }
 
     // Privileged scope checking
@@ -420,6 +417,47 @@ class CoherenceChecker {
         }
 
         ret results;
+    }
+
+    // Converts an implementation in the AST to an Impl structure.
+    fn create_impl_from_item(item: @item) -> @Impl {
+        alt item.node {
+            item_impl(ty_params, _, _, _, ast_methods) {
+                let mut methods = ~[];
+                for ast_methods.each |ast_method| {
+                    push(methods, @{
+                        did: local_def(ast_method.id),
+                        n_tps: ast_method.tps.len(),
+                        ident: ast_method.ident
+                    });
+                }
+
+                ret @{
+                    did: local_def(item.id),
+                    ident: item.ident,
+                    methods: methods
+                };
+            }
+            _ {
+                self.crate_context.tcx.sess.span_bug(item.span,
+                                                     "can't convert a \
+                                                      non-impl to an impl");
+            }
+        }
+    }
+
+    fn span_of_impl(implementation: @Impl) -> span {
+        assert implementation.did.crate == local_crate;
+        alt self.crate_context.tcx.items.find(implementation.did.node) {
+            some(node_item(item, _)) {
+                ret item.span;
+            }
+            _ {
+                self.crate_context.tcx.sess.bug("span_of_impl() called on \
+                                                 something that wasn't an \
+                                                 impl!");
+            }
+        }
     }
 }
 
