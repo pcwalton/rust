@@ -37,7 +37,7 @@ export num, times;
 export str_slice, unique_str;
 export const_vector, copyable_vector, immutable_vector;
 export immutable_copyable_vector, iter_trait_extensions, vec_concat;
-export base_iter, copyable_iter;
+export base_iter, copyable_iter, extended_iter;
 export ptr;
 
 // Export the log levels as global constants. Higher levels mean

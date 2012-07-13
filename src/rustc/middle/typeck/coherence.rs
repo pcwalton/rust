@@ -4,8 +4,12 @@
 // has at most one implementation for each type. Then we build a mapping from
 // each trait in the system to its implementations.
 
+import metadata::csearch::{each_path, get_impl_trait, get_impls_for_mod};
+import metadata::cstore::{iter_crate_data};
+import metadata::decoder::{dl_def, dl_field, dl_impl};
 import middle::resolve3::Impl;
-import middle::ty::{get, subst, t, ty_box, ty_uniq, ty_ptr, ty_rptr, ty_enum};
+import middle::ty::{get, lookup_item_type, subst, t, ty_box, ty_uniq};
+import middle::ty::{ty_ptr, ty_rptr, ty_enum};
 import middle::ty::{ty_class, ty_nil, ty_bot, ty_bool, ty_int, ty_uint};
 import middle::ty::{ty_float, ty_str, ty_estr, ty_vec, ty_evec, ty_rec};
 import middle::ty::{ty_fn, ty_trait, ty_tup, ty_var, ty_var_integral};
@@ -13,12 +17,12 @@ import middle::ty::{ty_param, ty_self, ty_constr, ty_type, ty_opaque_box};
 import middle::ty::{ty_opaque_closure_ptr, ty_unboxed_vec, type_is_var};
 import middle::typeck::infer::{force_ty_vars_only, infer_ctxt, mk_subty};
 import middle::typeck::infer::{new_infer_ctxt, resolve_shallow};
-import syntax::ast::{crate, def_id, item, item_class, item_const, item_enum};
+import syntax::ast::{crate, def_id, def_mod, item, item_class, item_const, item_enum};
 import syntax::ast::{item_fn, item_foreign_mod, item_impl, item_mac};
 import syntax::ast::{item_mod, item_trait, item_ty, local_crate, method};
 import syntax::ast::{node_id, region_param, rp_none, rp_self, trait_ref};
 import syntax::ast_map::node_item;
-import syntax::ast_util::{def_id_of_def, new_def_hash};
+import syntax::ast_util::{def_id_of_def, dummy_sp, new_def_hash};
 import syntax::codemap::span;
 import syntax::visit::{default_simple_visitor, default_visitor};
 import syntax::visit::{mk_simple_visitor, mk_vt, visit_crate, visit_item};
@@ -29,7 +33,7 @@ import dvec::{dvec, extensions};
 import result::{extensions, ok};
 import std::map::{hashmap, int_hash};
 import uint::range;
-import vec::push;
+import vec::{len, push};
 
 fn get_base_type(inference_context: infer_ctxt, span: span, original_type: t)
               -> option<t> {
@@ -122,7 +126,7 @@ class CoherenceChecker {
 
     // A mapping from implementations to the corresponding base type
     // definition ID.
-    let base_type_def_ids: hashmap<node_id,def_id>;
+    let base_type_def_ids: hashmap<def_id,def_id>;
 
     // A set of implementations in privileged scopes; i.e. those
     // implementations that are defined in the same scope as their base types.
@@ -136,7 +140,7 @@ class CoherenceChecker {
         self.crate_context = crate_context;
         self.inference_context = new_infer_ctxt(crate_context.tcx);
 
-        self.base_type_def_ids = int_hash();
+        self.base_type_def_ids = new_def_hash();
         self.privileged_implementations = int_hash();
         self.privileged_types = new_def_hash();
     }
@@ -168,6 +172,12 @@ class CoherenceChecker {
 
         // Check whether traits with base types are in privileged scopes.
         self.check_privileged_scopes(crate);
+
+        // Bring in external crates. It's fine for this to happen after the
+        // coherence checks, because we ensure by construction that no errors
+        // can happen at link time.
+
+        self.add_external_crates();
     }
 
     fn check_implementation(item: @item,
@@ -187,54 +197,16 @@ class CoherenceChecker {
                                            instead");
                     }
                     some(base_def_id) {
-                        let implementation_list;
-                        alt self.crate_context
-                                .coherence_info
-                                .inherent_methods
-                                .find(base_def_id) {
-
-                            none {
-                                implementation_list = @dvec();
-                                self.crate_context
-                                    .coherence_info
-                                    .inherent_methods
-                                    .insert(base_def_id, implementation_list);
-                            }
-                            some(existing_implementation_list) {
-                                implementation_list =
-                                    existing_implementation_list;
-                            }
-                        }
-
                         let implementation = self.create_impl_from_item(item);
-                        implementation_list.push(implementation);
+                        self.add_inherent_method(base_def_id, implementation);
                     }
                 }
             }
             some(associated_trait) {
                 let def =
                     self.crate_context.tcx.def_map.get(associated_trait.id);
-                let def_id = def_id_of_def(def);
-
-                let implementation_list;
-                alt self.crate_context
-                        .coherence_info
-                        .extension_methods
-                        .find(def_id) {
-
-                    none {
-                        implementation_list = @dvec();
-                        self.crate_context
-                            .coherence_info
-                            .extension_methods
-                            .insert(def_id, implementation_list);
-                    }
-                    some(existing_implementation_list) {
-                        implementation_list = existing_implementation_list;
-                    }
-                }
-
-                implementation_list.push(self.create_impl_from_item(item));
+                let implementation = self.create_impl_from_item(item);
+                self.add_trait_method(def_id_of_def(def), implementation);
             }
         }
 
@@ -247,9 +219,46 @@ class CoherenceChecker {
                 // Nothing to do.
             }
             some(base_type_def_id) {
-                self.base_type_def_ids.insert(item.id, base_type_def_id);
+                self.base_type_def_ids.insert(local_def(item.id),
+                                              base_type_def_id);
             }
         }
+    }
+
+    fn add_inherent_method(base_def_id: def_id, implementation: @Impl) {
+        let implementation_list;
+        alt self.crate_context.coherence_info.inherent_methods
+            .find(base_def_id) {
+
+            none {
+                implementation_list = @dvec();
+                self.crate_context.coherence_info.inherent_methods
+                    .insert(base_def_id, implementation_list);
+            }
+            some(existing_implementation_list) {
+                implementation_list = existing_implementation_list;
+            }
+        }
+
+        implementation_list.push(implementation);
+    }
+
+    fn add_trait_method(trait_id: def_id, implementation: @Impl) {
+        let implementation_list;
+        alt self.crate_context.coherence_info.extension_methods
+                .find(trait_id) {
+
+            none {
+                implementation_list = @dvec();
+                self.crate_context.coherence_info.extension_methods
+                    .insert(trait_id, implementation_list);
+            }
+            some(existing_implementation_list) {
+                implementation_list = existing_implementation_list;
+            }
+        }
+
+        implementation_list.push(implementation);
     }
 
     fn check_implementation_coherence(_trait_def_id: def_id,
@@ -347,7 +356,7 @@ class CoherenceChecker {
                         }
                     }
                     item_impl(_, _, optional_trait_ref, _, _) {
-                        alt self.base_type_def_ids.find(item.id) {
+                        alt self.base_type_def_ids.find(local_def(item.id)) {
                             none {
                                 // Nothing to do.
                             }
@@ -489,6 +498,90 @@ class CoherenceChecker {
                 self.crate_context.tcx.sess.bug("span_of_impl() called on \
                                                  something that wasn't an \
                                                  impl!");
+            }
+        }
+    }
+
+    // External crate handling
+
+    fn add_external_crates() {
+        let crate_store = self.crate_context.tcx.sess.cstore;
+        do iter_crate_data(crate_store) |crate_number, _crate_metadata| {
+            for each_path(crate_store, crate_number) |path_entry| {
+                let module_def_id;
+                alt path_entry.def_like {
+                    dl_def(def_mod(def_id)) {
+                        module_def_id = def_id;
+                    }
+                    dl_def(_) | dl_impl(_) | dl_field {
+                        // Skip this.
+                        again;
+                    }
+                }
+
+                let implementations = get_impls_for_mod(crate_store,
+                                                        module_def_id,
+                                                        none);
+                for (*implementations).each |implementation| {
+                    let self_type = lookup_item_type(self.crate_context.tcx,
+                                                     implementation.did);
+                    let optional_trait =
+                        get_impl_trait(self.crate_context.tcx,
+                                       implementation.did);
+                    alt optional_trait {
+                        none {
+                            // This is an inherent method.
+                            alt get_base_type_def_id(self.inference_context,
+                                                     dummy_sp(),
+                                                     self_type.ty) {
+                                none {
+                                    let session = self.crate_context.tcx.sess;
+                                    session.bug(#fmt("no base type for \
+                                                      external impl with no \
+                                                      trait: %s (type %s)!",
+                                                     *implementation.ident,
+                                                     ty_to_str
+                                                     (self.crate_context.tcx,
+                                                      self_type.ty)));
+                                }
+                                some(base_def_id) {
+                                    self.add_inherent_method(base_def_id,
+                                                             implementation);
+                                }
+                            }
+                        }
+
+                        some(trait_type) {
+                            alt get(trait_type).struct {
+                                ty_trait(trait_id, _) {
+                                    self.add_trait_method(trait_id,
+                                                          implementation);
+                                }
+                                _ {
+                                    self.crate_context.tcx.sess
+                                        .bug("trait type returned is not a \
+                                              trait");
+                                }
+                            }
+                        }
+                    }
+
+                    // Add the implementation to the mapping from
+                    // implementation to base type def ID, if there is a base
+                    // type for this implementation.
+
+                    alt get_base_type_def_id(self.inference_context,
+                                             dummy_sp(),
+                                             self_type.ty) {
+                        none {
+                            // Nothing to do.
+                        }
+                        some(base_type_def_id) {
+                            self.base_type_def_ids.insert(implementation.did,
+                                                          base_type_def_id);
+                        }
+                    }
+                }
             }
         }
     }

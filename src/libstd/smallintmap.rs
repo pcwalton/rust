@@ -5,6 +5,7 @@
 import core::option;
 import core::option::{some, none};
 import dvec::{dvec, extensions};
+import map::map;
 
 // FIXME (#2347): Should not be @; there's a bug somewhere in rustc that
 // requires this to be.
