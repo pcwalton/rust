@@ -619,6 +619,9 @@ class Resolver {
     // allowed to access private names of any module.
     let mut xray_context: XrayFlag;
 
+    // The trait that the current context can refer to.
+    let mut current_trait_ref: option<def_id>;
+
     // The atom for the keyword "self".
     let self_atom: Atom;
 
@@ -656,7 +659,9 @@ class Resolver {
         self.current_module = (*self.graph_root).get_module();
         self.value_ribs = @dvec();
         self.type_ribs = @dvec();
+
         self.xray_context = NoXray;
+        self.current_trait_ref = none;
 
         self.self_atom = (*self.atom_table).intern(@"self");
         self.primitive_type_table = @PrimitiveTypeTable(self.atom_table);
@@ -2947,6 +2952,7 @@ class Resolver {
 
             item_impl(type_parameters, _, interface_reference, self_type,
                       methods) {
+
                 self.resolve_implementation(item.id,
                                             item.span,
                                             type_parameters,
@@ -2966,8 +2972,7 @@ class Resolver {
                 // Create a new rib for the interface-wide type parameters.
                 do self.with_type_parameter_rib
                         (HasTypeParameters(&type_parameters, item.id, 0u,
-                                           NormalRibKind))
-                        || {
+                                           NormalRibKind)) {
 
                     for methods.each |method| {
                         // Create a new rib for the method-specific type
@@ -2979,8 +2984,7 @@ class Resolver {
                                 (HasTypeParameters(&method.tps,
                                                    item.id,
                                                    type_parameters.len(),
-                                                   NormalRibKind))
-                                || {
+                                                   NormalRibKind)) {
 
                             // Resolve the method-specific type parameters.
                             self.resolve_type_parameters(method.tps, visitor);
@@ -3351,13 +3355,13 @@ class Resolver {
         let borrowed_type_parameters: &~[ty_param] = &type_parameters;
         do self.with_type_parameter_rib(HasTypeParameters
                                         (borrowed_type_parameters, id, 0u,
-                                         NormalRibKind))
-                || {
+                                         NormalRibKind)) {
 
             // Resolve the type parameters.
             self.resolve_type_parameters(type_parameters, visitor);
 
             // Resolve the interface reference, if necessary.
+            let original_trait_ref = self.current_trait_ref;
             alt interface_reference {
                 none {
                     // Nothing to do.
@@ -3372,6 +3376,9 @@ class Resolver {
                         }
                         some(def) {
                             self.record_def(interface_reference.id, def);
+
+                            // Record the current trait reference.
+                            self.current_trait_ref = some(def_id_of_def(def));
                         }
                     }
                 }
@@ -3397,6 +3404,9 @@ class Resolver {
                                       NoCaptureClause,
                                       visitor);
             }
+
+            // Restore the original trait reference.
+            self.current_trait_ref = original_trait_ref;
         }
     }
 
@@ -4178,6 +4188,18 @@ class Resolver {
         let found_traits = @dvec();
         let mut search_module = self.current_module;
         loop {
+            // Look for the current trait.
+            alt copy self.current_trait_ref {
+                some(trait_def_id) {
+                    self.add_trait_info_if_containing_method(found_traits,
+                                                             trait_def_id,
+                                                             name);
+                }
+                none {
+                    // Nothing to do.
+                }
+            }
+
             // Look for trait children.
             for search_module.children.each |_name, child_name_bindings| {
                 alt child_name_bindings.def_for_namespace(TypeNS) {

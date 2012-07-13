@@ -314,9 +314,12 @@ enum ebml_serializer_tag {
     es_label // Used only when debugging
 }
 
-impl serializer of serialization::serializer for ebml::writer {
-    fn emit_nil() {}
+trait serializer_priv {
+    fn _emit_tagged_uint(t: ebml_serializer_tag, v: uint);
+    fn _emit_label(label: str);
+}
 
+impl serializer of serializer_priv for ebml::writer {
     // used internally to emit things like the vector length and so on
     fn _emit_tagged_uint(t: ebml_serializer_tag, v: uint) {
         assert v <= 0xFFFF_FFFF_u;
@@ -332,6 +335,10 @@ impl serializer of serialization::serializer for ebml::writer {
         // try and check failures more quickly.
         if debug { self.wr_tagged_str(es_label as uint, label) }
     }
+}
+
+impl serializer of serialization::serializer for ebml::writer {
+    fn emit_nil() {}
 
     fn emit_uint(v: uint) { self.wr_tagged_u64(es_uint as uint, v as u64); }
     fn emit_u64(v: u64) { self.wr_tagged_u64(es_u64 as uint, v); }
@@ -386,11 +393,15 @@ impl serializer of serialization::serializer for ebml::writer {
     fn emit_tup_elt(_idx: uint, f: fn()) { f() }
 }
 
-type ebml_deserializer = {mut parent: ebml::doc,
-                          mut pos: uint};
+type ebml_deserializer_ = {mut parent: ebml::doc,
+                           mut pos: uint};
+
+enum ebml_deserializer {
+    ebml_deserializer_(ebml_deserializer_)
+}
 
 fn ebml_deserializer(d: ebml::doc) -> ebml_deserializer {
-    {mut parent: d, mut pos: d.start}
+    ebml_deserializer_({mut parent: d, mut pos: d.start})
 }
 
 impl deserializer of serialization::deserializer for ebml_deserializer {
