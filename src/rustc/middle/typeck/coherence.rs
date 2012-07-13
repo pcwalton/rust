@@ -38,10 +38,12 @@ fn get_base_type(original_type: t) -> option<t> {
         ty_uniq(base_mutability_and_type) |
         ty_ptr(base_mutability_and_type) |
         ty_rptr(_, base_mutability_and_type) {
+            #debug("(getting base type) recurring");
             get_base_type(base_mutability_and_type.ty)
         }
 
         ty_enum(*) | ty_trait(*) | ty_class(*) {
+            #debug("(getting base type) found base type");
             some(original_type)
         }
 
@@ -50,6 +52,8 @@ fn get_base_type(original_type: t) -> option<t> {
         ty_fn(*) | ty_tup(*) | ty_var(*) | ty_var_integral(*) |
         ty_param(*) | ty_self | ty_constr(*) | ty_type | ty_opaque_box |
         ty_opaque_closure_ptr(*) | ty_unboxed_vec(*) {
+            #debug("(getting base type) no base type; found %?",
+                   get(original_type).struct);
             none
         }
     }
@@ -198,6 +202,10 @@ class CoherenceChecker {
 
                     none {
                         implementation_list = @dvec();
+                        self.crate_context
+                            .coherence_info
+                            .extension_methods
+                            .insert(def_id, implementation_list);
                     }
                     some(existing_implementation_list) {
                         implementation_list = existing_implementation_list;
@@ -224,7 +232,8 @@ class CoherenceChecker {
                                       implementations: @dvec<@Impl>) {
 
         // Unify pairs of polytypes.
-        for implementations.eachi |i, implementation_a| {
+        for range(0, implementations.len()) |i| {
+            let implementation_a = implementations.get_elt(i);
             let polytype_a =
                 self.get_self_type_for_implementation(implementation_a);
             for range(i + 1, implementations.len()) |j| {
