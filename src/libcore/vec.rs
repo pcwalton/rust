@@ -85,6 +85,12 @@ export unpack_const_slice;
 export unsafe;
 export u8;
 export extensions;
+export const_vector;
+export copyable_vector;
+export immutable_vector;
+export immutable_copyable_vector;
+export iter_trait_extensions;
+export vec_concat;
 
 #[abi = "cdecl"]
 extern mod rustrt {
@@ -1420,6 +1426,11 @@ mod unsafe {
         data: u8
     };
 
+    type slice_repr = {
+        mut data: *u8,
+        mut len: uint
+    };
+
     /**
      * Constructs a vector from an unsafe pointer to a buffer
      *
@@ -1461,6 +1472,13 @@ mod unsafe {
     #[inline(always)]
     unsafe fn to_ptr<T>(v: ~[const T]) -> *T {
         let repr: **vec_repr = ::unsafe::reinterpret_cast(addr_of(v));
+        ret ::unsafe::reinterpret_cast(addr_of((**repr).data));
+    }
+
+
+    #[inline(always)]
+    unsafe fn to_ptr_slice<T>(v: &[const T]) -> *T {
+        let repr: **slice_repr = ::unsafe::reinterpret_cast(addr_of(v));
         ret ::unsafe::reinterpret_cast(addr_of((**repr).data));
     }
 
