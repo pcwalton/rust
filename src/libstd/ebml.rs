@@ -404,7 +404,7 @@ fn ebml_deserializer(d: ebml::doc) -> ebml_deserializer {
     ebml_deserializer_({mut parent: d, mut pos: d.start})
 }
 
-impl deserializer of serialization::deserializer for ebml_deserializer {
+impl deserializer_priv for ebml_deserializer {
     fn _check_label(lbl: str) {
         if self.pos < self.parent.end {
             let {tag: r_tag, doc: r_doc} =
@@ -457,7 +457,9 @@ impl deserializer of serialization::deserializer for ebml_deserializer {
         #debug["_next_uint exp_tag=%? result=%?", exp_tag, r];
         ret r as uint;
     }
+}
 
+impl deserializer of serialization::deserializer for ebml_deserializer {
     fn read_nil() -> () { () }
 
     fn read_u64() -> u64 { ebml::doc_as_u64(self.next_doc(es_u64)) }
