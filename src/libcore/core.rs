@@ -9,7 +9,7 @@ import str::{extensions, str_slice, unique_str};
 import vec::extensions;
 import vec::{const_vector, copyable_vector, immutable_vector};
 import vec::{immutable_copyable_vector, iter_trait_extensions, vec_concat};
-import iter::{base_iter, copyable_iter};
+import iter::{base_iter, extended_iter, copyable_iter};
 import option::extensions;
 import option_iter::extensions;
 import ptr::{extensions, ptr};

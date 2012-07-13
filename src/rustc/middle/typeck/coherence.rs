@@ -5,19 +5,18 @@
 // each trait in the system to its implementations.
 
 import middle::resolve3::Impl;
-import middle::ty::{get, t, ty_box, ty_uniq, ty_ptr, ty_rptr, ty_enum};
+import middle::ty::{get, subst, t, ty_box, ty_uniq, ty_ptr, ty_rptr, ty_enum};
 import middle::ty::{ty_class, ty_nil, ty_bot, ty_bool, ty_int, ty_uint};
 import middle::ty::{ty_float, ty_str, ty_estr, ty_vec, ty_evec, ty_rec};
 import middle::ty::{ty_fn, ty_trait, ty_tup, ty_var, ty_var_integral};
 import middle::ty::{ty_param, ty_self, ty_constr, ty_type, ty_opaque_box};
-import middle::ty::{ty_opaque_closure_ptr, ty_unboxed_vec};
-import middle::ty::{subst};
-import middle::typeck::infer::{infer_ctxt, mk_subty, new_infer_ctxt};
+import middle::ty::{ty_opaque_closure_ptr, ty_unboxed_vec, type_is_var};
+import middle::typeck::infer::{force_ty_vars_only, infer_ctxt, mk_subty};
+import middle::typeck::infer::{new_infer_ctxt, resolve_shallow};
 import syntax::ast::{crate, def_id, item, item_class, item_const, item_enum};
 import syntax::ast::{item_fn, item_foreign_mod, item_impl, item_mac};
 import syntax::ast::{item_mod, item_trait, item_ty, local_crate, method};
-import syntax::ast::{node_id, region_param, rp_none, rp_self};
-import syntax::ast::{trait_ref};
+import syntax::ast::{node_id, region_param, rp_none, rp_self, trait_ref};
 import syntax::ast_map::node_item;
 import syntax::ast_util::{def_id_of_def, new_def_hash};
 import syntax::codemap::span;
@@ -27,24 +26,41 @@ import syntax::visit::{visit_mod};
 import util::ppaux::ty_to_str;
 
 import dvec::{dvec, extensions};
-import result::{extensions};
+import result::{extensions, ok};
 import std::map::{hashmap, int_hash};
 import uint::range;
 import vec::push;
 
-fn get_base_type(original_type: t) -> option<t> {
-    alt get(original_type).struct {
+fn get_base_type(inference_context: infer_ctxt, span: span, original_type: t)
+              -> option<t> {
+
+    let resolved_type;
+    alt resolve_shallow(inference_context,
+                        original_type,
+                        force_ty_vars_only) {
+        ok(resulting_type) if !type_is_var(resulting_type) {
+            resolved_type = resulting_type;
+        }
+        _ {
+            inference_context.tcx.sess.span_fatal(span,
+                                                  "the type of this value \
+                                                   must be known in order to \
+                                                   acquire the base type");
+        }
+    }
+
+    alt get(resolved_type).struct {
         ty_box(base_mutability_and_type) |
         ty_uniq(base_mutability_and_type) |
         ty_ptr(base_mutability_and_type) |
         ty_rptr(_, base_mutability_and_type) {
             #debug("(getting base type) recurring");
-            get_base_type(base_mutability_and_type.ty)
+            get_base_type(inference_context, span, base_mutability_and_type.ty)
         }
 
         ty_enum(*) | ty_trait(*) | ty_class(*) {
             #debug("(getting base type) found base type");
-            some(original_type)
+            some(resolved_type)
         }
 
         ty_nil | ty_bot | ty_bool | ty_int(*) | ty_uint(*) | ty_float(*) |
@@ -60,8 +76,12 @@ fn get_base_type(original_type: t) -> option<t> {
 }
 
 // Returns the def ID of the base type, if there is one.
-fn get_base_type_def_id(original_type: t) -> option<def_id> {
-    alt get_base_type(original_type) {
+fn get_base_type_def_id(inference_context: infer_ctxt,
+                        span: span,
+                        original_type: t)
+                     -> option<def_id> {
+
+    alt get_base_type(inference_context, span, original_type) {
         none {
             ret none;
         }
@@ -156,7 +176,9 @@ class CoherenceChecker {
         let self_type = self.crate_context.tcx.tcache.get(local_def(item.id));
         alt optional_associated_trait {
             none {
-                alt get_base_type_def_id(self_type.ty) {
+                alt get_base_type_def_id(self.inference_context,
+                                         item.span,
+                                         self_type.ty) {
                     none {
                         let session = self.crate_context.tcx.sess;
                         session.span_warn(item.span,
@@ -218,7 +240,9 @@ class CoherenceChecker {
 
         // Add the implementation to the mapping from implementation to base
         // type def ID, if there is a base type for this implementation.
-        alt get_base_type_def_id(self_type.ty) {
+        alt get_base_type_def_id(self.inference_context,
+                                 item.span,
+                                 self_type.ty) {
             none {
                 // Nothing to do.
             }

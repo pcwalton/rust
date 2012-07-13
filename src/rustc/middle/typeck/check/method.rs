@@ -63,12 +63,10 @@ class lookup {
                ty::get(self.self_ty).struct];
 
         // Determine if there are any inherent methods we can call.
-        //
-        // FIXME: Have to resolve type variables enough so that we can get at
-        // the base type!
-
         let optional_inherent_methods;
-        alt get_base_type_def_id(self.self_ty) {
+        alt get_base_type_def_id(self.fcx.infcx,
+                                 self.self_expr.span,
+                                 self.self_ty) {
             none {
                 optional_inherent_methods = none;
             }

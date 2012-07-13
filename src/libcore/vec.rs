@@ -1561,6 +1561,9 @@ mod u8 {
 impl extensions/&<A> of iter::base_iter<A> for &[const A] {
     fn each(blk: fn(A) -> bool) { each(self, blk) }
     fn size_hint() -> option<uint> { some(len(self)) }
+}
+
+impl extensions/&<A> of iter::extended_iter<A> for &[const A] {
     fn eachi(blk: fn(uint, A) -> bool) { iter::eachi(self, blk) }
     fn all(blk: fn(A) -> bool) -> bool { iter::all(self, blk) }
     fn any(blk: fn(A) -> bool) -> bool { iter::any(self, blk) }
@@ -1569,6 +1572,7 @@ impl extensions/&<A> of iter::base_iter<A> for &[const A] {
     }
     fn contains(x: A) -> bool { iter::contains(self, x) }
     fn count(x: A) -> uint { iter::count(self, x) }
+    fn position(f: fn(A) -> bool) -> option<uint> { iter::position(self, f) }
 }
 
 trait iter_trait_extensions<A> {
