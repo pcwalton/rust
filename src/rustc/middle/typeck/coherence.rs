@@ -196,9 +196,8 @@ class CoherenceChecker {
                                            implementation; implement a trait \
                                            instead");
                     }
-                    some(base_def_id) {
-                        let implementation = self.create_impl_from_item(item);
-                        self.add_inherent_method(base_def_id, implementation);
+                    some(_) {
+                        // Nothing to do.
                     }
                 }
             }
@@ -219,6 +218,9 @@ class CoherenceChecker {
                 // Nothing to do.
             }
             some(base_type_def_id) {
+                let implementation = self.create_impl_from_item(item);
+                self.add_inherent_method(base_type_def_id, implementation);
+
                 self.base_type_def_ids.insert(local_def(item.id),
                                               base_type_def_id);
             }
@@ -530,7 +532,10 @@ class CoherenceChecker {
                                        implementation.did);
                     alt optional_trait {
                         none {
-                            // This is an inherent method.
+                            // This is an inherent method. There should be
+                            // no problems here, but perform a sanity check
+                            // anyway.
+
                             alt get_base_type_def_id(self.inference_context,
                                                      dummy_sp(),
                                                      self_type.ty) {
@@ -544,9 +549,8 @@ class CoherenceChecker {
                                                      (self.crate_context.tcx,
                                                       self_type.ty)));
                                 }
-                                some(base_def_id) {
-                                    self.add_inherent_method(base_def_id,
-                                                             implementation);
+                                some(_) {
+                                    // Nothing to do.
                                 }
                             }
                         }
@@ -577,6 +581,9 @@ class CoherenceChecker {
                             // Nothing to do.
                         }
                         some(base_type_def_id) {
+                            self.add_inherent_method(base_type_def_id,
+                                                     implementation);
+
                             self.base_type_def_ids.insert(implementation.did,
                                                           base_type_def_id);
                         }

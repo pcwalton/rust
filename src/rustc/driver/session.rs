@@ -76,7 +76,7 @@ type options =
 
 type crate_metadata = {name: str, data: ~[u8]};
 
-type session = @{targ_cfg: @config,
+type session_ = {targ_cfg: @config,
                  opts: @options,
                  cstore: metadata::cstore::cstore,
                  parse_sess: parse_sess,
@@ -88,6 +88,10 @@ type session = @{targ_cfg: @config,
                  mut building_library: bool,
                  working_dir: str,
                  warning_settings: lint::warning_settings};
+
+enum session {
+    session_(@session_)
+}
 
 impl session for session {
     fn span_fatal(sp: span, msg: str) -> ! {

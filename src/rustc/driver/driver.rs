@@ -1,6 +1,6 @@
 // -*- rust -*-
 import metadata::{creader, cstore, filesearch};
-import session::session;
+import session::{session, session_};
 import syntax::parse;
 import syntax::{ast, codemap};
 import syntax::attr;
@@ -518,11 +518,12 @@ fn build_session(sopts: @session::options,
     build_session_(sopts, codemap, demitter, span_diagnostic_handler)
 }
 
-fn build_session_(
-    sopts: @session::options, cm: codemap::codemap,
-    demitter: diagnostic::emitter,
-    span_diagnostic_handler: diagnostic::span_handler
-) -> session {
+fn build_session_(sopts: @session::options,
+                  cm: codemap::codemap,
+                  demitter: diagnostic::emitter,
+                  span_diagnostic_handler: diagnostic::span_handler)
+               -> session {
+
     let target_cfg = build_target_config(sopts, demitter);
     let cstore = cstore::mk_cstore();
     let filesearch = filesearch::mk_filesearch(
@@ -530,19 +531,19 @@ fn build_session_(
         sopts.target_triple,
         sopts.addl_lib_search_paths);
     let warning_settings = lint::mk_warning_settings();
-    @{targ_cfg: target_cfg,
-      opts: sopts,
-      cstore: cstore,
-      parse_sess:
+    session_(@{targ_cfg: target_cfg,
+               opts: sopts,
+               cstore: cstore,
+               parse_sess:
           parse::new_parse_sess_special_handler(span_diagnostic_handler, cm),
-      codemap: cm,
-      // For a library crate, this is always none
-      mut main_fn: none,
-      span_diagnostic: span_diagnostic_handler,
-      filesearch: filesearch,
-      mut building_library: false,
-      working_dir: os::getcwd(),
-      warning_settings: warning_settings}
+               codemap: cm,
+               // For a library crate, this is always none
+               mut main_fn: none,
+               span_diagnostic: span_diagnostic_handler,
+               filesearch: filesearch,
+               mut building_library: false,
+               working_dir: os::getcwd(),
+               warning_settings: warning_settings})
 }
 
 fn parse_pretty(sess: session, &&name: str) -> pp_mode {

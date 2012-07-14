@@ -14,6 +14,7 @@ import ext::base::{mk_ctxt, ext_ctxt};
 import parse;
 import parse::*;
 
+import ast_builder::append_types;
 import ast_builder::ast_builder;
 import ast_builder::methods;
 import ast_builder::path;
@@ -99,7 +100,7 @@ impl methods for message {
 
             let args_ast = vec::append(
                 ~[cx.arg_mode(@"pipe",
-                              cx.ty_path(path(this.data_name())
+                              cx.ty_path_ast_builder(path(this.data_name())
                                         .add_tys(cx.ty_vars(this.ty_params))),
                               ast::by_copy)],
                 args_ast);
@@ -125,7 +126,7 @@ impl methods for message {
 
             cx.item_fn_poly(self.name(),
                             args_ast,
-                            cx.ty_path(path(next.data_name())
+                            cx.ty_path_ast_builder(path(next.data_name())
                                       .add_tys(next_tys)),
                             self.get_params(),
                             cx.expr_block(body))
@@ -159,7 +160,8 @@ impl methods for state {
     }
 
     fn to_ty(cx: ext_ctxt) -> @ast::ty {
-        cx.ty_path(path(self.name).add_tys(cx.ty_vars(self.ty_params)))
+        cx.ty_path_ast_builder(path(self.name)
+          .add_tys(cx.ty_vars(self.ty_params)))
     }
 
     fn to_type_decls(cx: ext_ctxt) -> [@ast::item]/~ {
@@ -188,7 +190,7 @@ impl methods for state {
             let v = cx.variant(name,
                                vec::append_one(
                                    tys,
-                                   cx.ty_path((dir + next_name)
+                                   cx.ty_path_ast_builder((dir + next_name)
                                               .add_tys(next_tys))));
 
             vec::push(items_msg, v);
@@ -212,9 +214,9 @@ impl methods for state {
         vec::push(items,
                   cx.item_ty_poly(
                       self.data_name(),
-                      cx.ty_path(
+                      cx.ty_path_ast_builder(
                           (@"pipes" + @(dir.to_str() + "_packet"))
-                          .add_ty(cx.ty_path(
+                          .add_ty(cx.ty_path_ast_builder(
                               (self.proto.name + self.data_name())
                               .add_tys(cx.ty_vars(self.ty_params))))),
                       self.ty_params));

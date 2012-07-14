@@ -460,12 +460,6 @@ impl of vid for region_vid {
     fn to_str() -> str { #fmt["<R%u>", self.to_uint()] }
 }
 
-impl of to_str::to_str for purity {
-    fn to_str() -> str {
-        purity_to_str(self)
-    }
-}
-
 fn param_bounds_to_kind(bounds: param_bounds) -> kind {
     let mut kind = kind_noncopyable();
     for vec::each(*bounds) |bound| {
@@ -2440,7 +2434,8 @@ fn type_err_to_str(cx: ctxt, err: type_err) -> str {
             " function was expected";
       }
       terr_purity_mismatch(f1, f2) {
-        ret #fmt["expected %s fn but found %s fn", f1.to_str(), f2.to_str()];
+        ret #fmt["expected %s fn but found %s fn",
+                 purity_to_str(f1), purity_to_str(f2)];
       }
       terr_proto_mismatch(e, a) {
         ret #fmt["closure protocol mismatch (%s vs %s)",

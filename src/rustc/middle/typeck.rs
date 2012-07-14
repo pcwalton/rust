@@ -153,12 +153,16 @@ type ty_param_substs_and_ty = {substs: ty::substs, ty: ty::t};
 
 type ty_table = hashmap<ast::def_id, ty::t>;
 
-type crate_ctxt = {impl_map: resolve::impl_map,
-                   trait_map: resolve3::TraitMap,
-                   method_map: method_map,
-                   vtable_map: vtable_map,
-                   coherence_info: @coherence::CoherenceInfo,
-                   tcx: ty::ctxt};
+type crate_ctxt_ = {impl_map: resolve::impl_map,
+                    trait_map: resolve3::TraitMap,
+                    method_map: method_map,
+                    vtable_map: vtable_map,
+                    coherence_info: @coherence::CoherenceInfo,
+                    tcx: ty::ctxt};
+
+enum crate_ctxt {
+    crate_ctxt_(crate_ctxt_)
+}
 
 // Functions that write types into the node type table
 fn write_ty_to_tcx(tcx: ty::ctxt, node_id: ast::node_id, ty: ty::t) {
@@ -292,12 +296,12 @@ fn check_crate(tcx: ty::ctxt,
                crate: @ast::crate)
             -> (method_map, vtable_map) {
 
-    let ccx = @{impl_map: impl_map,
-                trait_map: trait_map,
-                method_map: std::map::int_hash(),
-                vtable_map: std::map::int_hash(),
-                coherence_info: @coherence::CoherenceInfo(),
-                tcx: tcx};
+    let ccx = @crate_ctxt_({impl_map: impl_map,
+                            trait_map: trait_map,
+                            method_map: std::map::int_hash(),
+                            vtable_map: std::map::int_hash(),
+                            coherence_info: @coherence::CoherenceInfo(),
+                            tcx: tcx});
     collect::collect_item_types(ccx, crate);
 
     if tcx.sess.coherence() {

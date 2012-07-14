@@ -85,7 +85,7 @@ trait ext_ctxt_ast_builder {
     fn item_enum(name: ident, +variants: ~[ast::variant]) -> @ast::item;
     fn variant(name: ident, +tys: ~[@ast::ty]) -> ast::variant;
     fn item_mod(name: ident, +items: ~[@ast::item]) -> @ast::item;
-    fn ty_path(path: @ast::path) -> @ast::ty;
+    fn ty_path_ast_builder(path: @ast::path) -> @ast::ty;
     fn item_ty_poly(name: ident,
                     ty: @ast::ty,
                     +params: ~[ast::ty_param]) -> @ast::item;
@@ -199,7 +199,7 @@ impl ast_builder of ext_ctxt_ast_builder for ext_ctxt {
                       items: items}))
     }
 
-    fn ty_path(path: @ast::path) -> @ast::ty {
+    fn ty_path_ast_builder(path: @ast::path) -> @ast::ty {
         // TODO: make sure the node ids are legal.
         @{id: self.next_id(),
           node: ast::ty_path(path, self.next_id()),
@@ -219,6 +219,6 @@ impl ast_builder of ext_ctxt_ast_builder for ext_ctxt {
     }
 
     fn ty_vars(+ty_params: ~[ast::ty_param]) -> ~[@ast::ty] {
-        ty_params.map(|p| self.ty_path(path(p.ident)))
+        ty_params.map(|p| self.ty_path_ast_builder(path(p.ident)))
     }
 }

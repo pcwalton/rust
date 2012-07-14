@@ -170,12 +170,12 @@ fn check_crate(tcx: ty::ctxt,
                method_map: typeck::method_map,
                last_use_map: liveness::last_use_map,
                crate: @ast::crate) -> (root_map, mutbl_map) {
-    let bccx = @{tcx: tcx,
-                 method_map: method_map,
-                 last_use_map: last_use_map,
-                 binding_map: int_hash(),
-                 root_map: root_map(),
-                 mutbl_map: int_hash()};
+    let bccx = borrowck_ctxt_(@{tcx: tcx,
+                                method_map: method_map,
+                                last_use_map: last_use_map,
+                                binding_map: int_hash(),
+                                root_map: root_map(),
+                                mutbl_map: int_hash()});
 
     let req_maps = gather_loans::gather_loans(bccx, crate);
     check_loans::check_loans(bccx, req_maps, crate);
@@ -185,12 +185,16 @@ fn check_crate(tcx: ty::ctxt,
 // ----------------------------------------------------------------------
 // Type definitions
 
-type borrowck_ctxt = @{tcx: ty::ctxt,
+type borrowck_ctxt_ = {tcx: ty::ctxt,
                        method_map: typeck::method_map,
                        last_use_map: liveness::last_use_map,
                        binding_map: binding_map,
                        root_map: root_map,
                        mutbl_map: mutbl_map};
+
+enum borrowck_ctxt {
+    borrowck_ctxt_(@borrowck_ctxt_)
+}
 
 // a map mapping id's of expressions of gc'd type (@T, @[], etc) where
 // the box needs to be kept live to the id of the scope for which they
@@ -333,7 +337,11 @@ impl of ast_node for @ast::pat {
     fn span() -> span { self.span }
 }
 
-impl methods for ty::ctxt {
+trait get_type_for_node {
+    fn ty<N: ast_node>(node: N) -> ty::t;
+}
+
+impl methods of get_type_for_node for ty::ctxt {
     fn ty<N: ast_node>(node: N) -> ty::t {
         ty::node_id_to_type(self, node.id())
     }
