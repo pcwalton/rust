@@ -17,10 +17,11 @@ import middle::ty::{ty_param, ty_self, ty_constr, ty_type, ty_opaque_box};
 import middle::ty::{ty_opaque_closure_ptr, ty_unboxed_vec, type_is_var};
 import middle::typeck::infer::{force_ty_vars_only, infer_ctxt, mk_subty};
 import middle::typeck::infer::{new_infer_ctxt, resolve_shallow};
-import syntax::ast::{crate, def_id, def_mod, item, item_class, item_const, item_enum};
-import syntax::ast::{item_fn, item_foreign_mod, item_impl, item_mac};
-import syntax::ast::{item_mod, item_trait, item_ty, local_crate, method};
-import syntax::ast::{node_id, region_param, rp_none, rp_self, trait_ref};
+import syntax::ast::{crate, def_id, def_mod, item, item_class, item_const};
+import syntax::ast::{item_enum, item_fn, item_foreign_mod, item_impl};
+import syntax::ast::{item_mac, item_mod, item_trait, item_ty, local_crate};
+import syntax::ast::{method, node_id, region_param, rp_none, rp_self};
+import syntax::ast::{trait_ref};
 import syntax::ast_map::node_item;
 import syntax::ast_util::{def_id_of_def, dummy_sp, new_def_hash};
 import syntax::codemap::span;
@@ -59,7 +60,8 @@ fn get_base_type(inference_context: infer_ctxt, span: span, original_type: t)
         ty_ptr(base_mutability_and_type) |
         ty_rptr(_, base_mutability_and_type) {
             #debug("(getting base type) recurring");
-            get_base_type(inference_context, span, base_mutability_and_type.ty)
+            get_base_type(inference_context, span,
+                          base_mutability_and_type.ty)
         }
 
         ty_enum(*) | ty_trait(*) | ty_class(*) {
