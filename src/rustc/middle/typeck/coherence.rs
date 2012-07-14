@@ -507,6 +507,8 @@ class CoherenceChecker {
     // External crate handling
 
     fn add_external_crates() {
+        let impls_seen = new_def_hash();
+
         let crate_store = self.crate_context.tcx.sess.cstore;
         do iter_crate_data(crate_store) |crate_number, _crate_metadata| {
             for each_path(crate_store, crate_number) |path_entry| {
@@ -525,6 +527,19 @@ class CoherenceChecker {
                                                         module_def_id,
                                                         none);
                 for (*implementations).each |implementation| {
+                    // Make sure we don't visit the same implementation
+                    // multiple times.
+                    alt impls_seen.find(implementation.did) {
+                        none {
+                            // Good. Continue.
+                            impls_seen.insert(implementation.did, ());
+                        }
+                        some(_) {
+                            // Skip this one.
+                            again;
+                        }
+                    }
+
                     let self_type = lookup_item_type(self.crate_context.tcx,
                                                      implementation.did);
                     let optional_trait =
