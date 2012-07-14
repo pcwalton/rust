@@ -314,7 +314,9 @@ fn restricted_keyword_table() -> hashmap<str, ()> {
         "let", "log", "loop",
         "mod", "mut",
         "new",
-        "pure", "ret",
+        "pure",
+        "ret",
+        "struct",
         "true", "trait", "type",
         "unchecked", "unsafe",
         "while"
