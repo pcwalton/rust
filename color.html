@@ -1,0 +1,327 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>~/Source/servo/src/servo/util/color.rs.html</title>
+<meta name="Generator" content="Vim/7.3">
+<meta name="plugin-version" content="vim7.3_v10">
+<meta name="syntax" content="rust">
+<meta name="settings" content="use_css,pre_wrap,expand_tabs">
+<style type="text/css">
+<!--
+pre { white-space: pre-wrap; font-family: monospace; color: #93a1a1; background-color: #002b36; }
+body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
+.Identifier { color: #268bd2; }
+.Type { color: #b58900; }
+.Statement { color: #859900; }
+.Todo { color: #d33682; font-weight: bold; }
+.Comment { color: #657b83; font-style: italic; }
+.Constant { color: #2aa198; }
+.PreProc { color: #cb4b16; }
+-->
+</style>
+
+<script type="text/javascript" src="zepto.js"></script>
+<script type="text/javascript" src="playground.js"></script>
+
+</head>
+<body>
+<pre>
+<span class="PreProc">#[doc = </span><span class="Constant">&quot;A library for handling colors and parsing css color declarations.&quot;</span><span class="PreProc">]</span>
+
+<span class="Comment">// </span><span class="Todo">TODO</span><span class="Comment">: handle #rrggbb color declarations, handle rgb(r%,g%,b%),</span>
+<span class="Comment">// sanitize input / crop it to correct ranges, predefine other 130</span>
+<span class="Comment">// css-defined colors</span>
+
+<span class="Statement">import</span> <span class="Type">float</span>::round;
+<span class="Statement">import</span> <span class="PreProc">libc</span>::<span class="PreProc">types</span>::<span class="PreProc">os</span>::<span class="PreProc">arch</span>::<span class="PreProc">c95</span>::<span class="Type">c_double</span>;
+<span class="Statement">import</span> <span class="PreProc">css_colors</span>::*;
+<span class="Statement">import</span> <span class="PreProc">cmp</span>::eq;
+
+<span class="Statement">enum</span> <span class="Identifier">Color</span> = {red : <span class="Type">u8</span>, green : <span class="Type">u8</span>, blue : <span class="Type">u8</span>, alpha : <span class="Type">float</span>};
+
+<span class="Statement">impl</span> Color <span class="Statement">of</span> eq <span class="Statement">for</span> Color {
+    <span class="Statement">pure</span> <span class="Statement">fn</span> <span class="Identifier">eq</span>(&amp;&amp;other: Color) -&gt; <span class="Type">bool</span> {
+        <span class="Statement">ret</span> <span class="Statement">self</span>.red == other.red &amp;&amp; <span class="Statement">self</span>.green == other.green &amp;&amp; <span class="Statement">self</span>.blue == other.blue &amp;&amp;
+            <span class="Statement">self</span>.alpha == other.alpha;
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">rgba</span>(r : <span class="Type">u8</span>, g : <span class="Type">u8</span>, b : <span class="Type">u8</span>, a : <span class="Type">float</span>) -&gt; Color {
+    Color({red : r, green : g, blue : b, alpha : a})
+}
+
+<span class="Statement">fn</span> <span class="Identifier">rgb</span>(r : <span class="Type">u8</span>, g : <span class="Type">u8</span>, b : <span class="Type">u8</span>) -&gt; Color {
+    <span class="Statement">ret</span> rgba(r, g, b, <span class="Constant">1.0</span>);
+}
+
+<span class="Statement">fn</span> <span class="Identifier">hsla</span>(h : <span class="Type">float</span>, s : <span class="Type">float</span>, l : <span class="Type">float</span>, a : <span class="Type">float</span>) -&gt; Color {
+    <span class="Comment">// Algorithm for converting hsl to rbg taken from</span>
+    <span class="Comment">// <a href="http://www.w3.org/TR/2003/CR-css3-color-20030514/#hsl-color">http://www.w3.org/TR/2003/CR-css3-color-20030514/#hsl-color</a></span>
+    <span class="Statement">let</span> m2 = <span class="Statement">if</span> l &lt;= <span class="Constant">0.5</span> { l*(s + <span class="Constant">1.0</span>) } <span class="Statement">else</span> { l + s - l*s };
+    <span class="Statement">let</span> m1 = l*<span class="Constant">2.0</span> - m2;
+    <span class="Statement">let</span> h = h / <span class="Constant">360.0</span>;
+
+    <span class="Statement">fn</span> <span class="Identifier">hue_to_rgb</span>(m1 : <span class="Type">float</span>, m2 : <span class="Type">float</span>, h : <span class="Type">float</span>) -&gt; <span class="Type">float</span> {
+        <span class="Statement">let</span> h = <span class="Statement">if</span> h &lt; <span class="Constant">0.0</span> { h + <span class="Constant">1.0</span> } <span class="Statement">else</span> <span class="Statement">if</span> h &gt; <span class="Constant">1.0</span> { h - <span class="Constant">1.0</span> } <span class="Statement">else</span> { h };
+
+        <span class="Statement">alt</span> h {
+          <span class="Constant">0.0</span> <span class="Statement">to</span> <span class="Constant">1.0</span>/<span class="Constant">6.0</span>     { <span class="Statement">ret</span> m1 + (m2 - m1)*h*<span class="Constant">6.0</span>; }
+          <span class="Constant">1.0</span>/<span class="Constant">6.0</span> <span class="Statement">to</span> <span class="Constant">1.0</span>/<span class="Constant">2.0</span> { <span class="Statement">ret</span> m2; }
+          <span class="Constant">1.0</span>/<span class="Constant">2.0</span> <span class="Statement">to</span> <span class="Constant">2.0</span>/<span class="Constant">3.0</span> { <span class="Statement">ret</span> m1 + (m2 - m1)*(<span class="Constant">4.0</span> - <span class="Constant">6.0</span>*h); }
+          <span class="Constant">2.0</span>/<span class="Constant">3.0</span> <span class="Statement">to</span> <span class="Constant">1.0</span>     { <span class="Statement">ret</span> m1; }
+          _                  { <span class="Statement">fail</span> ~<span class="Constant">&quot;unexpected hue value&quot;</span>; }
+        }
+    }
+
+    <span class="Statement">let</span> r = round(<span class="Constant">255.0</span>*hue_to_rgb(m1, m2, h + <span class="Constant">1.0</span>/<span class="Constant">3.0</span>) <span class="Statement">as</span> <span class="Type">c_double</span>);;
+    <span class="Statement">let</span> g = round(<span class="Constant">255.0</span>*hue_to_rgb(m1, m2, h) <span class="Statement">as</span> <span class="Type">c_double</span>);
+    <span class="Statement">let</span> b = round(<span class="Constant">255.0</span>*hue_to_rgb(m1, m2, h - <span class="Constant">1.0</span>/<span class="Constant">3.0</span>) <span class="Statement">as</span> <span class="Type">c_double</span>);
+
+    <span class="Statement">ret</span> rgba(r <span class="Statement">as</span> <span class="Type">u8</span>, g <span class="Statement">as</span> <span class="Type">u8</span>, b <span class="Statement">as</span> <span class="Type">u8</span>, a);
+}
+
+<span class="Statement">fn</span> <span class="Identifier">hsl</span>(h : <span class="Type">float</span>, s : <span class="Type">float</span>, l : <span class="Type">float</span>) -&gt; Color {
+    <span class="Statement">ret</span> hsla(h, s, l, <span class="Constant">1.0</span>);
+}
+
+<span class="Statement">impl</span> methods <span class="Statement">for</span> Color {
+    <span class="Statement">fn</span> <span class="Identifier">print</span>() -&gt; ~<span class="Type">str</span> {
+        #fmt[<span class="Constant">&quot;rgba(%u,%u,%u,%f)&quot;</span>, <span class="Statement">self</span>.red <span class="Statement">as</span> <span class="Type">uint</span>, <span class="Statement">self</span>.green <span class="Statement">as</span> <span class="Type">uint</span>,
+             <span class="Statement">self</span>.blue <span class="Statement">as</span> <span class="Type">uint</span>, <span class="Statement">self</span>.alpha]
+    }
+}
+
+<span class="Statement">mod</span> <span class="Identifier">parsing</span> {
+    <span class="Statement">export</span> parse_color;
+
+    <span class="Statement">fn</span> <span class="Identifier">fail_unrecognized</span>(col : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        #warn[<span class="Constant">&quot;Unrecognized color %s&quot;</span>, col];
+        <span class="Statement">ret</span> <span class="Constant">none</span>;
+    }
+
+    <span class="PreProc">#[doc=</span><span class="Constant">&quot;Match an exact color keyword.&quot;</span><span class="PreProc">]</span>
+    <span class="Statement">fn</span> <span class="Identifier">parse_by_name</span>(color : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        <span class="Statement">let</span> col = <span class="Statement">alt</span> color.to_lower() {
+          ~<span class="Constant">&quot;black&quot;</span>   { black()   }
+          ~<span class="Constant">&quot;silver&quot;</span>  { silver()  }
+          ~<span class="Constant">&quot;gray&quot;</span>    { gray()    }
+          ~<span class="Constant">&quot;grey&quot;</span>    { gray()    }
+          ~<span class="Constant">&quot;white&quot;</span>   { white()   }
+          ~<span class="Constant">&quot;maroon&quot;</span>  { maroon()  }
+          ~<span class="Constant">&quot;red&quot;</span>     { red()     }
+          ~<span class="Constant">&quot;purple&quot;</span>  { purple()  }
+          ~<span class="Constant">&quot;fuchsia&quot;</span> { fuchsia() }
+          ~<span class="Constant">&quot;green&quot;</span>   { green()   }
+          ~<span class="Constant">&quot;lime&quot;</span>    { lime()    }
+          ~<span class="Constant">&quot;olive&quot;</span>   { olive()   }
+          ~<span class="Constant">&quot;yellow&quot;</span>  { yellow()  }
+          ~<span class="Constant">&quot;navy&quot;</span>    { navy()    }
+          ~<span class="Constant">&quot;blue&quot;</span>    { blue()    }
+          ~<span class="Constant">&quot;teal&quot;</span>    { teal()    }
+          ~<span class="Constant">&quot;aqua&quot;</span>    { aqua()    }
+          _          { <span class="Statement">ret</span> fail_unrecognized(color) }
+        };
+
+        <span class="Statement">ret</span> <span class="Constant">some</span>(col);
+    }
+
+    <span class="PreProc">#[doc=</span><span class="Constant">&quot;Parses a color specification in the form rgb(foo,bar,baz)&quot;</span><span class="PreProc">]</span>
+    <span class="Statement">fn</span> <span class="Identifier">parse_rgb</span>(color : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        <span class="Comment">// Shave off the rgb( and the )</span>
+        <span class="Statement">let</span> only_colors = color.substr(<span class="Constant">4u</span>, color.len() - <span class="Constant">5u</span>);
+
+        <span class="Comment">// split up r, g, and b</span>
+        <span class="Statement">let</span> cols = only_colors.split_char(<span class="Constant">','</span>);
+        <span class="Statement">if</span> cols.len() != <span class="Constant">3u</span> { <span class="Statement">ret</span> fail_unrecognized(color); }
+
+        <span class="Statement">alt</span> (<span class="Type">u8</span>::from_str(cols[<span class="Constant">0</span>]), <span class="Type">u8</span>::from_str(cols[<span class="Constant">1</span>]),
+             <span class="Type">u8</span>::from_str(cols[<span class="Constant">2</span>])) {
+          (<span class="Constant">some</span>(r), <span class="Constant">some</span>(g), <span class="Constant">some</span>(b)) { <span class="Constant">some</span>(rgb(r, g, b)) }
+          _ { fail_unrecognized(color) }
+        }
+    }
+
+    <span class="PreProc">#[doc=</span><span class="Constant">&quot;Parses a color specification in the form rgba(foo,bar,baz,qux)&quot;</span><span class="PreProc">]</span>
+    <span class="Statement">fn</span> <span class="Identifier">parse_rgba</span>(color : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        <span class="Comment">// Shave off the rgba( and the )</span>
+        <span class="Statement">let</span> only_vals = color.substr(<span class="Constant">5u</span>, color.len() - <span class="Constant">6u</span>);
+
+        <span class="Comment">// split up r, g, and b</span>
+        <span class="Statement">let</span> cols = only_vals.split_char(<span class="Constant">','</span>);
+        <span class="Statement">if</span> cols.len() != <span class="Constant">4u</span> { <span class="Statement">ret</span> fail_unrecognized(color); }
+
+        <span class="Statement">alt</span> (<span class="Type">u8</span>::from_str(cols[<span class="Constant">0</span>]), <span class="Type">u8</span>::from_str(cols[<span class="Constant">1</span>]),
+             <span class="Type">u8</span>::from_str(cols[<span class="Constant">2</span>]), <span class="Type">float</span>::from_str(cols[<span class="Constant">3</span>])) {
+          (<span class="Constant">some</span>(r), <span class="Constant">some</span>(g), <span class="Constant">some</span>(b), <span class="Constant">some</span>(a)) { <span class="Constant">some</span>(rgba(r, g, b, a)) }
+          _ { fail_unrecognized(color) }
+        }
+    }
+
+    <span class="PreProc">#[doc=</span><span class="Constant">&quot;Parses a color specification in the form hsl(foo,bar,baz)&quot;</span><span class="PreProc">]</span>
+    <span class="Statement">fn</span> <span class="Identifier">parse_hsl</span>(color : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        <span class="Comment">// Shave off the hsl( and the )</span>
+        <span class="Statement">let</span> only_vals = color.substr(<span class="Constant">4u</span>, color.len() - <span class="Constant">5u</span>);
+
+        <span class="Comment">// split up h, s, and l</span>
+        <span class="Statement">let</span> vals = only_vals.split_char(<span class="Constant">','</span>);
+        <span class="Statement">if</span> vals.len() != <span class="Constant">3u</span> { <span class="Statement">ret</span> fail_unrecognized(color); }
+
+        <span class="Statement">alt</span> (<span class="Type">float</span>::from_str(vals[<span class="Constant">0</span>]), <span class="Type">float</span>::from_str(vals[<span class="Constant">1</span>]),
+             <span class="Type">float</span>::from_str(vals[<span class="Constant">2</span>])) {
+          (<span class="Constant">some</span>(h), <span class="Constant">some</span>(s), <span class="Constant">some</span>(l)) { <span class="Constant">some</span>(hsl(h, s, l)) }
+          _ { fail_unrecognized(color) }
+        }
+    }
+
+    <span class="PreProc">#[doc=</span><span class="Constant">&quot;Parses a color specification in the form hsla(foo,bar,baz,qux)&quot;</span><span class="PreProc">]</span>
+    <span class="Statement">fn</span> <span class="Identifier">parse_hsla</span>(color : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        <span class="Comment">// Shave off the hsla( and the )</span>
+        <span class="Statement">let</span> only_vals = color.substr(<span class="Constant">5u</span>, color.len() - <span class="Constant">6u</span>);
+
+        <span class="Statement">let</span> vals = only_vals.split_char(<span class="Constant">','</span>);
+        <span class="Statement">if</span> vals.len() != <span class="Constant">4u</span> { <span class="Statement">ret</span> fail_unrecognized(color); }
+
+        <span class="Statement">alt</span> (<span class="Type">float</span>::from_str(vals[<span class="Constant">0</span>]), <span class="Type">float</span>::from_str(vals[<span class="Constant">1</span>]),
+             <span class="Type">float</span>::from_str(vals[<span class="Constant">2</span>]), <span class="Type">float</span>::from_str(vals[<span class="Constant">3</span>])) {
+          (<span class="Constant">some</span>(h), <span class="Constant">some</span>(s), <span class="Constant">some</span>(l), <span class="Constant">some</span>(a)) { <span class="Constant">some</span>(hsla(h, s, l, a)) }
+          _ { fail_unrecognized(color) }
+        }
+    }
+
+    <span class="Comment">// Currently colors are supported in rgb(a,b,c) form and also by</span>
+    <span class="Comment">// keywords for several common colors.</span>
+    <span class="Comment">// </span><span class="Todo">TODO</span><span class="Comment">: extend this</span>
+    <span class="Statement">fn</span> <span class="Identifier">parse_color</span>(color : ~<span class="Type">str</span>) -&gt; <span class="Type">option</span>&lt;Color&gt; {
+        <span class="Statement">alt</span> color {
+          c <span class="Statement">if</span> c.starts_with(~<span class="Constant">&quot;rgb(&quot;</span>)  { parse_rgb(c) }
+          c <span class="Statement">if</span> c.starts_with(~<span class="Constant">&quot;rgba(&quot;</span>) { parse_rgba(c) }
+          c <span class="Statement">if</span> c.starts_with(~<span class="Constant">&quot;hsl(&quot;</span>)  { parse_hsl(c) }
+          c <span class="Statement">if</span> c.starts_with(~<span class="Constant">&quot;hsla(&quot;</span>) { parse_hsla(c) }
+          c                            { parse_by_name(c) }
+        }
+    }
+}
+
+<span class="PreProc">#[cfg(test)]</span>
+<span class="Statement">mod</span> <span class="Identifier">test</span> {
+    <span class="Statement">import</span> <span class="PreProc">css_colors</span>::*;
+    <span class="Statement">import</span> <span class="Type">option</span>::unwrap;
+    <span class="Statement">import</span> <span class="PreProc">parsing</span>::parse_color;
+
+    <span class="PreProc">#[test]</span>
+    <span class="Statement">fn</span> <span class="Identifier">test_parse_by_name</span>() {
+        <span class="Statement">assert</span> red().eq(unwrap(parse_color(~<span class="Constant">&quot;red&quot;</span>)));
+        <span class="Statement">assert</span> lime().eq(unwrap(parse_color(~<span class="Constant">&quot;Lime&quot;</span>)));
+        <span class="Statement">assert</span> blue().eq(unwrap(parse_color(~<span class="Constant">&quot;BLUE&quot;</span>)));
+        <span class="Statement">assert</span> green().eq(unwrap(parse_color(~<span class="Constant">&quot;GreEN&quot;</span>)));
+        <span class="Statement">assert</span> white().eq(unwrap(parse_color(~<span class="Constant">&quot;white&quot;</span>)));
+        <span class="Statement">assert</span> black().eq(unwrap(parse_color(~<span class="Constant">&quot;Black&quot;</span>)));
+        <span class="Statement">assert</span> gray().eq(unwrap(parse_color(~<span class="Constant">&quot;Gray&quot;</span>)));
+        <span class="Statement">assert</span> silver().eq(unwrap(parse_color(~<span class="Constant">&quot;SiLvEr&quot;</span>)));
+        <span class="Statement">assert</span> maroon().eq(unwrap(parse_color(~<span class="Constant">&quot;maroon&quot;</span>)));
+        <span class="Statement">assert</span> purple().eq(unwrap(parse_color(~<span class="Constant">&quot;PURPLE&quot;</span>)));
+        <span class="Statement">assert</span> fuchsia().eq(unwrap(parse_color(~<span class="Constant">&quot;FUCHSIA&quot;</span>)));
+        <span class="Statement">assert</span> olive().eq(unwrap(parse_color(~<span class="Constant">&quot;oLiVe&quot;</span>)));
+        <span class="Statement">assert</span> yellow().eq(unwrap(parse_color(~<span class="Constant">&quot;yellow&quot;</span>)));
+        <span class="Statement">assert</span> navy().eq(unwrap(parse_color(~<span class="Constant">&quot;NAVY&quot;</span>)));
+        <span class="Statement">assert</span> teal().eq(unwrap(parse_color(~<span class="Constant">&quot;Teal&quot;</span>)));
+        <span class="Statement">assert</span> aqua().eq(unwrap(parse_color(~<span class="Constant">&quot;Aqua&quot;</span>)));
+        <span class="Statement">assert</span> <span class="Constant">none</span> == parse_color(~<span class="Constant">&quot;foobarbaz&quot;</span>);
+    }
+
+    <span class="PreProc">#[test]</span>
+    <span class="Statement">fn</span> <span class="Identifier">test_parsing_rgb</span>() {
+        <span class="Statement">assert</span> red().eq(unwrap(parse_color(~<span class="Constant">&quot;rgb(255,0,0)&quot;</span>)));
+        <span class="Statement">assert</span> red().eq(unwrap(parse_color(~<span class="Constant">&quot;rgba(255,0,0,1.0)&quot;</span>)));
+        <span class="Statement">assert</span> red().eq(unwrap(parse_color(~<span class="Constant">&quot;rgba(255,0,0,1)&quot;</span>)));
+        <span class="Statement">assert</span> lime().eq(unwrap(parse_color(~<span class="Constant">&quot;rgba(0,255,0,1.00)&quot;</span>)));
+        <span class="Statement">assert</span> rgb(<span class="Constant">1u8</span>,<span class="Constant">2u8</span>,<span class="Constant">3u8</span>).eq(unwrap(parse_color(~<span class="Constant">&quot;rgb(1,2,03)&quot;</span>)));
+        <span class="Statement">assert</span> rgba(<span class="Constant">15u8</span>,<span class="Constant">250u8</span>,<span class="Constant">3u8</span>,<span class="Constant">0.5</span>).eq(unwrap(parse_color(~<span class="Constant">&quot;rgba(15,250,3,.5)&quot;</span>)));
+        <span class="Statement">assert</span> rgba(<span class="Constant">15u8</span>,<span class="Constant">250u8</span>,<span class="Constant">3u8</span>,<span class="Constant">0.5</span>).eq(unwrap(parse_color(~<span class="Constant">&quot;rgba(15,250,3,0.5)&quot;</span>)));
+        <span class="Statement">assert</span> <span class="Constant">none</span> == parse_color(~<span class="Constant">&quot;rbga(1,2,3)&quot;</span>);
+    }
+
+    <span class="PreProc">#[test]</span>
+    <span class="Statement">fn</span> <span class="Identifier">test_parsing_hsl</span>() {
+        <span class="Statement">assert</span> red().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(0,1,.5)&quot;</span>)));
+        <span class="Statement">assert</span> lime().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(120.0,1.0,.5)&quot;</span>)));
+        <span class="Statement">assert</span> blue().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(240.0,1.0,.5)&quot;</span>)));
+        <span class="Statement">assert</span> green().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(120.0,1.0,.25)&quot;</span>)));
+        <span class="Statement">assert</span> white().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(1.0,1.,1.0)&quot;</span>)));
+        <span class="Statement">assert</span> white().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(129.0,0.3,1.0)&quot;</span>)));
+        <span class="Statement">assert</span> black().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(231.2,0.75,0.0)&quot;</span>)));
+        <span class="Statement">assert</span> black().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(11.2,0.0,0.0)&quot;</span>)));
+        <span class="Statement">assert</span> gray().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(0.0,0.0,0.5)&quot;</span>)));
+        <span class="Statement">assert</span> maroon().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(0.0,1.0,0.25)&quot;</span>)));
+        <span class="Statement">assert</span> purple().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(300.0,1.0,0.25)&quot;</span>)));
+        <span class="Statement">assert</span> fuchsia().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(300,1.0,0.5)&quot;</span>)));
+        <span class="Statement">assert</span> olive().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(60.,1.0,0.25)&quot;</span>)));
+        <span class="Statement">assert</span> yellow().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(60.,1.0,0.5)&quot;</span>)));
+        <span class="Statement">assert</span> navy().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(240.0,1.0,.25)&quot;</span>)));
+        <span class="Statement">assert</span> teal().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(180.0,1.0,.25)&quot;</span>)));
+        <span class="Statement">assert</span> aqua().eq(unwrap(parse_color(~<span class="Constant">&quot;hsl(180.0,1.0,.5)&quot;</span>)));
+        <span class="Statement">assert</span> <span class="Constant">none</span> == parse_color(~<span class="Constant">&quot;hsl(1,2,3,.4)&quot;</span>);
+    }
+}
+
+
+<span class="PreProc">#[doc=</span><span class="Constant">&quot;Define the colors specified by css&quot;</span><span class="PreProc">]</span>
+<span class="Statement">mod</span> <span class="Identifier">css_colors</span> {
+    <span class="Comment">// The 16 basic css colors</span>
+    <span class="Statement">fn</span> <span class="Identifier">black</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">silver</span>() -&gt; Color {
+        Color({red : <span class="Constant">192u8</span>, green : <span class="Constant">192u8</span>, blue : <span class="Constant">192u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">gray</span>() -&gt; Color {
+        Color({red : <span class="Constant">128u8</span>, green : <span class="Constant">128u8</span>, blue : <span class="Constant">128u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">white</span>() -&gt; Color {
+        Color({red : <span class="Constant">255u8</span>, green : <span class="Constant">255u8</span>, blue : <span class="Constant">255u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">maroon</span>() -&gt; Color {
+        Color({red : <span class="Constant">128u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">red</span>() -&gt; Color {
+        Color({red : <span class="Constant">255u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">purple</span>() -&gt; Color {
+        Color({red : <span class="Constant">128u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">128u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">fuchsia</span>() -&gt; Color {
+        Color({red : <span class="Constant">255u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">255u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">green</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">128u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">lime</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">255u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">olive</span>() -&gt; Color {
+        Color({red : <span class="Constant">128u8</span>, green : <span class="Constant">128u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">yellow</span>() -&gt; Color {
+        Color({red : <span class="Constant">255u8</span>, green : <span class="Constant">255u8</span>, blue : <span class="Constant">0u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">navy</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">128u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">blue</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">0u8</span>, blue : <span class="Constant">255u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">teal</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">128u8</span>, blue : <span class="Constant">128u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+    <span class="Statement">fn</span> <span class="Identifier">aqua</span>() -&gt; Color {
+        Color({red : <span class="Constant">0u8</span>, green : <span class="Constant">255u8</span>, blue : <span class="Constant">255u8</span>, alpha : <span class="Constant">1.0</span>})
+    }
+
+
+    <span class="Comment">// The other 130 css colors</span>
+    <span class="Comment">// </span><span class="Todo">TODO</span>
+}
+</pre>
+</body>
+</html>
