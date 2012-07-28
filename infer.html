@@ -1,0 +1,2653 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>~/Source/rust/master/src/rustc/middle/typeck/infer.rs.html</title>
+<meta name="Generator" content="Vim/7.3">
+<meta name="plugin-version" content="vim7.3_v10">
+<meta name="syntax" content="rust">
+<meta name="settings" content="use_css,pre_wrap,expand_tabs">
+<style type="text/css">
+<!--
+pre { white-space: pre-wrap; font-family: monospace; color: #93a1a1; background-color: #002b36; }
+body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
+.Todo { color: #d33682; font-weight: bold; }
+.Type { color: #b58900; }
+.Identifier { color: #268bd2; }
+.Constant { color: #2aa198; }
+.PreProc { color: #cb4b16; }
+.Statement { color: #859900; }
+.Comment { color: #657b83; font-style: italic; }
+-->
+</style>
+
+<script type="text/javascript" src="zepto.js"></script>
+<script type="text/javascript" src="playground.js"></script>
+
+</head>
+<body>
+<pre>
+<span class="Comment">/*</span>
+
+<span class="Comment"># Type inference engine</span>
+
+<span class="Comment">This is loosely based on standard HM-type inference, but with an</span>
+<span class="Comment">extension to try and accommodate subtyping.  There is nothing</span>
+<span class="Comment">principled about this extension; it's sound---I hope!---but it's a</span>
+<span class="Comment">heuristic, ultimately, and does not guarantee that it finds a valid</span>
+<span class="Comment">typing even if one exists (in fact, there are known scenarios where it</span>
+<span class="Comment">fails, some of which may eventually become problematic).</span>
+
+<span class="Comment">## Key idea</span>
+
+<span class="Comment">The main change is that each type variable T is associated with a</span>
+<span class="Comment">lower-bound L and an upper-bound U.  L and U begin as bottom and top,</span>
+<span class="Comment">respectively, but gradually narrow in response to new constraints</span>
+<span class="Comment">being introduced.  When a variable is finally resolved to a concrete</span>
+<span class="Comment">type, it can (theoretically) select any type that is a supertype of L</span>
+<span class="Comment">and a subtype of U.</span>
+
+<span class="Comment">There are several critical invariants which we maintain:</span>
+
+<span class="Comment">- the upper-bound of a variable only becomes lower and the lower-bound</span>
+<span class="Comment">  only becomes higher over time;</span>
+<span class="Comment">- the lower-bound L is always a subtype of the upper bound U;</span>
+<span class="Comment">- the lower-bound L and upper-bound U never refer to other type variables,</span>
+<span class="Comment">  but only to types (though those types may contain type variables).</span>
+
+<span class="Comment">&gt; An aside: if the terms upper- and lower-bound confuse you, think of</span>
+<span class="Comment">&gt; &quot;supertype&quot; and &quot;subtype&quot;.  The upper-bound is a &quot;supertype&quot;</span>
+<span class="Comment">&gt; (super=upper in Latin, or something like that anyway) and the lower-bound</span>
+<span class="Comment">&gt; is a &quot;subtype&quot; (sub=lower in Latin).  I find it helps to visualize</span>
+<span class="Comment">&gt; a simple class hierarchy, like Java minus interfaces and</span>
+<span class="Comment">&gt; primitive types.  The class Object is at the root (top) and other</span>
+<span class="Comment">&gt; types lie in between.  The bottom type is then the Null type.</span>
+<span class="Comment">&gt; So the tree looks like:</span>
+<span class="Comment">&gt;</span>
+<span class="Comment">&gt;             Object</span>
+<span class="Comment">&gt;             /    \</span>
+<span class="Comment">&gt;         String   Other</span>
+<span class="Comment">&gt;             \    /</span>
+<span class="Comment">&gt;             (null)</span>
+<span class="Comment">&gt;</span>
+<span class="Comment">&gt; So the upper bound type is the &quot;supertype&quot; and the lower bound is the</span>
+<span class="Comment">&gt; &quot;subtype&quot; (also, super and sub mean upper and lower in Latin, or something</span>
+<span class="Comment">&gt; like that anyway).</span>
+
+<span class="Comment">## Satisfying constraints</span>
+
+<span class="Comment">At a primitive level, there is only one form of constraint that the</span>
+<span class="Comment">inference understands: a subtype relation.  So the outside world can</span>
+<span class="Comment">say &quot;make type A a subtype of type B&quot;.  If there are variables</span>
+<span class="Comment">involved, the inferencer will adjust their upper- and lower-bounds as</span>
+<span class="Comment">needed to ensure that this relation is satisfied. (We also allow &quot;make</span>
+<span class="Comment">type A equal to type B&quot;, but this is translated into &quot;A &lt;: B&quot; and &quot;B</span>
+<span class="Comment">&lt;: A&quot;)</span>
+
+<span class="Comment">As stated above, we always maintain the invariant that type bounds</span>
+<span class="Comment">never refer to other variables.  This keeps the inference relatively</span>
+<span class="Comment">simple, avoiding the scenario of having a kind of graph where we have</span>
+<span class="Comment">to pump constraints along and reach a fixed point, but it does impose</span>
+<span class="Comment">some heuristics in the case where the user is relating two type</span>
+<span class="Comment">variables A &lt;: B.</span>
+
+<span class="Comment">The key point when relating type variables is that we do not know what</span>
+<span class="Comment">type the variable represents, but we must make some change that will</span>
+<span class="Comment">ensure that, whatever types A and B are resolved to, they are resolved</span>
+<span class="Comment">to types which have a subtype relation.</span>
+
+<span class="Comment">There are basically two options here:</span>
+
+<span class="Comment">- we can merge A and B.  Basically we make them the same variable.</span>
+<span class="Comment">  The lower bound of this new variable is LUB(LB(A), LB(B)) and</span>
+<span class="Comment">  the upper bound is GLB(UB(A), UB(B)).</span>
+
+<span class="Comment">- we can adjust the bounds of A and B.  Because we do not allow</span>
+<span class="Comment">  type variables to appear in each other's bounds, this only works if A</span>
+<span class="Comment">  and B have appropriate bounds.  But if we can ensure that UB(A) &lt;: LB(B),</span>
+<span class="Comment">  then we know that whatever happens A and B will be resolved to types with</span>
+<span class="Comment">  the appropriate relation.</span>
+
+<span class="Comment">Our current technique is to *try* (transactionally) to relate the</span>
+<span class="Comment">existing bounds of A and B, if there are any (i.e., if `UB(A) != top</span>
+<span class="Comment">&amp;&amp; LB(B) != bot`).  If that succeeds, we're done.  If it fails, then</span>
+<span class="Comment">we merge A and B into same variable.</span>
+
+<span class="Comment">This is not clearly the correct course.  For example, if `UB(A) !=</span>
+<span class="Comment">top` but `LB(B) == bot`, we could conceivably set `LB(B)` to `UB(A)`</span>
+<span class="Comment">and leave the variables unmerged.  This is sometimes the better</span>
+<span class="Comment">course, it depends on the program.</span>
+
+<span class="Comment">The main case which fails today that I would like to support is:</span>
+
+<span class="Comment">    fn foo&lt;T&gt;(x: T, y: T) { ... }</span>
+
+<span class="Comment">    fn bar() {</span>
+<span class="Comment">        let x: @mut int = @mut 3;</span>
+<span class="Comment">        let y: @int = @3;</span>
+<span class="Comment">        foo(x, y);</span>
+<span class="Comment">    }</span>
+
+<span class="Comment">In principle, the inferencer ought to find that the parameter `T` to</span>
+<span class="Comment">`foo(x, y)` is `@const int`.  Today, however, it does not; this is</span>
+<span class="Comment">because the type variable `T` is merged with the type variable for</span>
+<span class="Comment">`X`, and thus inherits its UB/LB of `@mut int`.  This leaves no</span>
+<span class="Comment">flexibility for `T` to later adjust to accommodate `@int`.</span>
+
+<span class="Comment">## Transactional support</span>
+
+<span class="Comment">Whenever we adjust merge variables or adjust their bounds, we always</span>
+<span class="Comment">keep a record of the old value.  This allows the changes to be undone.</span>
+
+<span class="Comment">## Regions</span>
+
+<span class="Comment">I've only talked about type variables here, but region variables</span>
+<span class="Comment">follow the same principle.  They have upper- and lower-bounds.  A</span>
+<span class="Comment">region A is a subregion of a region B if A being valid implies that B</span>
+<span class="Comment">is valid.  This basically corresponds to the block nesting structure:</span>
+<span class="Comment">the regions for outer block scopes are superregions of those for inner</span>
+<span class="Comment">block scopes.</span>
+
+<span class="Comment">## Integral type variables</span>
+
+<span class="Comment">There is a third variety of type variable that we use only for</span>
+<span class="Comment">inferring the types of unsuffixed integer literals.  Integral type</span>
+<span class="Comment">variables differ from general-purpose type variables in that there's</span>
+<span class="Comment">no subtyping relationship among the various integral types, so instead</span>
+<span class="Comment">of associating each variable with an upper and lower bound, we</span>
+<span class="Comment">represent the set of possible integral types it can take on with an</span>
+<span class="Comment">`int_ty_set`, which is a bitvector with one bit for each integral</span>
+<span class="Comment">type.  Because intersecting these sets with each other is simpler than</span>
+<span class="Comment">merging bounds, we don't need to do so transactionally as we do for</span>
+<span class="Comment">general-purpose type variables.</span>
+
+<span class="Comment">We could conceivably define a subtyping relationship among integral</span>
+<span class="Comment">types based on their ranges, but we choose not to open that particular</span>
+<span class="Comment">can of worms.  Our strategy is to treat integral type variables as</span>
+<span class="Comment">unknown until the typing context constrains them to a unique integral</span>
+<span class="Comment">type, at which point they take on that type.  If the typing context</span>
+<span class="Comment">overconstrains the type, it's a type error; if we reach the point at</span>
+<span class="Comment">which type variables must be resolved and an integral type variable is</span>
+<span class="Comment">still underconstrained, it defaults to `int` as a last resort.</span>
+
+<span class="Comment">## GLB/LUB</span>
+
+<span class="Comment">Computing the greatest-lower-bound and least-upper-bound of two</span>
+<span class="Comment">types/regions is generally straightforward except when type variables</span>
+<span class="Comment">are involved. In that case, we follow a similar &quot;try to use the bounds</span>
+<span class="Comment">when possible but otherwise merge the variables&quot; strategy.  In other</span>
+<span class="Comment">words, `GLB(A, B)` where `A` and `B` are variables will often result</span>
+<span class="Comment">in `A` and `B` being merged and the result being `A`.</span>
+
+<span class="Comment">## Type assignment</span>
+
+<span class="Comment">We have a notion of assignability which differs somewhat from</span>
+<span class="Comment">subtyping; in particular it may cause region borrowing to occur.  See</span>
+<span class="Comment">the big comment later in this file on Type Assignment for specifics.</span>
+
+<span class="Comment"># Implementation details</span>
+
+<span class="Comment">We make use of a trait-like impementation strategy to consolidate</span>
+<span class="Comment">duplicated code between subtypes, GLB, and LUB computations.  See the</span>
+<span class="Comment">section on &quot;Type Combining&quot; below for details.</span>
+
+<span class="Comment">*/</span>
+
+<span class="Statement">import</span> <span class="PreProc">std</span>::smallintmap;
+<span class="Statement">import</span> <span class="PreProc">std</span>::<span class="PreProc">smallintmap</span>::smallintmap;
+<span class="Statement">import</span> <span class="PreProc">std</span>::<span class="PreProc">smallintmap</span>::map;
+<span class="Statement">import</span> <span class="PreProc">std</span>::<span class="PreProc">map</span>::hashmap;
+<span class="Statement">import</span> <span class="PreProc">middle</span>::ty;
+<span class="Statement">import</span> <span class="PreProc">middle</span>::<span class="PreProc">ty</span>::{tv_vid, tvi_vid, region_vid, vid,
+                    ty_int, ty_uint, get};
+<span class="Statement">import</span> <span class="PreProc">syntax</span>::{ast, ast_util};
+<span class="Statement">import</span> <span class="PreProc">syntax</span>::<span class="PreProc">ast</span>::{ret_style, purity};
+<span class="Statement">import</span> <span class="PreProc">util</span>::<span class="PreProc">ppaux</span>::{ty_to_str, mt_to_str};
+<span class="Statement">import</span> <span class="PreProc">result</span>::{result, extensions, <span class="Constant">ok</span>, <span class="Constant">err</span>, map_vec, map_vec2, iter_vec2};
+<span class="Statement">import</span> <span class="PreProc">ty</span>::{mk_fn, type_is_bot};
+<span class="Statement">import</span> <span class="Statement">check</span>::<span class="PreProc">regionmanip</span>::{replace_bound_regions_in_fn_ty};
+<span class="Statement">import</span> <span class="PreProc">driver</span>::<span class="PreProc">session</span>::session;
+<span class="Statement">import</span> <span class="PreProc">util</span>::<span class="PreProc">common</span>::{indent, indenter};
+<span class="Statement">import</span> <span class="PreProc">ast</span>::{<span class="Statement">unsafe</span>_fn, impure_fn, pure_fn, extern_fn};
+<span class="Statement">import</span> <span class="PreProc">ast</span>::{m_const, m_imm, m_mutbl};
+<span class="Statement">import</span> <span class="PreProc">dvec</span>::{dvec, extensions};
+
+<span class="Statement">export</span> infer_ctxt;
+<span class="Statement">export</span> new_infer_ctxt;
+<span class="Statement">export</span> mk_subty, can_mk_subty;
+<span class="Statement">export</span> mk_subr;
+<span class="Statement">export</span> mk_eqty;
+<span class="Statement">export</span> mk_assignty, can_mk_assignty;
+<span class="Statement">export</span> resolve_nested_tvar, resolve_rvar, resolve_ivar, resolve_all;
+<span class="Statement">export</span> force_tvar, force_rvar, force_ivar, force_all;
+<span class="Statement">export</span> resolve_type, resolve_region;
+<span class="Statement">export</span> resolve_borrowings;
+<span class="Statement">export</span> methods; <span class="Comment">// for infer_ctxt</span>
+<span class="Statement">export</span> unify_methods; <span class="Comment">// for infer_ctxt</span>
+<span class="Statement">export</span> fres, fixup_err, fixup_err_to_str;
+<span class="Statement">export</span> assignment;
+<span class="Statement">export</span> root, to_str;
+<span class="Statement">export</span> int_ty_set_all;
+
+<span class="Comment">// Bitvector to represent sets of integral types</span>
+<span class="Statement">enum</span> <span class="Identifier">int_ty_set</span> = <span class="Type">uint</span>;
+
+<span class="Comment">// Constants representing singleton sets containing each of the</span>
+<span class="Comment">// integral types</span>
+<span class="Statement">const</span> INT_TY_SET_EMPTY : <span class="Type">uint</span> = <span class="Constant">0b00_0000_0000u</span>;
+<span class="Statement">const</span> INT_TY_SET_i8    : <span class="Type">uint</span> = <span class="Constant">0b00_0000_0001u</span>;
+<span class="Statement">const</span> INT_TY_SET_u8    : <span class="Type">uint</span> = <span class="Constant">0b00_0000_0010u</span>;
+<span class="Statement">const</span> INT_TY_SET_i16   : <span class="Type">uint</span> = <span class="Constant">0b00_0000_0100u</span>;
+<span class="Statement">const</span> INT_TY_SET_u16   : <span class="Type">uint</span> = <span class="Constant">0b00_0000_1000u</span>;
+<span class="Statement">const</span> INT_TY_SET_i32   : <span class="Type">uint</span> = <span class="Constant">0b00_0001_0000u</span>;
+<span class="Statement">const</span> INT_TY_SET_u32   : <span class="Type">uint</span> = <span class="Constant">0b00_0010_0000u</span>;
+<span class="Statement">const</span> INT_TY_SET_i64   : <span class="Type">uint</span> = <span class="Constant">0b00_0100_0000u</span>;
+<span class="Statement">const</span> INT_TY_SET_u64   : <span class="Type">uint</span> = <span class="Constant">0b00_1000_0000u</span>;
+<span class="Statement">const</span> INT_TY_SET_i     : <span class="Type">uint</span> = <span class="Constant">0b01_0000_0000u</span>;
+<span class="Statement">const</span> INT_TY_SET_u     : <span class="Type">uint</span> = <span class="Constant">0b10_0000_0000u</span>;
+
+<span class="Statement">fn</span> <span class="Identifier">int_ty_set_all</span>()  -&gt; int_ty_set {
+    int_ty_set(INT_TY_SET_i8  | INT_TY_SET_u8 |
+               INT_TY_SET_i16 | INT_TY_SET_u16 |
+               INT_TY_SET_i32 | INT_TY_SET_u32 |
+               INT_TY_SET_i64 | INT_TY_SET_u64 |
+               INT_TY_SET_i   | INT_TY_SET_u)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">intersection</span>(a: int_ty_set, b: int_ty_set) -&gt; int_ty_set {
+    int_ty_set(*a &amp; *b)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">single_type_contained_in</span>(tcx: <span class="PreProc">ty</span>::ctxt, a: int_ty_set) -&gt;
+    <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt; {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;single_type_contained_in(a=%s)&quot;</span>, <span class="Type">uint</span>::to_str(*a, <span class="Constant">10u</span>)];
+
+    <span class="Statement">if</span> *a == INT_TY_SET_i8    { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_i8(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_u8    { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_u8(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_i16   { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_i16(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_u16   { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_u16(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_i32   { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_i32(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_u32   { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_u32(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_i64   { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_i64(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_u64   { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_u64(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_i     { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_int(tcx)); }
+    <span class="Statement">if</span> *a == INT_TY_SET_u     { <span class="Statement">ret</span> <span class="Constant">some</span>(<span class="PreProc">ty</span>::mk_uint(tcx)); }
+    <span class="Statement">ret</span> <span class="Constant">none</span>;
+}
+
+<span class="Statement">fn</span> <span class="Identifier">convert_integral_ty_to_int_ty_set</span>(tcx: <span class="PreProc">ty</span>::ctxt, t: <span class="PreProc">ty</span>::t)
+    -&gt; int_ty_set {
+
+    <span class="Statement">alt</span> get(t).<span class="Statement">struct</span> {
+      ty_int(int_ty) {
+        <span class="Statement">alt</span> int_ty {
+          <span class="PreProc">ast</span>::ty_i8   { int_ty_set(INT_TY_SET_i8)  }
+          <span class="PreProc">ast</span>::ty_i16  { int_ty_set(INT_TY_SET_i16) }
+          <span class="PreProc">ast</span>::ty_i32  { int_ty_set(INT_TY_SET_i32) }
+          <span class="PreProc">ast</span>::ty_i64  { int_ty_set(INT_TY_SET_i64) }
+          <span class="PreProc">ast</span>::ty_i    { int_ty_set(INT_TY_SET_i)   }
+          <span class="PreProc">ast</span>::ty_char { tcx.sess.bug(
+              ~<span class="Constant">&quot;char type passed to convert_integral_ty_to_int_ty_set()&quot;</span>); }
+        }
+      }
+      ty_uint(uint_ty) {
+        <span class="Statement">alt</span> uint_ty {
+          <span class="PreProc">ast</span>::ty_u8  { int_ty_set(INT_TY_SET_u8)  }
+          <span class="PreProc">ast</span>::ty_u16 { int_ty_set(INT_TY_SET_u16) }
+          <span class="PreProc">ast</span>::ty_u32 { int_ty_set(INT_TY_SET_u32) }
+          <span class="PreProc">ast</span>::ty_u64 { int_ty_set(INT_TY_SET_u64) }
+          <span class="PreProc">ast</span>::ty_u   { int_ty_set(INT_TY_SET_u)   }
+        }
+      }
+      _ { tcx.sess.bug(~<span class="Constant">&quot;non-integral type passed to \</span>
+<span class="Constant">                        convert_integral_ty_to_int_ty_set()&quot;</span>); }
+    }
+}
+
+<span class="Comment">// Extra information needed to perform an assignment that may borrow.</span>
+<span class="Comment">// The `expr_id` is the is of the expression whose type is being</span>
+<span class="Comment">// assigned, and `borrow_scope` is the region scope to use if the</span>
+<span class="Comment">// value should be borrowed.</span>
+<span class="Statement">type</span> <span class="Identifier">assignment</span> = {
+    expr_id: <span class="PreProc">ast</span>::node_id,
+    borrow_lb: <span class="PreProc">ast</span>::node_id,
+    borrow_ub: <span class="PreProc">ast</span>::node_id,
+};
+
+<span class="Statement">type</span> <span class="Identifier">bound</span>&lt;T:<span class="Statement">copy</span>&gt; = <span class="Type">option</span>&lt;T&gt;;
+<span class="Statement">type</span> <span class="Identifier">bounds</span>&lt;T:<span class="Statement">copy</span>&gt; = {lb: bound&lt;T&gt;, ub: bound&lt;T&gt;};
+
+<span class="Statement">enum</span> <span class="Identifier">var_value</span>&lt;V:<span class="Statement">copy</span>, T:<span class="Statement">copy</span>&gt; {
+    redirect(V),
+    root(T, <span class="Type">uint</span>),
+}
+
+<span class="Statement">type</span> <span class="Identifier">vals_and_bindings</span>&lt;V:<span class="Statement">copy</span>, T:<span class="Statement">copy</span>&gt; = {
+    vals: smallintmap&lt;var_value&lt;V, T&gt;&gt;,
+    <span class="Statement">mut</span> bindings: ~[(V, var_value&lt;V, T&gt;)]
+};
+
+<span class="Statement">enum</span> <span class="Identifier">node</span>&lt;V:<span class="Statement">copy</span>, T:<span class="Statement">copy</span>&gt; = {
+    root: V,
+    possible_types: T,
+    rank: <span class="Type">uint</span>,
+};
+
+<span class="Statement">enum</span> <span class="Identifier">infer_ctxt</span> = @{
+    tcx: <span class="PreProc">ty</span>::ctxt,
+
+    <span class="Comment">// We instantiate vals_and_bindings with bounds&lt;ty::t&gt; because the</span>
+    <span class="Comment">// types that might instantiate a general type variable have an</span>
+    <span class="Comment">// order, represented by its upper and lower bounds.</span>
+    tvb: vals_and_bindings&lt;<span class="PreProc">ty</span>::tv_vid, bounds&lt;<span class="PreProc">ty</span>::t&gt;&gt;,
+
+    <span class="Comment">// The types that might instantiate an integral type variable are</span>
+    <span class="Comment">// represented by an int_ty_set.</span>
+    tvib: vals_and_bindings&lt;<span class="PreProc">ty</span>::tvi_vid, int_ty_set&gt;,
+
+    <span class="Comment">// For region variables.</span>
+    rb: vals_and_bindings&lt;<span class="PreProc">ty</span>::region_vid, bounds&lt;<span class="PreProc">ty</span>::region&gt;&gt;,
+
+    <span class="Comment">// For keeping track of existing type and region variables.</span>
+    ty_var_counter: @<span class="Statement">mut</span> <span class="Type">uint</span>,
+    ty_var_integral_counter: @<span class="Statement">mut</span> <span class="Type">uint</span>,
+    region_var_counter: @<span class="Statement">mut</span> <span class="Type">uint</span>,
+
+    borrowings: dvec&lt;{expr_id: <span class="PreProc">ast</span>::node_id,
+                      scope: <span class="PreProc">ty</span>::region,
+                      mutbl: <span class="PreProc">ast</span>::mutability}&gt;
+};
+
+<span class="Statement">enum</span> <span class="Identifier">fixup_err</span> {
+    unresolved_int_ty(tvi_vid),
+    unresolved_ty(tv_vid),
+    cyclic_ty(tv_vid),
+    unresolved_region(region_vid),
+    region_var_bound_by_region_var(region_vid, region_vid)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">fixup_err_to_str</span>(f: fixup_err) -&gt; ~<span class="Type">str</span> {
+    <span class="Statement">alt</span> f {
+      unresolved_int_ty(_) { ~<span class="Constant">&quot;unconstrained integral type&quot;</span> }
+      unresolved_ty(_) { ~<span class="Constant">&quot;unconstrained type&quot;</span> }
+      cyclic_ty(_) { ~<span class="Constant">&quot;cyclic type of infinite size&quot;</span> }
+      unresolved_region(_) { ~<span class="Constant">&quot;unconstrained region&quot;</span> }
+      region_var_bound_by_region_var(r1, r2) {
+        <span class="PreProc">#fmt</span>[<span class="Constant">&quot;region var %? bound by another region var %?; this is \</span>
+<span class="Constant">              a bug in rustc&quot;</span>, r1, r2]
+      }
+    }
+}
+
+<span class="Statement">type</span> <span class="Identifier">ures</span> = <span class="PreProc">result</span>::result&lt;(), <span class="PreProc">ty</span>::type_err&gt;;
+<span class="Statement">type</span> <span class="Identifier">fres</span>&lt;T&gt; = <span class="PreProc">result</span>::result&lt;T, fixup_err&gt;;
+
+<span class="Statement">fn</span> <span class="Identifier">new_infer_ctxt</span>(tcx: <span class="PreProc">ty</span>::ctxt) -&gt; infer_ctxt {
+    infer_ctxt(@{tcx: tcx,
+                 tvb: {vals: <span class="PreProc">smallintmap</span>::mk(), <span class="Statement">mut</span> bindings: ~[]},
+                 tvib: {vals: <span class="PreProc">smallintmap</span>::mk(), <span class="Statement">mut</span> bindings: ~[]},
+                 rb: {vals: <span class="PreProc">smallintmap</span>::mk(), <span class="Statement">mut</span> bindings: ~[]},
+                 ty_var_counter: @<span class="Statement">mut</span> <span class="Constant">0u</span>,
+                 ty_var_integral_counter: @<span class="Statement">mut</span> <span class="Constant">0u</span>,
+                 region_var_counter: @<span class="Statement">mut</span> <span class="Constant">0u</span>,
+                 borrowings: dvec()})}
+
+<span class="Statement">fn</span> <span class="Identifier">mk_subty</span>(cx: infer_ctxt, a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;mk_subty(%s &lt;: %s)&quot;</span>, a.to_str(cx), b.to_str(cx)];
+    indent(|| cx.commit(|| sub(cx).tys(a, b) ) ).to_ures()
+}
+
+<span class="Statement">fn</span> <span class="Identifier">can_mk_subty</span>(cx: infer_ctxt, a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;can_mk_subty(%s &lt;: %s)&quot;</span>, a.to_str(cx), b.to_str(cx)];
+    indent(|| cx.probe(|| sub(cx).tys(a, b) ) ).to_ures()
+}
+
+<span class="Statement">fn</span> <span class="Identifier">mk_subr</span>(cx: infer_ctxt, a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; ures {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;mk_subr(%s &lt;: %s)&quot;</span>, a.to_str(cx), b.to_str(cx)];
+    indent(|| cx.commit(|| sub(cx).regions(a, b) ) ).to_ures()
+}
+
+<span class="Statement">fn</span> <span class="Identifier">mk_eqty</span>(cx: infer_ctxt, a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;mk_eqty(%s &lt;: %s)&quot;</span>, a.to_str(cx), b.to_str(cx)];
+    indent(|| cx.commit(|| cx.eq_tys(a, b) ) ).to_ures()
+}
+
+<span class="Statement">fn</span> <span class="Identifier">mk_assignty</span>(cx: infer_ctxt, anmnt: assignment,
+               a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;mk_assignty(%? / %s &lt;: %s)&quot;</span>,
+           anmnt, a.to_str(cx), b.to_str(cx)];
+    indent(|| cx.commit(||
+        cx.assign_tys(anmnt, a, b)
+    ) ).to_ures()
+}
+
+<span class="Statement">fn</span> <span class="Identifier">can_mk_assignty</span>(cx: infer_ctxt, anmnt: assignment,
+                a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;can_mk_assignty(%? / %s &lt;: %s)&quot;</span>,
+           anmnt, a.to_str(cx), b.to_str(cx)];
+
+    <span class="Comment">// </span><span class="Todo">FIXME</span><span class="Comment">(#2593)---this will not unroll any entries we make in the</span>
+    <span class="Comment">// borrowings table.  But this is OK for the moment because this</span>
+    <span class="Comment">// is only used in method lookup, and there must be exactly one</span>
+    <span class="Comment">// match or an error is reported. Still, it should be fixed. (#2593)</span>
+    <span class="Comment">// NDM OUTDATED</span>
+
+    indent(|| cx.probe(||
+        cx.assign_tys(anmnt, a, b)
+    ) ).to_ures()
+}
+
+<span class="Comment">// See comment on the type `resolve_state` below</span>
+<span class="Statement">fn</span> <span class="Identifier">resolve_type</span>(cx: infer_ctxt, a: <span class="PreProc">ty</span>::t, modes: <span class="Type">uint</span>)
+    -&gt; fres&lt;<span class="PreProc">ty</span>::t&gt; {
+    resolver(cx, modes).resolve_type_chk(a)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">resolve_region</span>(cx: infer_ctxt, r: <span class="PreProc">ty</span>::region, modes: <span class="Type">uint</span>)
+    -&gt; fres&lt;<span class="PreProc">ty</span>::region&gt; {
+    resolver(cx, modes).resolve_region_chk(r)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">resolve_borrowings</span>(cx: infer_ctxt) {
+    <span class="Statement">for</span> cx.borrowings.each |item| {
+        <span class="Statement">alt</span> resolve_region(cx, item.scope, resolve_all|force_all) {
+          <span class="Constant">ok</span>(<span class="PreProc">ty</span>::re_scope(scope_id)) =&gt; {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;borrowing for expr %d resolved to scope %d, mutbl %?&quot;</span>,
+                   item.expr_id, scope_id, item.mutbl];
+            cx.tcx.borrowings.insert(
+                item.expr_id, {scope_id: scope_id, mutbl: item.mutbl});
+          }
+
+          r =&gt; {
+            cx.tcx.sess.bug(
+                <span class="PreProc">#fmt</span>[<span class="Constant">&quot;borrowing resolved to %?, not a valid scope&quot;</span>, r]);
+          }
+        }
+    }
+}
+
+<span class="Statement">trait</span> <span class="Identifier">then</span> {
+    <span class="Statement">fn</span> <span class="Identifier">then</span>&lt;T:<span class="Statement">copy</span>&gt;(f: <span class="Statement">fn</span>() -&gt; result&lt;T,<span class="PreProc">ty</span>::type_err&gt;)
+        -&gt; result&lt;T,<span class="PreProc">ty</span>::type_err&gt;;
+}
+
+<span class="Statement">impl</span> methods <span class="Statement">of</span> then <span class="Statement">for</span> ures {
+    <span class="Statement">fn</span> <span class="Identifier">then</span>&lt;T:<span class="Statement">copy</span>&gt;(f: <span class="Statement">fn</span>() -&gt; result&lt;T,<span class="PreProc">ty</span>::type_err&gt;)
+        -&gt; result&lt;T,<span class="PreProc">ty</span>::type_err&gt; {
+        <span class="Statement">self</span>.chain(|_i| f())
+    }
+}
+
+<span class="Statement">trait</span> <span class="Identifier">cres_helpers</span>&lt;T&gt; {
+    <span class="Statement">fn</span> <span class="Identifier">to_ures</span>() -&gt; ures;
+    <span class="Statement">fn</span> <span class="Identifier">compare</span>(t: T, f: <span class="Statement">fn</span>() -&gt; <span class="PreProc">ty</span>::type_err) -&gt; cres&lt;T&gt;;
+}
+
+<span class="Statement">impl</span> methods&lt;T:<span class="Statement">copy</span>&gt; <span class="Statement">of</span> cres_helpers&lt;T&gt; <span class="Statement">for</span> cres&lt;T&gt; {
+    <span class="Statement">fn</span> <span class="Identifier">to_ures</span>() -&gt; ures {
+        <span class="Statement">alt</span> <span class="Statement">self</span> {
+          <span class="Constant">ok</span>(_v) { <span class="Constant">ok</span>(()) }
+          <span class="Constant">err</span>(e) { <span class="Constant">err</span>(e) }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">compare</span>(t: T, f: <span class="Statement">fn</span>() -&gt; <span class="PreProc">ty</span>::type_err) -&gt; cres&lt;T&gt; {
+        <span class="Statement">do</span> <span class="Statement">self</span>.chain |s| {
+            <span class="Statement">if</span> s == t {
+                <span class="Statement">self</span>
+            } <span class="Statement">else</span> {
+                <span class="Constant">err</span>(f())
+            }
+        }
+    }
+}
+
+<span class="Statement">iface</span> <span class="Identifier">to_str</span> {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span>;
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> to_str <span class="Statement">for</span> <span class="PreProc">ty</span>::t {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        ty_to_str(cx.tcx, <span class="Statement">self</span>)
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> to_str <span class="Statement">for</span> <span class="PreProc">ty</span>::mt {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        mt_to_str(cx.tcx, <span class="Statement">self</span>)
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> to_str <span class="Statement">for</span> <span class="PreProc">ty</span>::region {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        <span class="PreProc">util</span>::<span class="PreProc">ppaux</span>::region_to_str(cx.tcx, <span class="Statement">self</span>)
+    }
+}
+
+<span class="Statement">impl</span>&lt;V:<span class="Statement">copy</span> to_str&gt; <span class="Statement">of</span> to_str <span class="Statement">for</span> bound&lt;V&gt; {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        <span class="Statement">alt</span> <span class="Statement">self</span> {
+          <span class="Constant">some</span>(v) { v.to_str(cx) }
+          <span class="Constant">none</span> { ~<span class="Constant">&quot;none&quot;</span> }
+        }
+    }
+}
+
+<span class="Statement">impl</span>&lt;T:<span class="Statement">copy</span> to_str&gt; <span class="Statement">of</span> to_str <span class="Statement">for</span> bounds&lt;T&gt; {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        <span class="PreProc">#fmt</span>[<span class="Constant">&quot;{%s &lt;: %s}&quot;</span>,
+             <span class="Statement">self</span>.lb.to_str(cx),
+             <span class="Statement">self</span>.ub.to_str(cx)]
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> to_str <span class="Statement">for</span> int_ty_set {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(_cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        <span class="Statement">alt</span> <span class="Statement">self</span> {
+          int_ty_set(v) { <span class="Type">uint</span>::to_str(v, <span class="Constant">10u</span>) }
+        }
+    }
+}
+
+<span class="Statement">impl</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span> to_str&gt; <span class="Statement">of</span> to_str <span class="Statement">for</span> var_value&lt;V,T&gt; {
+    <span class="Statement">fn</span> <span class="Identifier">to_str</span>(cx: infer_ctxt) -&gt; ~<span class="Type">str</span> {
+        <span class="Statement">alt</span> <span class="Statement">self</span> {
+          redirect(vid) { <span class="PreProc">#fmt</span>(<span class="Constant">&quot;redirect(%s)&quot;</span>, vid.to_str()) }
+          root(pt, rk) { <span class="PreProc">#fmt</span>(<span class="Constant">&quot;root(%s, %s)&quot;</span>, pt.to_str(cx),
+                              <span class="Type">uint</span>::to_str(rk, <span class="Constant">10u</span>)) }
+        }
+    }
+}
+
+<span class="Statement">iface</span> <span class="Identifier">st</span> {
+    <span class="Statement">fn</span> <span class="Identifier">sub</span>(infcx: infer_ctxt, b: <span class="Statement">self</span>) -&gt; ures;
+    <span class="Statement">fn</span> <span class="Identifier">lub</span>(infcx: infer_ctxt, b: <span class="Statement">self</span>) -&gt; cres&lt;<span class="Statement">self</span>&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">glb</span>(infcx: infer_ctxt, b: <span class="Statement">self</span>) -&gt; cres&lt;<span class="Statement">self</span>&gt;;
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> st <span class="Statement">for</span> <span class="PreProc">ty</span>::t {
+    <span class="Statement">fn</span> <span class="Identifier">sub</span>(infcx: infer_ctxt, &amp;&amp;b: <span class="PreProc">ty</span>::t) -&gt; ures {
+        sub(infcx).tys(<span class="Statement">self</span>, b).to_ures()
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">lub</span>(infcx: infer_ctxt, &amp;&amp;b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        lub(infcx).tys(<span class="Statement">self</span>, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">glb</span>(infcx: infer_ctxt, &amp;&amp;b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        glb(infcx).tys(<span class="Statement">self</span>, b)
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> st <span class="Statement">for</span> <span class="PreProc">ty</span>::region {
+    <span class="Statement">fn</span> <span class="Identifier">sub</span>(infcx: infer_ctxt, &amp;&amp;b: <span class="PreProc">ty</span>::region) -&gt; ures {
+        sub(infcx).regions(<span class="Statement">self</span>, b).chain(|_r| <span class="Constant">ok</span>(()))
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">lub</span>(infcx: infer_ctxt, &amp;&amp;b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        lub(infcx).regions(<span class="Statement">self</span>, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">glb</span>(infcx: infer_ctxt, &amp;&amp;b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        glb(infcx).regions(<span class="Statement">self</span>, b)
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">uok</span>() -&gt; ures {
+    <span class="Constant">ok</span>(())
+}
+
+<span class="Statement">fn</span> <span class="Identifier">rollback_to</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span>&gt;(
+    vb: vals_and_bindings&lt;V, T&gt;, len: <span class="Type">uint</span>) {
+
+    <span class="Statement">while</span> vb.bindings.len() != len {
+        <span class="Statement">let</span> (vid, old_v) = <span class="PreProc">vec</span>::pop(vb.bindings);
+        vb.vals.insert(vid.to_uint(), old_v);
+    }
+}
+
+<span class="Statement">impl</span> transaction_methods <span class="Statement">for</span> infer_ctxt {
+    <span class="Comment">/// Execute `f` and commit the bindings if successful</span>
+    <span class="Statement">fn</span> <span class="Identifier">commit</span>&lt;T,E&gt;(f: <span class="Statement">fn</span>() -&gt; result&lt;T,E&gt;) -&gt; result&lt;T,E&gt; {
+
+        <span class="Statement">assert</span> <span class="Statement">self</span>.tvb.bindings.len() == <span class="Constant">0u</span>;
+        <span class="Statement">assert</span> <span class="Statement">self</span>.rb.bindings.len() == <span class="Constant">0u</span>;
+
+        <span class="Statement">let</span> r &lt;- <span class="Statement">self</span>.try(f);
+
+        <span class="Comment">// </span><span class="Todo">FIXME</span><span class="Comment"> (#2814)---could use a vec::clear() that ran destructors but</span>
+        <span class="Comment">// kept the vec at its currently allocated length</span>
+        <span class="Statement">self</span>.tvb.bindings = ~[];
+        <span class="Statement">self</span>.rb.bindings = ~[];
+
+        <span class="Statement">ret</span> r;
+    }
+
+    <span class="Comment">/// Execute `f`, unroll bindings on failure</span>
+    <span class="Statement">fn</span> <span class="Identifier">try</span>&lt;T,E&gt;(f: <span class="Statement">fn</span>() -&gt; result&lt;T,E&gt;) -&gt; result&lt;T,E&gt; {
+
+        <span class="Statement">let</span> tvbl = <span class="Statement">self</span>.tvb.bindings.len();
+        <span class="Statement">let</span> rbl = <span class="Statement">self</span>.rb.bindings.len();
+        <span class="Statement">let</span> bl = <span class="Statement">self</span>.borrowings.len();
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;try(tvbl=%u, rbl=%u)&quot;</span>, tvbl, rbl];
+        <span class="Statement">let</span> r &lt;- f();
+        <span class="Statement">alt</span> r {
+          <span class="PreProc">result</span>::<span class="Constant">ok</span>(_) { <span class="PreProc">#debug</span>[<span class="Constant">&quot;try--ok&quot;</span>]; }
+          <span class="PreProc">result</span>::<span class="Constant">err</span>(_) {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;try--rollback&quot;</span>];
+            rollback_to(<span class="Statement">self</span>.tvb, tvbl);
+            rollback_to(<span class="Statement">self</span>.rb, rbl);
+            <span class="Statement">while</span> <span class="Statement">self</span>.borrowings.len() != bl { <span class="Statement">self</span>.borrowings.pop(); }
+          }
+        }
+        <span class="Statement">ret</span> r;
+    }
+
+    <span class="Comment">/// Execute `f` then unroll any bindings it creates</span>
+    <span class="Statement">fn</span> <span class="Identifier">probe</span>&lt;T,E&gt;(f: <span class="Statement">fn</span>() -&gt; result&lt;T,E&gt;) -&gt; result&lt;T,E&gt; {
+        <span class="Statement">assert</span> <span class="Statement">self</span>.tvb.bindings.len() == <span class="Constant">0u</span>;
+        <span class="Statement">assert</span> <span class="Statement">self</span>.rb.bindings.len() == <span class="Constant">0u</span>;
+        <span class="Statement">let</span> r &lt;- f();
+        rollback_to(<span class="Statement">self</span>.tvb, <span class="Constant">0u</span>);
+        rollback_to(<span class="Statement">self</span>.rb, <span class="Constant">0u</span>);
+        <span class="Statement">ret</span> r;
+    }
+}
+
+<span class="Statement">impl</span> methods <span class="Statement">for</span> infer_ctxt {
+    <span class="Statement">fn</span> <span class="Identifier">next_ty_var_id</span>() -&gt; tv_vid {
+        <span class="Statement">let</span> id = *<span class="Statement">self</span>.ty_var_counter;
+        *<span class="Statement">self</span>.ty_var_counter += <span class="Constant">1u</span>;
+        <span class="Statement">self</span>.tvb.vals.insert(id,
+                             root({lb: <span class="Constant">none</span>, ub: <span class="Constant">none</span>}, <span class="Constant">0u</span>));
+        <span class="Statement">ret</span> tv_vid(id);
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_ty_var</span>() -&gt; <span class="PreProc">ty</span>::t {
+        <span class="PreProc">ty</span>::mk_var(<span class="Statement">self</span>.tcx, <span class="Statement">self</span>.next_ty_var_id())
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_ty_vars</span>(n: <span class="Type">uint</span>) -&gt; ~[<span class="PreProc">ty</span>::t] {
+        <span class="PreProc">vec</span>::from_fn(n, |_i| <span class="Statement">self</span>.next_ty_var())
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_ty_var_integral_id</span>() -&gt; tvi_vid {
+        <span class="Statement">let</span> id = *<span class="Statement">self</span>.ty_var_integral_counter;
+        *<span class="Statement">self</span>.ty_var_integral_counter += <span class="Constant">1u</span>;
+
+        <span class="Statement">self</span>.tvib.vals.insert(id,
+                              root(int_ty_set_all(), <span class="Constant">0u</span>));
+        <span class="Statement">ret</span> tvi_vid(id);
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_ty_var_integral</span>() -&gt; <span class="PreProc">ty</span>::t {
+        <span class="PreProc">ty</span>::mk_var_integral(<span class="Statement">self</span>.tcx, <span class="Statement">self</span>.next_ty_var_integral_id())
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_region_var_id</span>(bnds: bounds&lt;<span class="PreProc">ty</span>::region&gt;) -&gt; region_vid {
+        <span class="Statement">let</span> id = *<span class="Statement">self</span>.region_var_counter;
+        *<span class="Statement">self</span>.region_var_counter += <span class="Constant">1u</span>;
+        <span class="Statement">self</span>.rb.vals.insert(id, root(bnds, <span class="Constant">0</span>));
+        <span class="Statement">ret</span> region_vid(id);
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_region_var</span>(bnds: bounds&lt;<span class="PreProc">ty</span>::region&gt;) -&gt; <span class="PreProc">ty</span>::region {
+        <span class="PreProc">ty</span>::re_var(<span class="Statement">self</span>.next_region_var_id(bnds))
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">next_region_var_nb</span>() -&gt; <span class="PreProc">ty</span>::region { <span class="Comment">// nb == &quot;no bounds&quot;</span>
+        <span class="Statement">self</span>.next_region_var({lb: <span class="Constant">none</span>, ub: <span class="Constant">none</span>})
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">ty_to_str</span>(t: <span class="PreProc">ty</span>::t) -&gt; ~<span class="Type">str</span> {
+        ty_to_str(<span class="Statement">self</span>.tcx,
+                  <span class="Statement">self</span>.resolve_type_vars_if_possible(t))
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_type_vars_if_possible</span>(typ: <span class="PreProc">ty</span>::t) -&gt; <span class="PreProc">ty</span>::t {
+        <span class="Statement">alt</span> resolve_type(<span class="Statement">self</span>, typ, resolve_all) {
+          <span class="PreProc">result</span>::<span class="Constant">ok</span>(new_type) { <span class="Statement">ret</span> new_type; }
+          <span class="PreProc">result</span>::<span class="Constant">err</span>(_) { <span class="Statement">ret</span> typ; }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_region_if_possible</span>(oldr: <span class="PreProc">ty</span>::region) -&gt; <span class="PreProc">ty</span>::region {
+        <span class="Statement">alt</span> resolve_region(<span class="Statement">self</span>, oldr, resolve_all) {
+          <span class="PreProc">result</span>::<span class="Constant">ok</span>(newr) { <span class="Statement">ret</span> newr; }
+          <span class="PreProc">result</span>::<span class="Constant">err</span>(_) { <span class="Statement">ret</span> oldr; }
+        }
+    }
+}
+
+<span class="Statement">impl</span> unify_methods <span class="Statement">for</span> infer_ctxt {
+
+    <span class="Statement">fn</span> <span class="Identifier">set</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span> to_str&gt;(
+        vb: vals_and_bindings&lt;V, T&gt;, vid: V,
+        +new_v: var_value&lt;V, T&gt;) {
+
+        <span class="Statement">let</span> old_v = vb.vals.get(vid.to_uint());
+        <span class="PreProc">vec</span>::push(vb.bindings, (vid, old_v));
+        vb.vals.insert(vid.to_uint(), new_v);
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;Updating variable %s from %s to %s&quot;</span>,
+               vid.to_str(), old_v.to_str(<span class="Statement">self</span>), new_v.to_str(<span class="Statement">self</span>)];
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">get</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span>&gt;(
+        vb: vals_and_bindings&lt;V, T&gt;, vid: V)
+        -&gt; node&lt;V, T&gt; {
+
+        <span class="Statement">let</span> vid_u = vid.to_uint();
+        <span class="Statement">alt</span> vb.vals.find(vid_u) {
+          <span class="Constant">none</span> {
+            <span class="Statement">self</span>.tcx.sess.bug(<span class="PreProc">#fmt</span>[<span class="Constant">&quot;failed lookup of vid `%u`&quot;</span>, vid_u]);
+          }
+          <span class="Constant">some</span>(var_val) {
+            <span class="Statement">alt</span> var_val {
+              redirect(vid) {
+                <span class="Statement">let</span> nde = <span class="Statement">self</span>.get(vb, vid);
+                <span class="Statement">if</span> nde.root != vid {
+                    <span class="Comment">// Path compression</span>
+                    vb.vals.insert(vid.to_uint(), redirect(nde.root));
+                }
+                nde
+              }
+              root(pt, rk) {
+                node({root: vid, possible_types: pt, rank: rk})
+              }
+            }
+          }
+        }
+    }
+
+    <span class="Comment">// Combines the two bounds into a more general bound.</span>
+    <span class="Statement">fn</span> <span class="Identifier">merge_bnd</span>&lt;V:<span class="Statement">copy</span> to_str&gt;(
+        a: bound&lt;V&gt;, b: bound&lt;V&gt;,
+        merge_op: <span class="Statement">fn</span>(V,V) -&gt; cres&lt;V&gt;) -&gt; cres&lt;bound&lt;V&gt;&gt; {
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;merge_bnd(%s,%s)&quot;</span>, a.to_str(<span class="Statement">self</span>), b.to_str(<span class="Statement">self</span>)];
+        <span class="Statement">let</span> _r = indenter();
+
+        <span class="Statement">alt</span> (a, b) {
+          (<span class="Constant">none</span>, <span class="Constant">none</span>) {
+            <span class="Constant">ok</span>(<span class="Constant">none</span>)
+          }
+          (<span class="Constant">some</span>(_), <span class="Constant">none</span>) {
+            <span class="Constant">ok</span>(a)
+          }
+          (<span class="Constant">none</span>, <span class="Constant">some</span>(_)) {
+            <span class="Constant">ok</span>(b)
+          }
+          (<span class="Constant">some</span>(v_a), <span class="Constant">some</span>(v_b)) {
+            <span class="Statement">do</span> merge_op(v_a, v_b).chain |v| {
+                <span class="Constant">ok</span>(<span class="Constant">some</span>(v))
+            }
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">merge_bnds</span>&lt;V:<span class="Statement">copy</span> to_str&gt;(
+        a: bounds&lt;V&gt;, b: bounds&lt;V&gt;,
+        lub: <span class="Statement">fn</span>(V,V) -&gt; cres&lt;V&gt;,
+        glb: <span class="Statement">fn</span>(V,V) -&gt; cres&lt;V&gt;) -&gt; cres&lt;bounds&lt;V&gt;&gt; {
+
+        <span class="Statement">let</span> _r = indenter();
+        <span class="Statement">do</span> <span class="Statement">self</span>.merge_bnd(a.ub, b.ub, glb).chain |ub| {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;glb of ubs %s and %s is %s&quot;</span>,
+                   a.ub.to_str(<span class="Statement">self</span>), b.ub.to_str(<span class="Statement">self</span>),
+                   ub.to_str(<span class="Statement">self</span>)];
+            <span class="Statement">do</span> <span class="Statement">self</span>.merge_bnd(a.lb, b.lb, lub).chain |lb| {
+                <span class="PreProc">#debug</span>[<span class="Constant">&quot;lub of lbs %s and %s is %s&quot;</span>,
+                       a.lb.to_str(<span class="Statement">self</span>), b.lb.to_str(<span class="Statement">self</span>),
+                       lb.to_str(<span class="Statement">self</span>)];
+                <span class="Constant">ok</span>({lb: lb, ub: ub})
+            }
+        }
+    }
+
+    <span class="Comment">// Updates the bounds for the variable `v_id` to be the intersection</span>
+    <span class="Comment">// of `a` and `b`.  That is, the new bounds for `v_id` will be</span>
+    <span class="Comment">// a bounds c such that:</span>
+    <span class="Comment">//    c.ub &lt;: a.ub</span>
+    <span class="Comment">//    c.ub &lt;: b.ub</span>
+    <span class="Comment">//    a.lb &lt;: c.lb</span>
+    <span class="Comment">//    b.lb &lt;: c.lb</span>
+    <span class="Comment">// If this cannot be achieved, the result is failure.</span>
+
+    <span class="Statement">fn</span> <span class="Identifier">set_var_to_merged_bounds</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span> to_str st&gt;(
+        vb: vals_and_bindings&lt;V, bounds&lt;T&gt;&gt;,
+        v_id: V, a: bounds&lt;T&gt;, b: bounds&lt;T&gt;, rank: <span class="Type">uint</span>) -&gt; ures {
+
+        <span class="Comment">// Think of the two diamonds, we want to find the</span>
+        <span class="Comment">// intersection.  There are basically four possibilities (you</span>
+        <span class="Comment">// can swap A/B in these pictures):</span>
+        <span class="Comment">//</span>
+        <span class="Comment">//       A         A</span>
+        <span class="Comment">//      / \       / \</span>
+<span class="Comment">        //     / B \     / B \</span>
+<span class="Comment">        //    / / \ \   / / \ \</span>
+<span class="Comment">        //   * *   * * * /   * *</span>
+        <span class="Comment">//    \ \ / /   \   / /</span>
+        <span class="Comment">//     \ B /   / \ / /</span>
+        <span class="Comment">//      \ /   *   \ /</span>
+        <span class="Comment">//       A     \ / A</span>
+        <span class="Comment">//              B</span>
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;merge(%s,%s,%s)&quot;</span>,
+               v_id.to_str(),
+               a.to_str(<span class="Statement">self</span>),
+               b.to_str(<span class="Statement">self</span>)];
+
+        <span class="Comment">// First, relate the lower/upper bounds of A and B.</span>
+        <span class="Comment">// Note that these relations *must* hold for us to</span>
+        <span class="Comment">// to be able to merge A and B at all, and relating</span>
+        <span class="Comment">// them explicitly gives the type inferencer more</span>
+        <span class="Comment">// information and helps to produce tighter bounds</span>
+        <span class="Comment">// when necessary.</span>
+        <span class="Statement">do</span> indent {
+        <span class="Statement">do</span> <span class="Statement">self</span>.bnds(a.lb, b.ub).then {
+        <span class="Statement">do</span> <span class="Statement">self</span>.bnds(b.lb, a.ub).then {
+        <span class="Statement">do</span> <span class="Statement">self</span>.merge_bnd(a.ub, b.ub, |x, y| x.glb(<span class="Statement">self</span>, y) ).chain |ub| {
+        <span class="Statement">do</span> <span class="Statement">self</span>.merge_bnd(a.lb, b.lb, |x, y| x.lub(<span class="Statement">self</span>, y) ).chain |lb| {
+            <span class="Statement">let</span> bnds = {lb: lb, ub: ub};
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;merge(%s): bnds=%s&quot;</span>,
+                   v_id.to_str(),
+                   bnds.to_str(<span class="Statement">self</span>)];
+
+            <span class="Comment">// the new bounds must themselves</span>
+            <span class="Comment">// be relatable:</span>
+            <span class="Statement">do</span> <span class="Statement">self</span>.bnds(bnds.lb, bnds.ub).then {
+                <span class="Statement">self</span>.set(vb, v_id, root(bnds, rank));
+                uok()
+            }
+        }}}}}
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vars</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span> to_str st&gt;(
+        vb: vals_and_bindings&lt;V, bounds&lt;T&gt;&gt;,
+        a_id: V, b_id: V) -&gt; ures {
+
+        <span class="Comment">// Need to make sub_id a subtype of sup_id.</span>
+        <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.get(vb, a_id);
+        <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.get(vb, b_id);
+        <span class="Statement">let</span> a_id = nde_a.root;
+        <span class="Statement">let</span> b_id = nde_b.root;
+        <span class="Statement">let</span> a_bounds = nde_a.possible_types;
+        <span class="Statement">let</span> b_bounds = nde_b.possible_types;
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars(%s=%s &lt;: %s=%s)&quot;</span>,
+               a_id.to_str(), a_bounds.to_str(<span class="Statement">self</span>),
+               b_id.to_str(), b_bounds.to_str(<span class="Statement">self</span>)];
+
+        <span class="Statement">if</span> a_id == b_id { <span class="Statement">ret</span> uok(); }
+
+        <span class="Comment">// If both A's UB and B's LB have already been bound to types,</span>
+        <span class="Comment">// see if we can make those types subtypes.</span>
+        <span class="Statement">alt</span> (a_bounds.ub, b_bounds.lb) {
+          (<span class="Constant">some</span>(a_ub), <span class="Constant">some</span>(b_lb)) {
+            <span class="Statement">let</span> r = <span class="Statement">self</span>.try(|| a_ub.sub(<span class="Statement">self</span>, b_lb));
+            <span class="Statement">alt</span> r {
+              <span class="Constant">ok</span>(()) { <span class="Statement">ret</span> <span class="PreProc">result</span>::<span class="Constant">ok</span>(()); }
+              <span class="Constant">err</span>(_) { <span class="Comment">/*fallthrough */</span> }
+            }
+          }
+          _ { <span class="Comment">/*fallthrough*/</span> }
+        }
+
+        <span class="Comment">// Otherwise, we need to merge A and B so as to guarantee that</span>
+        <span class="Comment">// A remains a subtype of B.  Actually, there are other options,</span>
+        <span class="Comment">// but that's the route we choose to take.</span>
+
+        <span class="Comment">// Rank optimization</span>
+
+        <span class="Comment">// Make the node with greater rank the parent of the node with</span>
+        <span class="Comment">// smaller rank.</span>
+        <span class="Statement">if</span> nde_a.rank &gt; nde_b.rank {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars(): a has smaller rank&quot;</span>];
+            <span class="Comment">// a has greater rank, so a should become b's parent,</span>
+            <span class="Comment">// i.e., b should redirect to a.</span>
+            <span class="Statement">self</span>.set(vb, b_id, redirect(a_id));
+            <span class="Statement">self</span>.set_var_to_merged_bounds(
+                vb, a_id, a_bounds, b_bounds, nde_a.rank).then(|| uok() )
+        } <span class="Statement">else</span> <span class="Statement">if</span> nde_a.rank &lt; nde_b.rank {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars(): b has smaller rank&quot;</span>];
+            <span class="Comment">// b has greater rank, so a should redirect to b.</span>
+            <span class="Statement">self</span>.set(vb, a_id, redirect(b_id));
+            <span class="Statement">self</span>.set_var_to_merged_bounds(
+                vb, b_id, a_bounds, b_bounds, nde_b.rank).then(|| uok() )
+        } <span class="Statement">else</span> {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars(): a and b have equal rank&quot;</span>];
+            <span class="Statement">assert</span> nde_a.rank == nde_b.rank;
+            <span class="Comment">// If equal, just redirect one to the other and increment</span>
+            <span class="Comment">// the other's rank.  We choose arbitrarily to redirect b</span>
+            <span class="Comment">// to a and increment a's rank.</span>
+            <span class="Statement">self</span>.set(vb, b_id, redirect(a_id));
+            <span class="Statement">self</span>.set_var_to_merged_bounds(
+                vb, a_id, a_bounds, b_bounds, nde_a.rank + <span class="Constant">1u</span>
+            ).then(|| uok() )
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vars_integral</span>&lt;V:<span class="Statement">copy</span> vid&gt;(
+        vb: vals_and_bindings&lt;V, int_ty_set&gt;,
+        a_id: V, b_id: V) -&gt; ures {
+
+        <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.get(vb, a_id);
+        <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.get(vb, b_id);
+        <span class="Statement">let</span> a_id = nde_a.root;
+        <span class="Statement">let</span> b_id = nde_b.root;
+        <span class="Statement">let</span> a_pt = nde_a.possible_types;
+        <span class="Statement">let</span> b_pt = nde_b.possible_types;
+
+        <span class="Comment">// If we're already dealing with the same two variables,</span>
+        <span class="Comment">// there's nothing to do.</span>
+        <span class="Statement">if</span> a_id == b_id { <span class="Statement">ret</span> uok(); }
+
+        <span class="Comment">// Otherwise, take the intersection of the two sets of</span>
+        <span class="Comment">// possible types.</span>
+        <span class="Statement">let</span> intersection = intersection(a_pt, b_pt);
+        <span class="Statement">if</span> *intersection == INT_TY_SET_EMPTY {
+            <span class="Statement">ret</span> <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_no_integral_type);
+        }
+
+        <span class="Comment">// Rank optimization</span>
+        <span class="Statement">if</span> nde_a.rank &gt; nde_b.rank {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars_integral(): a has smaller rank&quot;</span>];
+            <span class="Comment">// a has greater rank, so a should become b's parent,</span>
+            <span class="Comment">// i.e., b should redirect to a.</span>
+            <span class="Statement">self</span>.set(vb, a_id, root(intersection, nde_a.rank));
+            <span class="Statement">self</span>.set(vb, b_id, redirect(a_id));
+        } <span class="Statement">else</span> <span class="Statement">if</span> nde_a.rank &lt; nde_b.rank {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars_integral(): b has smaller rank&quot;</span>];
+            <span class="Comment">// b has greater rank, so a should redirect to b.</span>
+            <span class="Statement">self</span>.set(vb, b_id, root(intersection, nde_b.rank));
+            <span class="Statement">self</span>.set(vb, a_id, redirect(b_id));
+        } <span class="Statement">else</span> {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;vars_integral(): a and b have equal rank&quot;</span>];
+            <span class="Statement">assert</span> nde_a.rank == nde_b.rank;
+            <span class="Comment">// If equal, just redirect one to the other and increment</span>
+            <span class="Comment">// the other's rank.  We choose arbitrarily to redirect b</span>
+            <span class="Comment">// to a and increment a's rank.</span>
+            <span class="Statement">self</span>.set(vb, a_id, root(intersection, nde_a.rank + <span class="Constant">1u</span>));
+            <span class="Statement">self</span>.set(vb, b_id, redirect(a_id));
+        };
+
+        uok()
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vart</span>&lt;V: <span class="Statement">copy</span> vid, T: <span class="Statement">copy</span> to_str st&gt;(
+        vb: vals_and_bindings&lt;V, bounds&lt;T&gt;&gt;,
+        a_id: V, b: T) -&gt; ures {
+
+        <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.get(vb, a_id);
+        <span class="Statement">let</span> a_id = nde_a.root;
+        <span class="Statement">let</span> a_bounds = nde_a.possible_types;
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;vart(%s=%s &lt;: %s)&quot;</span>,
+               a_id.to_str(), a_bounds.to_str(<span class="Statement">self</span>),
+               b.to_str(<span class="Statement">self</span>)];
+        <span class="Statement">let</span> b_bounds = {lb: <span class="Constant">none</span>, ub: <span class="Constant">some</span>(b)};
+        <span class="Statement">self</span>.set_var_to_merged_bounds(vb, a_id, a_bounds, b_bounds,
+                                      nde_a.rank)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vart_integral</span>&lt;V: <span class="Statement">copy</span> vid&gt;(
+        vb: vals_and_bindings&lt;V, int_ty_set&gt;,
+        a_id: V, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+
+        <span class="Statement">assert</span> <span class="PreProc">ty</span>::type_is_integral(b);
+
+        <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.get(vb, a_id);
+        <span class="Statement">let</span> a_id = nde_a.root;
+        <span class="Statement">let</span> a_pt = nde_a.possible_types;
+
+        <span class="Statement">let</span> intersection =
+            intersection(a_pt, convert_integral_ty_to_int_ty_set(
+                <span class="Statement">self</span>.tcx, b));
+        <span class="Statement">if</span> *intersection == INT_TY_SET_EMPTY {
+            <span class="Statement">ret</span> <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_no_integral_type);
+        }
+        <span class="Statement">self</span>.set(vb, a_id, root(intersection, nde_a.rank));
+        uok()
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tvar</span>&lt;V: <span class="Statement">copy</span> vid, T: <span class="Statement">copy</span> to_str st&gt;(
+        vb: vals_and_bindings&lt;V, bounds&lt;T&gt;&gt;,
+        a: T, b_id: V) -&gt; ures {
+
+        <span class="Statement">let</span> a_bounds = {lb: <span class="Constant">some</span>(a), ub: <span class="Constant">none</span>};
+        <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.get(vb, b_id);
+        <span class="Statement">let</span> b_id = nde_b.root;
+        <span class="Statement">let</span> b_bounds = nde_b.possible_types;
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;tvar(%s &lt;: %s=%s)&quot;</span>,
+               a.to_str(<span class="Statement">self</span>),
+               b_id.to_str(), b_bounds.to_str(<span class="Statement">self</span>)];
+        <span class="Statement">self</span>.set_var_to_merged_bounds(vb, b_id, a_bounds, b_bounds,
+                                      nde_b.rank)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tvar_integral</span>&lt;V: <span class="Statement">copy</span> vid&gt;(
+        vb: vals_and_bindings&lt;V, int_ty_set&gt;,
+        a: <span class="PreProc">ty</span>::t, b_id: V) -&gt; ures {
+
+        <span class="Statement">assert</span> <span class="PreProc">ty</span>::type_is_integral(a);
+
+        <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.get(vb, b_id);
+        <span class="Statement">let</span> b_id = nde_b.root;
+        <span class="Statement">let</span> b_pt = nde_b.possible_types;
+
+        <span class="Statement">let</span> intersection =
+            intersection(b_pt, convert_integral_ty_to_int_ty_set(
+                <span class="Statement">self</span>.tcx, a));
+        <span class="Statement">if</span> *intersection == INT_TY_SET_EMPTY {
+            <span class="Statement">ret</span> <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_no_integral_type);
+        }
+        <span class="Statement">self</span>.set(vb, b_id, root(intersection, nde_b.rank));
+        uok()
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">bnds</span>&lt;T:<span class="Statement">copy</span> to_str st&gt;(
+        a: bound&lt;T&gt;, b: bound&lt;T&gt;) -&gt; ures {
+
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;bnds(%s &lt;: %s)&quot;</span>, a.to_str(<span class="Statement">self</span>), b.to_str(<span class="Statement">self</span>));
+        <span class="Statement">do</span> indent {
+            <span class="Statement">alt</span> (a, b) {
+              (<span class="Constant">none</span>, <span class="Constant">none</span>) |
+              (<span class="Constant">some</span>(_), <span class="Constant">none</span>) |
+              (<span class="Constant">none</span>, <span class="Constant">some</span>(_)) {
+                uok()
+              }
+              (<span class="Constant">some</span>(t_a), <span class="Constant">some</span>(t_b)) {
+                t_a.sub(<span class="Statement">self</span>, t_b)
+              }
+            }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">sub_tys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+        sub(<span class="Statement">self</span>).tys(a, b).chain(|_t| <span class="Constant">ok</span>(()) )
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">sub_regions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; ures {
+        sub(<span class="Statement">self</span>).regions(a, b).chain(|_t| <span class="Constant">ok</span>(()) )
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">eq_tys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+        <span class="Statement">self</span>.sub_tys(a, b).then(|| {
+            <span class="Statement">self</span>.sub_tys(b, a)
+        })
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">eq_regions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; ures {
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;eq_regions(%s, %s)&quot;</span>,
+               a.to_str(<span class="Statement">self</span>), b.to_str(<span class="Statement">self</span>)];
+        <span class="Statement">do</span> indent {
+            <span class="Statement">do</span> <span class="Statement">self</span>.sub_regions(a, b).then {
+                <span class="Statement">self</span>.sub_regions(b, a)
+            }
+        }
+    }
+}
+
+<span class="Comment">// Resolution is the process of removing type variables and replacing</span>
+<span class="Comment">// them with their inferred values.  Unfortunately our inference has</span>
+<span class="Comment">// become fairly complex and so there are a number of options to</span>
+<span class="Comment">// control *just how much* you want to resolve and how you want to do</span>
+<span class="Comment">// it.</span>
+<span class="Comment">//</span>
+<span class="Comment">// # Controlling the scope of resolution</span>
+<span class="Comment">//</span>
+<span class="Comment">// The options resolve_* determine what kinds of variables get</span>
+<span class="Comment">// resolved.  Generally resolution starts with a top-level type</span>
+<span class="Comment">// variable; we will always resolve this.  However, once we have</span>
+<span class="Comment">// resolved that variable, we may end up with a type that still</span>
+<span class="Comment">// contains type variables.  For example, if we resolve `&lt;T0&gt;` we may</span>
+<span class="Comment">// end up with something like `[&lt;T1&gt;]`.  If the option</span>
+<span class="Comment">// `resolve_nested_tvar` is passed, we will then go and recursively</span>
+<span class="Comment">// resolve `&lt;T1&gt;`.</span>
+<span class="Comment">//</span>
+<span class="Comment">// The options `resolve_rvar` and `resolve_ivar` control whether we</span>
+<span class="Comment">// resolve region and integral variables, respectively.</span>
+<span class="Comment">//</span>
+<span class="Comment">// # What do if things are unconstrained</span>
+<span class="Comment">//</span>
+<span class="Comment">// Sometimes we will encounter a variable that has no constraints, and</span>
+<span class="Comment">// therefore cannot sensibly be mapped to any particular result.  By</span>
+<span class="Comment">// default, we will leave such variables as is (so you will get back a</span>
+<span class="Comment">// variable in your result).  The options force_* will cause the</span>
+<span class="Comment">// resolution to fail in this case intead, except for the case of</span>
+<span class="Comment">// integral variables, which resolve to `int` if forced.</span>
+<span class="Comment">//</span>
+<span class="Comment">// # resolve_all and force_all</span>
+<span class="Comment">//</span>
+<span class="Comment">// The options are a bit set, so you can use the *_all to resolve or</span>
+<span class="Comment">// force all kinds of variables (including those we may add in the</span>
+<span class="Comment">// future).  If you want to resolve everything but one type, you are</span>
+<span class="Comment">// probably better off writing `resolve_all - resolve_ivar`.</span>
+
+<span class="Statement">const</span> resolve_nested_tvar: <span class="Type">uint</span> = <span class="Constant">0b00000001</span>;
+<span class="Statement">const</span> resolve_rvar: <span class="Type">uint</span>        = <span class="Constant">0b00000010</span>;
+<span class="Statement">const</span> resolve_ivar: <span class="Type">uint</span>        = <span class="Constant">0b00000100</span>;
+<span class="Statement">const</span> resolve_all: <span class="Type">uint</span>         = <span class="Constant">0b00000111</span>;
+<span class="Statement">const</span> force_tvar: <span class="Type">uint</span>          = <span class="Constant">0b00010000</span>;
+<span class="Statement">const</span> force_rvar: <span class="Type">uint</span>          = <span class="Constant">0b00100000</span>;
+<span class="Statement">const</span> force_ivar: <span class="Type">uint</span>          = <span class="Constant">0b01000000</span>;
+<span class="Statement">const</span> force_all: <span class="Type">uint</span>           = <span class="Constant">0b01110000</span>;
+
+<span class="Statement">type</span> <span class="Identifier">resolve_state_</span> = {
+    infcx: infer_ctxt,
+    modes: <span class="Type">uint</span>,
+    <span class="Statement">mut</span> <span class="Constant">err</span>: <span class="Type">option</span>&lt;fixup_err&gt;,
+    <span class="Statement">mut</span> v_seen: ~[tv_vid]
+};
+
+<span class="Statement">enum</span> <span class="Identifier">resolve_state</span> {
+    resolve_state_(@resolve_state_)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">resolver</span>(infcx: infer_ctxt, modes: <span class="Type">uint</span>) -&gt; resolve_state {
+    resolve_state_(@{infcx: infcx,
+                     modes: modes,
+                     <span class="Statement">mut</span> <span class="Constant">err</span>: <span class="Constant">none</span>,
+                     <span class="Statement">mut</span> v_seen: ~[]})
+}
+
+<span class="Statement">impl</span> methods <span class="Statement">for</span> resolve_state {
+    <span class="Statement">fn</span> <span class="Identifier">should</span>(mode: <span class="Type">uint</span>) -&gt; <span class="Type">bool</span> {
+        (<span class="Statement">self</span>.modes &amp; mode) == mode
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_type_chk</span>(typ: <span class="PreProc">ty</span>::t) -&gt; fres&lt;<span class="PreProc">ty</span>::t&gt; {
+        <span class="Statement">self</span>.<span class="Constant">err</span> = <span class="Constant">none</span>;
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;Resolving %s (modes=%x)&quot;</span>,
+               ty_to_str(<span class="Statement">self</span>.infcx.tcx, typ),
+               <span class="Statement">self</span>.modes];
+
+        <span class="Comment">// n.b. This is a hokey mess because the current fold doesn't</span>
+        <span class="Comment">// allow us to pass back errors in any useful way.</span>
+
+        <span class="Statement">assert</span> <span class="PreProc">vec</span>::is_empty(<span class="Statement">self</span>.v_seen);
+        <span class="Statement">let</span> rty = indent(|| <span class="Statement">self</span>.resolve_type(typ) );
+        <span class="Statement">assert</span> <span class="PreProc">vec</span>::is_empty(<span class="Statement">self</span>.v_seen);
+        <span class="Statement">alt</span> <span class="Statement">self</span>.<span class="Constant">err</span> {
+          <span class="Constant">none</span> {
+            <span class="PreProc">#debug</span>[<span class="Constant">&quot;Resolved to %s (modes=%x)&quot;</span>,
+                   ty_to_str(<span class="Statement">self</span>.infcx.tcx, rty),
+                   <span class="Statement">self</span>.modes];
+            <span class="Statement">ret</span> <span class="Constant">ok</span>(rty);
+          }
+          <span class="Constant">some</span>(e) { <span class="Statement">ret</span> <span class="Constant">err</span>(e); }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_region_chk</span>(orig: <span class="PreProc">ty</span>::region) -&gt; fres&lt;<span class="PreProc">ty</span>::region&gt; {
+        <span class="Statement">self</span>.<span class="Constant">err</span> = <span class="Constant">none</span>;
+        <span class="Statement">let</span> resolved = indent(|| <span class="Statement">self</span>.resolve_region(orig) );
+        <span class="Statement">alt</span> <span class="Statement">self</span>.<span class="Constant">err</span> {
+          <span class="Constant">none</span> {<span class="Constant">ok</span>(resolved)}
+          <span class="Constant">some</span>(e) {<span class="Constant">err</span>(e)}
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_type</span>(typ: <span class="PreProc">ty</span>::t) -&gt; <span class="PreProc">ty</span>::t {
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;resolve_type(%s)&quot;</span>, typ.to_str(<span class="Statement">self</span>.infcx));
+        indent(<span class="Statement">fn</span>&amp;() -&gt; <span class="PreProc">ty</span>::t {
+            <span class="Statement">if</span> !<span class="PreProc">ty</span>::type_needs_infer(typ) { <span class="Statement">ret</span> typ; }
+
+            <span class="Statement">alt</span> <span class="PreProc">ty</span>::get(typ).<span class="Statement">struct</span> {
+              <span class="PreProc">ty</span>::ty_var(vid) {
+                <span class="Statement">self</span>.resolve_ty_var(vid)
+              }
+              <span class="PreProc">ty</span>::ty_var_integral(vid) {
+                <span class="Statement">self</span>.resolve_ty_var_integral(vid)
+              }
+              _ {
+                <span class="Statement">if</span> !<span class="Statement">self</span>.should(resolve_rvar) &amp;&amp;
+                    !<span class="Statement">self</span>.should(resolve_nested_tvar) {
+                    <span class="Comment">// shortcircuit for efficiency</span>
+                    typ
+                } <span class="Statement">else</span> {
+                    <span class="PreProc">ty</span>::fold_regions_and_ty(
+                        <span class="Statement">self</span>.infcx.tcx, typ,
+                        |r| <span class="Statement">self</span>.resolve_region(r),
+                        |t| <span class="Statement">self</span>.resolve_nested_tvar(t),
+                        |t| <span class="Statement">self</span>.resolve_nested_tvar(t))
+                }
+              }
+            }
+        })
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_nested_tvar</span>(typ: <span class="PreProc">ty</span>::t) -&gt; <span class="PreProc">ty</span>::t {
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;Resolve_if_deep(%s)&quot;</span>, typ.to_str(<span class="Statement">self</span>.infcx));
+        <span class="Statement">if</span> !<span class="Statement">self</span>.should(resolve_nested_tvar) {
+            typ
+        } <span class="Statement">else</span> {
+            <span class="Statement">self</span>.resolve_type(typ)
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_region</span>(orig: <span class="PreProc">ty</span>::region) -&gt; <span class="PreProc">ty</span>::region {
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;Resolve_region(%s)&quot;</span>, orig.to_str(<span class="Statement">self</span>.infcx));
+        <span class="Statement">alt</span> orig {
+          <span class="PreProc">ty</span>::re_var(rid) { <span class="Statement">self</span>.resolve_region_var(rid) }
+          _ { orig }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_region_var</span>(rid: region_vid) -&gt; <span class="PreProc">ty</span>::region {
+        <span class="Statement">if</span> !<span class="Statement">self</span>.should(resolve_rvar) {
+            <span class="Statement">ret</span> <span class="PreProc">ty</span>::re_var(rid)
+        }
+        <span class="Statement">let</span> nde = <span class="Statement">self</span>.infcx.get(<span class="Statement">self</span>.infcx.rb, rid);
+        <span class="Statement">let</span> bounds = nde.possible_types;
+        <span class="Statement">alt</span> bounds {
+          { ub:_, lb:<span class="Constant">some</span>(r) } =&gt; { <span class="Statement">self</span>.<span class="Statement">assert_not_rvar</span>(rid, r); r }
+          { ub:<span class="Constant">some</span>(r), lb:_ } =&gt; { <span class="Statement">self</span>.<span class="Statement">assert_not_rvar</span>(rid, r); r }
+          { ub:<span class="Constant">none</span>, lb:<span class="Constant">none</span> } =&gt; {
+            <span class="Statement">if</span> <span class="Statement">self</span>.should(force_rvar) {
+                <span class="Statement">self</span>.<span class="Constant">err</span> = <span class="Constant">some</span>(unresolved_region(rid));
+            }
+            <span class="PreProc">ty</span>::re_var(rid)
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">assert_not_rvar</span>(rid: region_vid, r: <span class="PreProc">ty</span>::region) {
+        <span class="Statement">alt</span> r {
+          <span class="PreProc">ty</span>::re_var(rid2) =&gt; {
+            <span class="Statement">self</span>.<span class="Constant">err</span> = <span class="Constant">some</span>(region_var_bound_by_region_var(rid, rid2));
+          }
+          _ =&gt; { }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_ty_var</span>(vid: tv_vid) -&gt; <span class="PreProc">ty</span>::t {
+        <span class="Statement">if</span> <span class="PreProc">vec</span>::contains(<span class="Statement">self</span>.v_seen, vid) {
+            <span class="Statement">self</span>.<span class="Constant">err</span> = <span class="Constant">some</span>(cyclic_ty(vid));
+            <span class="Statement">ret</span> <span class="PreProc">ty</span>::mk_var(<span class="Statement">self</span>.infcx.tcx, vid);
+        } <span class="Statement">else</span> {
+            <span class="PreProc">vec</span>::push(<span class="Statement">self</span>.v_seen, vid);
+            <span class="Statement">let</span> tcx = <span class="Statement">self</span>.infcx.tcx;
+
+            <span class="Comment">// Nonobvious: prefer the most specific type</span>
+            <span class="Comment">// (i.e., the lower bound) to the more general</span>
+            <span class="Comment">// one.  More general types in Rust (e.g., fn())</span>
+            <span class="Comment">// tend to carry more restrictions or higher</span>
+            <span class="Comment">// perf. penalties, so it pays to know more.</span>
+
+            <span class="Statement">let</span> nde = <span class="Statement">self</span>.infcx.get(<span class="Statement">self</span>.infcx.tvb, vid);
+            <span class="Statement">let</span> bounds = nde.possible_types;
+
+            <span class="Statement">let</span> t1 = <span class="Statement">alt</span> bounds {
+              { ub:_, lb:<span class="Constant">some</span>(t) } <span class="Statement">if</span> !type_is_bot(t) { <span class="Statement">self</span>.resolve_type(t) }
+              { ub:<span class="Constant">some</span>(t), lb:_ } { <span class="Statement">self</span>.resolve_type(t) }
+              { ub:_, lb:<span class="Constant">some</span>(t) } { <span class="Statement">self</span>.resolve_type(t) }
+              { ub:<span class="Constant">none</span>, lb:<span class="Constant">none</span> } {
+                <span class="Statement">if</span> <span class="Statement">self</span>.should(force_tvar) {
+                    <span class="Statement">self</span>.<span class="Constant">err</span> = <span class="Constant">some</span>(unresolved_ty(vid));
+                }
+                <span class="PreProc">ty</span>::mk_var(tcx, vid)
+              }
+            };
+            <span class="PreProc">vec</span>::pop(<span class="Statement">self</span>.v_seen);
+            <span class="Statement">ret</span> t1;
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">resolve_ty_var_integral</span>(vid: tvi_vid) -&gt; <span class="PreProc">ty</span>::t {
+        <span class="Statement">if</span> !<span class="Statement">self</span>.should(resolve_ivar) {
+            <span class="Statement">ret</span> <span class="PreProc">ty</span>::mk_var_integral(<span class="Statement">self</span>.infcx.tcx, vid);
+        }
+
+        <span class="Statement">let</span> nde = <span class="Statement">self</span>.infcx.get(<span class="Statement">self</span>.infcx.tvib, vid);
+        <span class="Statement">let</span> pt = nde.possible_types;
+
+        <span class="Comment">// If there's only one type in the set of possible types, then</span>
+        <span class="Comment">// that's the answer.</span>
+        <span class="Statement">alt</span> single_type_contained_in(<span class="Statement">self</span>.infcx.tcx, pt) {
+          <span class="Constant">some</span>(t) { t }
+          <span class="Constant">none</span> {
+            <span class="Statement">if</span> <span class="Statement">self</span>.should(force_ivar) {
+                <span class="Comment">// As a last resort, default to int.</span>
+                <span class="Statement">let</span> ty = <span class="PreProc">ty</span>::mk_int(<span class="Statement">self</span>.infcx.tcx);
+                <span class="Statement">self</span>.infcx.set(
+                    <span class="Statement">self</span>.infcx.tvib, vid,
+                    root(convert_integral_ty_to_int_ty_set(<span class="Statement">self</span>.infcx.tcx,
+                                                           ty),
+                        nde.rank));
+                ty
+            } <span class="Statement">else</span> {
+                <span class="PreProc">ty</span>::mk_var_integral(<span class="Statement">self</span>.infcx.tcx, vid)
+            }
+          }
+        }
+    }
+}
+
+<span class="Comment">// ______________________________________________________________________</span>
+<span class="Comment">// Type assignment</span>
+<span class="Comment">//</span>
+<span class="Comment">// True if rvalues of type `a` can be assigned to lvalues of type `b`.</span>
+<span class="Comment">// This may cause borrowing to the region scope enclosing `a_node_id`.</span>
+<span class="Comment">//</span>
+<span class="Comment">// The strategy here is somewhat non-obvious.  The problem is</span>
+<span class="Comment">// that the constraint we wish to contend with is not a subtyping</span>
+<span class="Comment">// constraint.  Currently, for variables, we only track what it</span>
+<span class="Comment">// must be a subtype of, not what types it must be assignable to</span>
+<span class="Comment">// (or from).  Possibly, we should track that, but I leave that</span>
+<span class="Comment">// refactoring for another day.</span>
+<span class="Comment">//</span>
+<span class="Comment">// Instead, we look at each variable involved and try to extract</span>
+<span class="Comment">// *some* sort of bound.  Typically, the type a is the argument</span>
+<span class="Comment">// supplied to a call; it typically has a *lower bound* (which</span>
+<span class="Comment">// comes from having been assigned a value).  What we'd actually</span>
+<span class="Comment">// *like* here is an upper-bound, but we generally don't have</span>
+<span class="Comment">// one.  The type b is the expected type and it typically has a</span>
+<span class="Comment">// lower-bound too, which is good.</span>
+<span class="Comment">//</span>
+<span class="Comment">// The way we deal with the fact that we often don't have the</span>
+<span class="Comment">// bounds we need is to be a bit careful.  We try to get *some*</span>
+<span class="Comment">// bound from each side, preferring the upper from a and the</span>
+<span class="Comment">// lower from b.  If we fail to get a bound from both sides, then</span>
+<span class="Comment">// we just fall back to requiring that a &lt;: b.</span>
+<span class="Comment">//</span>
+<span class="Comment">// Assuming we have a bound from both sides, we will then examine</span>
+<span class="Comment">// these bounds and see if they have the form (@M_a T_a, &amp;rb.M_b T_b)</span>
+<span class="Comment">// (resp. ~M_a T_a, ~[M_a T_a], etc).  If they do not, we fall back to</span>
+<span class="Comment">// subtyping.</span>
+<span class="Comment">//</span>
+<span class="Comment">// If they *do*, then we know that the two types could never be</span>
+<span class="Comment">// subtypes of one another.  We will then construct a type @const T_b</span>
+<span class="Comment">// and ensure that type a is a subtype of that.  This allows for the</span>
+<span class="Comment">// possibility of assigning from a type like (say) @~[mut T1] to a type</span>
+<span class="Comment">// &amp;~[T2] where T1 &lt;: T2.  This might seem surprising, since the `@`</span>
+<span class="Comment">// points at mutable memory but the `&amp;` points at immutable memory.</span>
+<span class="Comment">// This would in fact be unsound, except for the borrowck, which comes</span>
+<span class="Comment">// later and guarantees that such mutability conversions are safe.</span>
+<span class="Comment">// See borrowck for more details.  Next we require that the region for</span>
+<span class="Comment">// the enclosing scope be a superregion of the region r.</span>
+<span class="Comment">//</span>
+<span class="Comment">// You might wonder why we don't make the type &amp;e.const T_a where e is</span>
+<span class="Comment">// the enclosing region and check that &amp;e.const T_a &lt;: B.  The reason</span>
+<span class="Comment">// is that the type of A is (generally) just a *lower-bound*, so this</span>
+<span class="Comment">// would be imposing that lower-bound also as the upper-bound on type</span>
+<span class="Comment">// A.  But this upper-bound might be stricter than what is truly</span>
+<span class="Comment">// needed.</span>
+
+<span class="Statement">impl</span> assignment <span class="Statement">for</span> infer_ctxt {
+    <span class="Statement">fn</span> <span class="Identifier">assign_tys</span>(anmnt: assignment, a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; ures {
+
+        <span class="Statement">fn</span> <span class="Identifier">select</span>(fst: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, snd: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt; {
+            <span class="Statement">alt</span> fst {
+              <span class="Constant">some</span>(t) { <span class="Constant">some</span>(t) }
+              <span class="Constant">none</span> {
+                <span class="Statement">alt</span> snd {
+                  <span class="Constant">some</span>(t) { <span class="Constant">some</span>(t) }
+                  <span class="Constant">none</span> { <span class="Constant">none</span> }
+                }
+              }
+            }
+        }
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;assign_tys(anmnt=%?, %s -&gt; %s)&quot;</span>,
+               anmnt, a.to_str(<span class="Statement">self</span>), b.to_str(<span class="Statement">self</span>)];
+        <span class="Statement">let</span> _r = indenter();
+
+        <span class="Statement">alt</span> (<span class="PreProc">ty</span>::get(a).<span class="Statement">struct</span>, <span class="PreProc">ty</span>::get(b).<span class="Statement">struct</span>) {
+          (<span class="PreProc">ty</span>::ty_bot, _) {
+            uok()
+          }
+
+          (<span class="PreProc">ty</span>::ty_var(a_id), <span class="PreProc">ty</span>::ty_var(b_id)) {
+            <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.get(<span class="Statement">self</span>.tvb, a_id);
+            <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.get(<span class="Statement">self</span>.tvb, b_id);
+            <span class="Statement">let</span> a_bounds = nde_a.possible_types;
+            <span class="Statement">let</span> b_bounds = nde_b.possible_types;
+
+            <span class="Statement">let</span> a_bnd = select(a_bounds.ub, a_bounds.lb);
+            <span class="Statement">let</span> b_bnd = select(b_bounds.lb, b_bounds.ub);
+            <span class="Statement">self</span>.assign_tys_or_sub(anmnt, a, b, a_bnd, b_bnd)
+          }
+
+          (<span class="PreProc">ty</span>::ty_var(a_id), _) {
+            <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.get(<span class="Statement">self</span>.tvb, a_id);
+            <span class="Statement">let</span> a_bounds = nde_a.possible_types;
+
+            <span class="Statement">let</span> a_bnd = select(a_bounds.ub, a_bounds.lb);
+            <span class="Statement">self</span>.assign_tys_or_sub(anmnt, a, b, a_bnd, <span class="Constant">some</span>(b))
+          }
+
+          (_, <span class="PreProc">ty</span>::ty_var(b_id)) {
+            <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.get(<span class="Statement">self</span>.tvb, b_id);
+            <span class="Statement">let</span> b_bounds = nde_b.possible_types;
+
+            <span class="Statement">let</span> b_bnd = select(b_bounds.lb, b_bounds.ub);
+            <span class="Statement">self</span>.assign_tys_or_sub(anmnt, a, b, <span class="Constant">some</span>(a), b_bnd)
+          }
+
+          (_, _) {
+            <span class="Statement">self</span>.assign_tys_or_sub(anmnt, a, b, <span class="Constant">some</span>(a), <span class="Constant">some</span>(b))
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">assign_tys_or_sub</span>(
+        anmnt: assignment,
+        a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t,
+        a_bnd: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, b_bnd: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; ures {
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;assign_tys_or_sub(anmnt=%?, %s -&gt; %s, %s -&gt; %s)&quot;</span>,
+               anmnt, a.to_str(<span class="Statement">self</span>), b.to_str(<span class="Statement">self</span>),
+               a_bnd.to_str(<span class="Statement">self</span>), b_bnd.to_str(<span class="Statement">self</span>)];
+        <span class="Statement">let</span> _r = indenter();
+
+        <span class="Statement">fn</span> <span class="Identifier">is_borrowable</span>(v: <span class="PreProc">ty</span>::vstore) -&gt; <span class="Type">bool</span> {
+            <span class="Statement">alt</span> v {
+              <span class="PreProc">ty</span>::vstore_fixed(_) | <span class="PreProc">ty</span>::vstore_uniq | <span class="PreProc">ty</span>::vstore_box { <span class="Constant">true</span> }
+              <span class="PreProc">ty</span>::vstore_slice(_) { <span class="Constant">false</span> }
+            }
+        }
+
+        <span class="Statement">alt</span> (a_bnd, b_bnd) {
+          (<span class="Constant">some</span>(a_bnd), <span class="Constant">some</span>(b_bnd)) {
+            <span class="Statement">alt</span> (<span class="PreProc">ty</span>::get(a_bnd).<span class="Statement">struct</span>, <span class="PreProc">ty</span>::get(b_bnd).<span class="Statement">struct</span>) {
+              (<span class="PreProc">ty</span>::ty_box(mt_a), <span class="PreProc">ty</span>::ty_rptr(r_b, mt_b)) {
+                <span class="Statement">let</span> nr_b = <span class="PreProc">ty</span>::mk_box(<span class="Statement">self</span>.tcx, {ty: mt_b.ty,
+                                                 mutbl: m_const});
+                <span class="Statement">self</span>.crosspollinate(anmnt, a, nr_b, mt_b.mutbl, r_b)
+              }
+              (<span class="PreProc">ty</span>::ty_uniq(mt_a), <span class="PreProc">ty</span>::ty_rptr(r_b, mt_b)) {
+                <span class="Statement">let</span> nr_b = <span class="PreProc">ty</span>::mk_uniq(<span class="Statement">self</span>.tcx, {ty: mt_b.ty,
+                                                  mutbl: m_const});
+                <span class="Statement">self</span>.crosspollinate(anmnt, a, nr_b, mt_b.mutbl, r_b)
+              }
+              (<span class="PreProc">ty</span>::ty_estr(vs_a),
+               <span class="PreProc">ty</span>::ty_estr(<span class="PreProc">ty</span>::vstore_slice(r_b)))
+              <span class="Statement">if</span> is_borrowable(vs_a) {
+                <span class="Statement">let</span> nr_b = <span class="PreProc">ty</span>::mk_estr(<span class="Statement">self</span>.tcx, vs_a);
+                <span class="Statement">self</span>.crosspollinate(anmnt, a, nr_b, m_imm, r_b)
+              }
+
+              (<span class="PreProc">ty</span>::ty_evec(mt_a, vs_a),
+               <span class="PreProc">ty</span>::ty_evec(mt_b, <span class="PreProc">ty</span>::vstore_slice(r_b)))
+              <span class="Statement">if</span> is_borrowable(vs_a) {
+                <span class="Statement">let</span> nr_b = <span class="PreProc">ty</span>::mk_evec(<span class="Statement">self</span>.tcx, {ty: mt_b.ty,
+                                                  mutbl: m_const}, vs_a);
+                <span class="Statement">self</span>.crosspollinate(anmnt, a, nr_b, mt_b.mutbl, r_b)
+              }
+              _ {
+                <span class="Statement">self</span>.sub_tys(a, b)
+              }
+            }
+          }
+          _ {
+            <span class="Statement">self</span>.sub_tys(a, b)
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">crosspollinate</span>(anmnt: assignment,
+                      a: <span class="PreProc">ty</span>::t,
+                      nr_b: <span class="PreProc">ty</span>::t,
+                      m: <span class="PreProc">ast</span>::mutability,
+                      r_b: <span class="PreProc">ty</span>::region) -&gt; ures {
+
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;crosspollinate(anmnt=%?, a=%s, nr_b=%s, r_b=%s)&quot;</span>,
+               anmnt, a.to_str(<span class="Statement">self</span>), nr_b.to_str(<span class="Statement">self</span>),
+               r_b.to_str(<span class="Statement">self</span>)];
+
+        <span class="Statement">do</span> indent {
+            <span class="Statement">do</span> <span class="Statement">self</span>.sub_tys(a, nr_b).then {
+                <span class="Comment">// Create a fresh region variable `r_a` with the given</span>
+                <span class="Comment">// borrow bounds:</span>
+                <span class="Statement">let</span> r_lb = <span class="PreProc">ty</span>::re_scope(anmnt.borrow_lb);
+                <span class="Statement">let</span> r_ub = <span class="PreProc">ty</span>::re_scope(anmnt.borrow_ub);
+                <span class="Statement">let</span> r_a = <span class="Statement">self</span>.next_region_var({lb: <span class="Constant">some</span>(r_lb),
+                                                ub: <span class="Constant">some</span>(r_ub)});
+
+                <span class="PreProc">#debug</span>[<span class="Constant">&quot;anmnt=%?&quot;</span>, anmnt];
+                <span class="Statement">do</span> sub(<span class="Statement">self</span>).contraregions(r_a, r_b).chain |_r| {
+                    <span class="Comment">// if successful, add an entry indicating that</span>
+                    <span class="Comment">// borrowing occurred</span>
+                    <span class="PreProc">#debug</span>[<span class="Constant">&quot;borrowing expression #%?, scope=%?, m=%?&quot;</span>,
+                           anmnt, r_a, m];
+                    <span class="Statement">self</span>.borrowings.push({expr_id: anmnt.expr_id,
+                                          scope: r_a,
+                                          mutbl: m});
+                    uok()
+                }
+            }
+        }
+    }
+}
+
+<span class="Comment">// ______________________________________________________________________</span>
+<span class="Comment">// Type combining</span>
+<span class="Comment">//</span>
+<span class="Comment">// There are three type combiners: sub, lub, and glb.  Each implements</span>
+<span class="Comment">// the interface `combine` and contains methods for combining two</span>
+<span class="Comment">// instances of various things and yielding a new instance.  These</span>
+<span class="Comment">// combiner methods always yield a `result&lt;T&gt;`---failure is propagated</span>
+<span class="Comment">// upward using `chain()` methods.</span>
+<span class="Comment">//</span>
+<span class="Comment">// There is a lot of common code for these operations, which is</span>
+<span class="Comment">// abstracted out into functions named `super_X()` which take a combiner</span>
+<span class="Comment">// instance as the first parameter.  This would be better implemented</span>
+<span class="Comment">// using traits.  For this system to work properly, you should not</span>
+<span class="Comment">// call the `super_X(foo, ...)` functions directly, but rather call</span>
+<span class="Comment">// `foo.X(...)`.  The implementation of `X()` can then choose to delegate</span>
+<span class="Comment">// to the `super` routine or to do other things.</span>
+<span class="Comment">//</span>
+<span class="Comment">// In reality, the sub operation is rather different from lub/glb, but</span>
+<span class="Comment">// they are combined into one interface to avoid duplication (they</span>
+<span class="Comment">// used to be separate but there were many bugs because there were two</span>
+<span class="Comment">// copies of most routines).</span>
+<span class="Comment">//</span>
+<span class="Comment">// The differences are:</span>
+<span class="Comment">//</span>
+<span class="Comment">// - when making two things have a sub relationship, the order of the</span>
+<span class="Comment">//   arguments is significant (a &lt;: b) and the return value of the</span>
+<span class="Comment">//   combine functions is largely irrelevant.  The important thing is</span>
+<span class="Comment">//   whether the action succeeds or fails.  If it succeeds, then side</span>
+<span class="Comment">//   effects have been committed into the type variables.</span>
+<span class="Comment">//</span>
+<span class="Comment">// - for GLB/LUB, the order of arguments is not significant (GLB(a,b) ==</span>
+<span class="Comment">//   GLB(b,a)) and the return value is important (it is the GLB).  Of</span>
+<span class="Comment">//   course GLB/LUB may also have side effects.</span>
+<span class="Comment">//</span>
+<span class="Comment">// Contravariance</span>
+<span class="Comment">//</span>
+<span class="Comment">// When you are relating two things which have a contravariant</span>
+<span class="Comment">// relationship, you should use `contratys()` or `contraregions()`,</span>
+<span class="Comment">// rather than inversing the order of arguments!  This is necessary</span>
+<span class="Comment">// because the order of arguments is not relevant for LUB and GLB.  It</span>
+<span class="Comment">// is also useful to track which value is the &quot;expected&quot; value in</span>
+<span class="Comment">// terms of error reporting, although we do not do that properly right</span>
+<span class="Comment">// now.</span>
+
+<span class="Statement">type</span> <span class="Identifier">cres</span>&lt;T&gt; = result&lt;T,<span class="PreProc">ty</span>::type_err&gt;;
+
+<span class="Statement">iface</span> <span class="Identifier">combine</span> {
+    <span class="Statement">fn</span> <span class="Identifier">infcx</span>() -&gt; infer_ctxt;
+    <span class="Statement">fn</span> <span class="Identifier">tag</span>() -&gt; ~<span class="Type">str</span>;
+
+    <span class="Statement">fn</span> <span class="Identifier">mts</span>(a: <span class="PreProc">ty</span>::mt, b: <span class="PreProc">ty</span>::mt) -&gt; cres&lt;<span class="PreProc">ty</span>::mt&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">contratys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">tys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">tps</span>(<span class="Statement">as</span>: ~[<span class="PreProc">ty</span>::t], bs: ~[<span class="PreProc">ty</span>::t]) -&gt; cres&lt;~[<span class="PreProc">ty</span>::t]&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">self_tys</span>(a: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, b: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; cres&lt;<span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">substs</span>(<span class="Statement">as</span>: <span class="PreProc">ty</span>::substs, bs: <span class="PreProc">ty</span>::substs) -&gt; cres&lt;<span class="PreProc">ty</span>::substs&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">fns</span>(a: <span class="PreProc">ty</span>::fn_ty, b: <span class="PreProc">ty</span>::fn_ty) -&gt; cres&lt;<span class="PreProc">ty</span>::fn_ty&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">flds</span>(a: <span class="PreProc">ty</span>::field, b: <span class="PreProc">ty</span>::field) -&gt; cres&lt;<span class="PreProc">ty</span>::field&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">modes</span>(a: <span class="PreProc">ast</span>::mode, b: <span class="PreProc">ast</span>::mode) -&gt; cres&lt;<span class="PreProc">ast</span>::mode&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">args</span>(a: <span class="PreProc">ty</span>::arg, b: <span class="PreProc">ty</span>::arg) -&gt; cres&lt;<span class="PreProc">ty</span>::arg&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">protos</span>(p1: <span class="PreProc">ast</span>::proto, p2: <span class="PreProc">ast</span>::proto) -&gt; cres&lt;<span class="PreProc">ast</span>::proto&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">ret_styles</span>(r1: ret_style, r2: ret_style) -&gt; cres&lt;ret_style&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">purities</span>(f1: purity, f2: purity) -&gt; cres&lt;purity&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">contraregions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">regions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">vstores</span>(vk: <span class="PreProc">ty</span>::terr_vstore_kind,
+               a: <span class="PreProc">ty</span>::vstore, b: <span class="PreProc">ty</span>::vstore) -&gt; cres&lt;<span class="PreProc">ty</span>::vstore&gt;;
+}
+
+<span class="Statement">enum</span> <span class="Identifier">sub</span> = infer_ctxt;  <span class="Comment">// &quot;subtype&quot;, &quot;subregion&quot; etc</span>
+<span class="Statement">enum</span> <span class="Identifier">lub</span> = infer_ctxt;  <span class="Comment">// &quot;least upper bound&quot; (common supertype)</span>
+<span class="Statement">enum</span> <span class="Identifier">glb</span> = infer_ctxt;  <span class="Comment">// &quot;greatest lower bound&quot; (common subtype)</span>
+
+<span class="Statement">fn</span> <span class="Identifier">super_substs</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a: <span class="PreProc">ty</span>::substs, b: <span class="PreProc">ty</span>::substs) -&gt; cres&lt;<span class="PreProc">ty</span>::substs&gt; {
+
+    <span class="Statement">fn</span> <span class="Identifier">eq_opt_regions</span>(infcx: infer_ctxt,
+                      a: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::region&gt;,
+                      b: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::region&gt;) -&gt; cres&lt;<span class="Type">option</span>&lt;<span class="PreProc">ty</span>::region&gt;&gt; {
+        <span class="Statement">alt</span> (a, b) {
+          (<span class="Constant">none</span>, <span class="Constant">none</span>) {
+            <span class="Constant">ok</span>(<span class="Constant">none</span>)
+          }
+          (<span class="Constant">some</span>(a), <span class="Constant">some</span>(b)) {
+            <span class="Statement">do</span> infcx.eq_regions(a, b).then {
+                <span class="Constant">ok</span>(<span class="Constant">some</span>(a))
+            }
+          }
+          (_, _) {
+            <span class="Comment">// If these two substitutions are for the same type (and</span>
+            <span class="Comment">// they should be), then the type should either</span>
+            <span class="Comment">// consistently have a region parameter or not have a</span>
+            <span class="Comment">// region parameter.</span>
+            infcx.tcx.sess.bug(
+                <span class="PreProc">#fmt</span>[<span class="Constant">&quot;substitution a had opt_region %s and \</span>
+<span class="Constant">                      b had opt_region %s&quot;</span>,
+                     a.to_str(infcx),
+                     b.to_str(infcx)]);
+          }
+        }
+    }
+
+    <span class="Statement">do</span> <span class="Statement">self</span>.tps(a.tps, b.tps).chain |tps| {
+        <span class="Statement">do</span> <span class="Statement">self</span>.self_tys(a.self_ty, b.self_ty).chain |self_ty| {
+            <span class="Statement">do</span> eq_opt_regions(<span class="Statement">self</span>.infcx(), a.self_r, b.self_r).chain
+                |self_r| {
+                <span class="Constant">ok</span>({self_r: self_r, self_ty: self_ty, tps: tps})
+            }
+        }
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_tps</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, <span class="Statement">as</span>: ~[<span class="PreProc">ty</span>::t], bs: ~[<span class="PreProc">ty</span>::t]) -&gt; cres&lt;~[<span class="PreProc">ty</span>::t]&gt; {
+
+    <span class="Comment">// Note: type parameters are always treated as *invariant*</span>
+    <span class="Comment">// (otherwise the type system would be unsound).  In the</span>
+    <span class="Comment">// future we could allow type parameters to declare a</span>
+    <span class="Comment">// variance.</span>
+
+    <span class="Statement">if</span> <span class="PreProc">vec</span>::same_length(<span class="Statement">as</span>, bs) {
+        iter_vec2(<span class="Statement">as</span>, bs, |a, b| {
+            <span class="Statement">self</span>.infcx().eq_tys(a, b)
+        }).then(|| <span class="Constant">ok</span>(<span class="Statement">as</span>) )
+    } <span class="Statement">else</span> {
+        <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_ty_param_size(bs.len(), <span class="Statement">as</span>.len()))
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_self_tys</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, b: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; cres&lt;<span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;&gt; {
+
+    <span class="Comment">// Note: the self type parameter is (currently) always treated as</span>
+    <span class="Comment">// *invariant* (otherwise the type system would be unsound).</span>
+
+    <span class="Statement">alt</span> (a, b) {
+      (<span class="Constant">none</span>, <span class="Constant">none</span>) {
+        <span class="Constant">ok</span>(<span class="Constant">none</span>)
+      }
+      (<span class="Constant">some</span>(a), <span class="Constant">some</span>(b)) {
+        <span class="Statement">self</span>.infcx().eq_tys(a, b).then(|| <span class="Constant">ok</span>(<span class="Constant">some</span>(a)) )
+      }
+      (<span class="Constant">none</span>, <span class="Constant">some</span>(_)) |
+      (<span class="Constant">some</span>(_), <span class="Constant">none</span>) {
+        <span class="Comment">// I think it should never happen that we unify two substs and</span>
+        <span class="Comment">// one of them has a self_ty and one doesn't...? I could be</span>
+        <span class="Comment">// wrong about this.</span>
+        <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_self_substs)
+      }
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_flds</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a: <span class="PreProc">ty</span>::field, b: <span class="PreProc">ty</span>::field) -&gt; cres&lt;<span class="PreProc">ty</span>::field&gt; {
+
+    <span class="Statement">if</span> a.ident == b.ident {
+        <span class="Statement">self</span>.mts(a.mt, b.mt)
+            .chain(|mt| <span class="Constant">ok</span>({ident: a.ident, mt: mt}) )
+            .chain_err(|e| <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_in_field(@e, a.ident)) )
+    } <span class="Statement">else</span> {
+        <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_record_fields(b.ident, a.ident))
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_modes</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a: <span class="PreProc">ast</span>::mode, b: <span class="PreProc">ast</span>::mode)
+    -&gt; cres&lt;<span class="PreProc">ast</span>::mode&gt; {
+
+    <span class="Statement">let</span> tcx = <span class="Statement">self</span>.infcx().tcx;
+    <span class="PreProc">ty</span>::unify_mode(tcx, a, b)
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_args</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a: <span class="PreProc">ty</span>::arg, b: <span class="PreProc">ty</span>::arg)
+    -&gt; cres&lt;<span class="PreProc">ty</span>::arg&gt; {
+
+    <span class="Statement">do</span> <span class="Statement">self</span>.modes(a.mode, b.mode).chain |m| {
+        <span class="Statement">do</span> <span class="Statement">self</span>.contratys(a.ty, b.ty).chain |t| {
+            <span class="Constant">ok</span>({mode: m, ty: t})
+        }
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_vstores</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, vk: <span class="PreProc">ty</span>::terr_vstore_kind,
+    a: <span class="PreProc">ty</span>::vstore, b: <span class="PreProc">ty</span>::vstore) -&gt; cres&lt;<span class="PreProc">ty</span>::vstore&gt; {
+
+    <span class="Statement">alt</span> (a, b) {
+      (<span class="PreProc">ty</span>::vstore_slice(a_r), <span class="PreProc">ty</span>::vstore_slice(b_r)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.contraregions(a_r, b_r).chain |r| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::vstore_slice(r))
+        }
+      }
+
+      _ <span class="Statement">if</span> a == b {
+        <span class="Constant">ok</span>(a)
+      }
+
+      _ {
+        <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_vstores_differ(vk, b, a))
+      }
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_fns</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a_f: <span class="PreProc">ty</span>::fn_ty, b_f: <span class="PreProc">ty</span>::fn_ty) -&gt; cres&lt;<span class="PreProc">ty</span>::fn_ty&gt; {
+
+    <span class="Statement">fn</span> <span class="Identifier">argvecs</span>&lt;C:combine&gt;(<span class="Statement">self</span>: C, a_args: ~[<span class="PreProc">ty</span>::arg],
+                          b_args: ~[<span class="PreProc">ty</span>::arg]) -&gt; cres&lt;~[<span class="PreProc">ty</span>::arg]&gt; {
+
+        <span class="Statement">if</span> <span class="PreProc">vec</span>::same_length(a_args, b_args) {
+            map_vec2(a_args, b_args, |a, b| <span class="Statement">self</span>.args(a, b) )
+        } <span class="Statement">else</span> {
+            <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_arg_count)
+        }
+    }
+
+    <span class="Statement">do</span> <span class="Statement">self</span>.protos(a_f.proto, b_f.proto).chain |p| {
+        <span class="Statement">do</span> <span class="Statement">self</span>.ret_styles(a_f.ret_style, b_f.ret_style).chain |rs| {
+            <span class="Statement">do</span> argvecs(<span class="Statement">self</span>, a_f.inputs, b_f.inputs).chain |inputs| {
+                <span class="Statement">do</span> <span class="Statement">self</span>.tys(a_f.output, b_f.output).chain |output| {
+                    <span class="Statement">do</span> <span class="Statement">self</span>.purities(a_f.purity, b_f.purity).chain |purity| {
+                    <span class="Comment">// </span><span class="Todo">FIXME</span><span class="Comment">: uncomment if #2588 doesn't get accepted:</span>
+                    <span class="Comment">// self.infcx().constrvecs(a_f.constraints,</span>
+                    <span class="Comment">//                         b_f.constraints).then {||</span>
+                        <span class="Constant">ok</span>({purity: purity,
+                            proto: p,
+                            inputs: inputs,
+                            output: output,
+                            ret_style: rs})
+                    <span class="Comment">// }</span>
+                    }
+                }
+            }
+        }
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">super_tys</span>&lt;C:combine&gt;(
+    <span class="Statement">self</span>: C, a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+
+    <span class="Statement">let</span> tcx = <span class="Statement">self</span>.infcx().tcx;
+    <span class="Statement">alt</span> (<span class="PreProc">ty</span>::get(a).<span class="Statement">struct</span>, <span class="PreProc">ty</span>::get(b).<span class="Statement">struct</span>) {
+      <span class="Comment">// The &quot;subtype&quot; ought to be handling cases involving bot or var:</span>
+      (<span class="PreProc">ty</span>::ty_bot, _) |
+      (_, <span class="PreProc">ty</span>::ty_bot) |
+      (<span class="PreProc">ty</span>::ty_var(_), _) |
+      (_, <span class="PreProc">ty</span>::ty_var(_)) {
+        tcx.sess.bug(
+            <span class="PreProc">#fmt</span>[<span class="Constant">&quot;%s: bot and var types should have been handled (%s,%s)&quot;</span>,
+                 <span class="Statement">self</span>.tag(),
+                 a.to_str(<span class="Statement">self</span>.infcx()),
+                 b.to_str(<span class="Statement">self</span>.infcx())]);
+      }
+
+      <span class="Comment">// Have to handle these first</span>
+      (<span class="PreProc">ty</span>::ty_var_integral(a_id), <span class="PreProc">ty</span>::ty_var_integral(b_id)) {
+        <span class="Statement">self</span>.infcx().vars_integral(<span class="Statement">self</span>.infcx().tvib, a_id, b_id)
+            .then(|| <span class="Constant">ok</span>(a) )
+      }
+      (<span class="PreProc">ty</span>::ty_var_integral(a_id), <span class="PreProc">ty</span>::ty_int(_)) |
+      (<span class="PreProc">ty</span>::ty_var_integral(a_id), <span class="PreProc">ty</span>::ty_uint(_)) {
+        <span class="Statement">self</span>.infcx().vart_integral(<span class="Statement">self</span>.infcx().tvib, a_id, b)
+            .then(|| <span class="Constant">ok</span>(a) )
+      }
+      (<span class="PreProc">ty</span>::ty_int(_), <span class="PreProc">ty</span>::ty_var_integral(b_id)) |
+      (<span class="PreProc">ty</span>::ty_uint(_), <span class="PreProc">ty</span>::ty_var_integral(b_id)) {
+        <span class="Statement">self</span>.infcx().tvar_integral(<span class="Statement">self</span>.infcx().tvib, a, b_id)
+            .then(|| <span class="Constant">ok</span>(a) )
+      }
+
+      (<span class="PreProc">ty</span>::ty_int(_), _) |
+      (<span class="PreProc">ty</span>::ty_uint(_), _) |
+      (<span class="PreProc">ty</span>::ty_float(_), _) {
+        <span class="Statement">let</span> <span class="Statement">as</span> = <span class="PreProc">ty</span>::get(a).<span class="Statement">struct</span>;
+        <span class="Statement">let</span> bs = <span class="PreProc">ty</span>::get(b).<span class="Statement">struct</span>;
+        <span class="Statement">if</span> <span class="Statement">as</span> == bs {
+            <span class="Constant">ok</span>(a)
+        } <span class="Statement">else</span> {
+            <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_sorts(b, a))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_nil, _) |
+      (<span class="PreProc">ty</span>::ty_bool, _) {
+        <span class="Statement">let</span> cfg = tcx.sess.targ_cfg;
+        <span class="Statement">if</span> <span class="PreProc">ty</span>::mach_sty(cfg, a) == <span class="PreProc">ty</span>::mach_sty(cfg, b) {
+            <span class="Constant">ok</span>(a)
+        } <span class="Statement">else</span> {
+            <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_sorts(b, a))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_param(a_p), <span class="PreProc">ty</span>::ty_param(b_p)) <span class="Statement">if</span> a_p.idx == b_p.idx {
+        <span class="Constant">ok</span>(a)
+      }
+
+      (<span class="PreProc">ty</span>::ty_enum(a_id, a_substs), <span class="PreProc">ty</span>::ty_enum(b_id, b_substs))
+      <span class="Statement">if</span> a_id == b_id {
+        <span class="Statement">do</span> <span class="Statement">self</span>.substs(a_substs, b_substs).chain |tps| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_enum(tcx, a_id, tps))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_trait(a_id, a_substs), <span class="PreProc">ty</span>::ty_trait(b_id, b_substs))
+      <span class="Statement">if</span> a_id == b_id {
+        <span class="Statement">do</span> <span class="Statement">self</span>.substs(a_substs, b_substs).chain |substs| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_trait(tcx, a_id, substs))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_class(a_id, a_substs), <span class="PreProc">ty</span>::ty_class(b_id, b_substs))
+      <span class="Statement">if</span> a_id == b_id {
+        <span class="Statement">do</span> <span class="Statement">self</span>.substs(a_substs, b_substs).chain |substs| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_class(tcx, a_id, substs))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_box(a_mt), <span class="PreProc">ty</span>::ty_box(b_mt)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.mts(a_mt, b_mt).chain |mt| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_box(tcx, mt))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_uniq(a_mt), <span class="PreProc">ty</span>::ty_uniq(b_mt)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.mts(a_mt, b_mt).chain |mt| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_uniq(tcx, mt))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_ptr(a_mt), <span class="PreProc">ty</span>::ty_ptr(b_mt)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.mts(a_mt, b_mt).chain |mt| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_ptr(tcx, mt))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_rptr(a_r, a_mt), <span class="PreProc">ty</span>::ty_rptr(b_r, b_mt)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.contraregions(a_r, b_r).chain |r| {
+            <span class="Statement">do</span> <span class="Statement">self</span>.mts(a_mt, b_mt).chain |mt| {
+                <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_rptr(tcx, r, mt))
+            }
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_evec(a_mt, vs_a), <span class="PreProc">ty</span>::ty_evec(b_mt, vs_b)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.mts(a_mt, b_mt).chain |mt| {
+            <span class="Statement">do</span> <span class="Statement">self</span>.vstores(<span class="PreProc">ty</span>::terr_vec, vs_a, vs_b).chain |vs| {
+                <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_evec(tcx, mt, vs))
+            }
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_estr(vs_a), <span class="PreProc">ty</span>::ty_estr(vs_b)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.vstores(<span class="PreProc">ty</span>::terr_str, vs_a, vs_b).chain |vs| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_estr(tcx,vs))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_rec(<span class="Statement">as</span>), <span class="PreProc">ty</span>::ty_rec(bs)) {
+        <span class="Statement">if</span> <span class="PreProc">vec</span>::same_length(<span class="Statement">as</span>, bs) {
+            map_vec2(<span class="Statement">as</span>, bs, |a,b| {
+                <span class="Statement">self</span>.flds(a, b)
+            }).chain(|flds| <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_rec(tcx, flds)) )
+        } <span class="Statement">else</span> {
+            <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_record_size(bs.len(), <span class="Statement">as</span>.len()))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_tup(<span class="Statement">as</span>), <span class="PreProc">ty</span>::ty_tup(bs)) {
+        <span class="Statement">if</span> <span class="PreProc">vec</span>::same_length(<span class="Statement">as</span>, bs) {
+            map_vec2(<span class="Statement">as</span>, bs, |a, b| <span class="Statement">self</span>.tys(a, b) )
+                .chain(|ts| <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_tup(tcx, ts)) )
+        } <span class="Statement">else</span> {
+            <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_tuple_size(bs.len(), <span class="Statement">as</span>.len()))
+        }
+      }
+
+      (<span class="PreProc">ty</span>::ty_fn(a_fty), <span class="PreProc">ty</span>::ty_fn(b_fty)) {
+        <span class="Statement">do</span> <span class="Statement">self</span>.fns(a_fty, b_fty).chain |fty| {
+            <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_fn(tcx, fty))
+        }
+      }
+
+      _ { <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_sorts(b, a)) }
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> combine <span class="Statement">for</span> sub {
+    <span class="Statement">fn</span> <span class="Identifier">infcx</span>() -&gt; infer_ctxt { *<span class="Statement">self</span> }
+    <span class="Statement">fn</span> <span class="Identifier">tag</span>() -&gt; ~<span class="Type">str</span> { ~<span class="Constant">&quot;sub&quot;</span> }
+
+    <span class="Statement">fn</span> <span class="Identifier">lub</span>() -&gt; lub { lub(*<span class="Statement">self</span>) }
+
+    <span class="Statement">fn</span> <span class="Identifier">contratys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        <span class="Statement">self</span>.tys(b, a)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">contraregions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        <span class="Statement">self</span>.regions(b, a)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">regions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;%s.regions(%s, %s)&quot;</span>,
+               <span class="Statement">self</span>.tag(),
+               a.to_str(<span class="Statement">self</span>.infcx()),
+               b.to_str(<span class="Statement">self</span>.infcx())];
+        <span class="Statement">do</span> indent {
+            <span class="Statement">alt</span> (a, b) {
+              (<span class="PreProc">ty</span>::re_var(a_id), <span class="PreProc">ty</span>::re_var(b_id)) {
+                <span class="Statement">do</span> <span class="Statement">self</span>.infcx().vars(<span class="Statement">self</span>.rb, a_id, b_id).then {
+                    <span class="Constant">ok</span>(a)
+                }
+              }
+              (<span class="PreProc">ty</span>::re_var(a_id), _) {
+                <span class="Statement">do</span> <span class="Statement">self</span>.infcx().vart(<span class="Statement">self</span>.rb, a_id, b).then {
+                      <span class="Constant">ok</span>(a)
+                  }
+              }
+              (_, <span class="PreProc">ty</span>::re_var(b_id)) {
+                  <span class="Statement">do</span> <span class="Statement">self</span>.infcx().tvar(<span class="Statement">self</span>.rb, a, b_id).then {
+                      <span class="Constant">ok</span>(a)
+                  }
+              }
+              _ {
+                  <span class="Statement">do</span> <span class="Statement">self</span>.lub().regions(a, b).compare(b) {
+                    <span class="PreProc">ty</span>::terr_regions_differ(b, a)
+                }
+              }
+            }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">mts</span>(a: <span class="PreProc">ty</span>::mt, b: <span class="PreProc">ty</span>::mt) -&gt; cres&lt;<span class="PreProc">ty</span>::mt&gt; {
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;mts(%s &lt;: %s)&quot;</span>, a.to_str(*<span class="Statement">self</span>), b.to_str(*<span class="Statement">self</span>));
+
+        <span class="Statement">if</span> a.mutbl != b.mutbl &amp;&amp; b.mutbl != m_const {
+            <span class="Statement">ret</span> <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_mutability);
+        }
+
+        <span class="Statement">alt</span> b.mutbl {
+          m_mutbl {
+            <span class="Comment">// If supertype is mut, subtype must match exactly</span>
+            <span class="Comment">// (i.e., invariant if mut):</span>
+            <span class="Statement">self</span>.infcx().eq_tys(a.ty, b.ty).then(|| <span class="Constant">ok</span>(a) )
+          }
+          m_imm | m_const {
+            <span class="Comment">// Otherwise we can be covariant:</span>
+            <span class="Statement">self</span>.tys(a.ty, b.ty).chain(|_t| <span class="Constant">ok</span>(a) )
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">protos</span>(a: <span class="PreProc">ast</span>::proto, b: <span class="PreProc">ast</span>::proto) -&gt; cres&lt;<span class="PreProc">ast</span>::proto&gt; {
+        <span class="Statement">self</span>.lub().protos(a, b).compare(b, || {
+            <span class="PreProc">ty</span>::terr_proto_mismatch(b, a)
+        })
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">purities</span>(f1: purity, f2: purity) -&gt; cres&lt;purity&gt; {
+        <span class="Statement">self</span>.lub().purities(f1, f2).compare(f2, || {
+            <span class="PreProc">ty</span>::terr_purity_mismatch(f2, f1)
+        })
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">ret_styles</span>(a: ret_style, b: ret_style) -&gt; cres&lt;ret_style&gt; {
+        <span class="Statement">self</span>.lub().ret_styles(a, b).compare(b, || {
+            <span class="PreProc">ty</span>::terr_ret_style_mismatch(b, a)
+        })
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;%s.tys(%s, %s)&quot;</span>, <span class="Statement">self</span>.tag(),
+               a.to_str(*<span class="Statement">self</span>), b.to_str(*<span class="Statement">self</span>));
+        <span class="Statement">if</span> a == b { <span class="Statement">ret</span> <span class="Constant">ok</span>(a); }
+        <span class="Statement">do</span> indent {
+            <span class="Statement">alt</span> (<span class="PreProc">ty</span>::get(a).<span class="Statement">struct</span>, <span class="PreProc">ty</span>::get(b).<span class="Statement">struct</span>) {
+              (<span class="PreProc">ty</span>::ty_bot, _) {
+                <span class="Constant">ok</span>(a)
+              }
+              (<span class="PreProc">ty</span>::ty_var(a_id), <span class="PreProc">ty</span>::ty_var(b_id)) {
+                <span class="Statement">self</span>.infcx().vars(<span class="Statement">self</span>.tvb, a_id, b_id).then(|| <span class="Constant">ok</span>(a) )
+              }
+              (<span class="PreProc">ty</span>::ty_var(a_id), _) {
+                <span class="Statement">self</span>.infcx().vart(<span class="Statement">self</span>.tvb, a_id, b).then(|| <span class="Constant">ok</span>(a) )
+              }
+              (_, <span class="PreProc">ty</span>::ty_var(b_id)) {
+                <span class="Statement">self</span>.infcx().tvar(<span class="Statement">self</span>.tvb, a, b_id).then(|| <span class="Constant">ok</span>(a) )
+              }
+              (_, <span class="PreProc">ty</span>::ty_bot) {
+                <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_sorts(b, a))
+              }
+              _ {
+                super_tys(<span class="Statement">self</span>, a, b)
+              }
+            }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">fns</span>(a: <span class="PreProc">ty</span>::fn_ty, b: <span class="PreProc">ty</span>::fn_ty) -&gt; cres&lt;<span class="PreProc">ty</span>::fn_ty&gt; {
+        <span class="Comment">// Rather than checking the subtype relationship between `a` and `b`</span>
+        <span class="Comment">// as-is, we need to do some extra work here in order to make sure</span>
+        <span class="Comment">// that function subtyping works correctly with respect to regions</span>
+        <span class="Comment">// (issue #2263).</span>
+
+        <span class="Comment">// First, we instantiate each bound region in the subtype with a fresh</span>
+        <span class="Comment">// region variable.</span>
+        <span class="Statement">let</span> {fn_ty: a_fn_ty, _} = {
+            <span class="Statement">do</span> replace_bound_regions_in_fn_ty(<span class="Statement">self</span>.tcx, @<span class="Constant">nil</span>, <span class="Constant">none</span>, a) |br| {
+                <span class="Comment">// N.B.: The name of the bound region doesn't have</span>
+                <span class="Comment">// anything to do with the region variable that's created</span>
+                <span class="Comment">// for it.  The only thing we're doing with `br` here is</span>
+                <span class="Comment">// using it in the debug message.</span>
+                <span class="Statement">let</span> rvar = <span class="Statement">self</span>.infcx().next_region_var_nb();
+                <span class="PreProc">#debug</span>[<span class="Constant">&quot;Bound region %s maps to %s&quot;</span>,
+                       bound_region_to_str(<span class="Statement">self</span>.tcx, br),
+                       region_to_str(<span class="Statement">self</span>.tcx, rvar)];
+                rvar
+            }
+        };
+
+        <span class="Comment">// Second, we instantiate each bound region in the supertype with a</span>
+        <span class="Comment">// fresh concrete region.</span>
+        <span class="Statement">let</span> {fn_ty: b_fn_ty, _} = {
+            <span class="Statement">do</span> replace_bound_regions_in_fn_ty(<span class="Statement">self</span>.tcx, @<span class="Constant">nil</span>, <span class="Constant">none</span>, b) |br| {
+                <span class="Comment">// </span><span class="Todo">FIXME</span><span class="Comment">: eventually re_skolemized (issue #2263)</span>
+                <span class="PreProc">ty</span>::re_bound(br)
+            }
+        };
+
+        <span class="Comment">// Try to compare the supertype and subtype now that they've been</span>
+        <span class="Comment">// instantiated.</span>
+        super_fns(<span class="Statement">self</span>, a_fn_ty, b_fn_ty)
+    }
+
+    <span class="Comment">// Traits please:</span>
+
+    <span class="Statement">fn</span> <span class="Identifier">flds</span>(a: <span class="PreProc">ty</span>::field, b: <span class="PreProc">ty</span>::field) -&gt; cres&lt;<span class="PreProc">ty</span>::field&gt; {
+        super_flds(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vstores</span>(vk: <span class="PreProc">ty</span>::terr_vstore_kind,
+               a: <span class="PreProc">ty</span>::vstore, b: <span class="PreProc">ty</span>::vstore) -&gt; cres&lt;<span class="PreProc">ty</span>::vstore&gt; {
+        super_vstores(<span class="Statement">self</span>, vk, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">modes</span>(a: <span class="PreProc">ast</span>::mode, b: <span class="PreProc">ast</span>::mode) -&gt; cres&lt;<span class="PreProc">ast</span>::mode&gt; {
+        super_modes(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">args</span>(a: <span class="PreProc">ty</span>::arg, b: <span class="PreProc">ty</span>::arg) -&gt; cres&lt;<span class="PreProc">ty</span>::arg&gt; {
+        super_args(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">substs</span>(<span class="Statement">as</span>: <span class="PreProc">ty</span>::substs, bs: <span class="PreProc">ty</span>::substs) -&gt; cres&lt;<span class="PreProc">ty</span>::substs&gt; {
+        super_substs(<span class="Statement">self</span>, <span class="Statement">as</span>, bs)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tps</span>(<span class="Statement">as</span>: ~[<span class="PreProc">ty</span>::t], bs: ~[<span class="PreProc">ty</span>::t]) -&gt; cres&lt;~[<span class="PreProc">ty</span>::t]&gt; {
+        super_tps(<span class="Statement">self</span>, <span class="Statement">as</span>, bs)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">self_tys</span>(a: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, b: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; cres&lt;<span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;&gt; {
+        super_self_tys(<span class="Statement">self</span>, a, b)
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> combine <span class="Statement">for</span> lub {
+    <span class="Statement">fn</span> <span class="Identifier">infcx</span>() -&gt; infer_ctxt { *<span class="Statement">self</span> }
+    <span class="Statement">fn</span> <span class="Identifier">tag</span>() -&gt; ~<span class="Type">str</span> { ~<span class="Constant">&quot;lub&quot;</span> }
+
+    <span class="Statement">fn</span> <span class="Identifier">bot_ty</span>(b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; { <span class="Constant">ok</span>(b) }
+    <span class="Statement">fn</span> <span class="Identifier">ty_bot</span>(b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; { <span class="Statement">self</span>.bot_ty(b) } <span class="Comment">// commutative</span>
+
+    <span class="Statement">fn</span> <span class="Identifier">mts</span>(a: <span class="PreProc">ty</span>::mt, b: <span class="PreProc">ty</span>::mt) -&gt; cres&lt;<span class="PreProc">ty</span>::mt&gt; {
+        <span class="Statement">let</span> tcx = <span class="Statement">self</span>.infcx().tcx;
+
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;%s.mts(%s, %s)&quot;</span>,
+               <span class="Statement">self</span>.tag(),
+               mt_to_str(tcx, a),
+               mt_to_str(tcx, b));
+
+        <span class="Statement">let</span> m = <span class="Statement">if</span> a.mutbl == b.mutbl {
+            a.mutbl
+        } <span class="Statement">else</span> {
+            m_const
+        };
+
+        <span class="Statement">alt</span> m {
+          m_imm | m_const {
+            <span class="Statement">self</span>.tys(a.ty, b.ty).chain(|t| <span class="Constant">ok</span>({ty: t, mutbl: m}) )
+          }
+
+          m_mutbl {
+            <span class="Statement">self</span>.infcx().try(|| {
+                <span class="Statement">self</span>.infcx().eq_tys(a.ty, b.ty).then(|| {
+                    <span class="Constant">ok</span>({ty: a.ty, mutbl: m})
+                })
+            }).chain_err(|_e| {
+                <span class="Statement">self</span>.tys(a.ty, b.ty).chain(|t| {
+                    <span class="Constant">ok</span>({ty: t, mutbl: m_const})
+                })
+            })
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">contratys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        glb(<span class="Statement">self</span>.infcx()).tys(a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">protos</span>(p1: <span class="PreProc">ast</span>::proto, p2: <span class="PreProc">ast</span>::proto) -&gt; cres&lt;<span class="PreProc">ast</span>::proto&gt; {
+        <span class="Statement">if</span> p1 == <span class="PreProc">ast</span>::proto_bare {
+            <span class="Constant">ok</span>(p2)
+        } <span class="Statement">else</span> <span class="Statement">if</span> p2 == <span class="PreProc">ast</span>::proto_bare {
+            <span class="Constant">ok</span>(p1)
+        } <span class="Statement">else</span> <span class="Statement">if</span> p1 == p2 {
+            <span class="Constant">ok</span>(p1)
+        } <span class="Statement">else</span> {
+            <span class="Constant">ok</span>(<span class="PreProc">ast</span>::proto_any)
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">purities</span>(f1: purity, f2: purity) -&gt; cres&lt;purity&gt; {
+        <span class="Statement">alt</span> (f1, f2) {
+          (<span class="Statement">unsafe</span>_fn, _) | (_, <span class="Statement">unsafe</span>_fn) {<span class="Constant">ok</span>(<span class="Statement">unsafe</span>_fn)}
+          (impure_fn, _) | (_, impure_fn) {<span class="Constant">ok</span>(impure_fn)}
+          (extern_fn, _) | (_, extern_fn) {<span class="Constant">ok</span>(extern_fn)}
+          (pure_fn, pure_fn) {<span class="Constant">ok</span>(pure_fn)}
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">ret_styles</span>(r1: ret_style, r2: ret_style) -&gt; cres&lt;ret_style&gt; {
+        <span class="Statement">alt</span> (r1, r2) {
+          (<span class="PreProc">ast</span>::return_val, _) |
+          (_, <span class="PreProc">ast</span>::return_val) {
+            <span class="Constant">ok</span>(<span class="PreProc">ast</span>::return_val)
+          }
+          (<span class="PreProc">ast</span>::noreturn, <span class="PreProc">ast</span>::noreturn) {
+            <span class="Constant">ok</span>(<span class="PreProc">ast</span>::noreturn)
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">contraregions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        <span class="Statement">ret</span> glb(<span class="Statement">self</span>.infcx()).regions(a, b);
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">regions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;%s.regions(%?, %?)&quot;</span>,
+               <span class="Statement">self</span>.tag(),
+               a.to_str(<span class="Statement">self</span>.infcx()),
+               b.to_str(<span class="Statement">self</span>.infcx())];
+
+        <span class="Statement">do</span> indent {
+            <span class="Statement">alt</span> (a, b) {
+              (<span class="PreProc">ty</span>::re_static, _) | (_, <span class="PreProc">ty</span>::re_static) {
+                <span class="Constant">ok</span>(<span class="PreProc">ty</span>::re_static) <span class="Comment">// nothing lives longer than static</span>
+              }
+
+              (<span class="PreProc">ty</span>::re_var(_), _) | (_, <span class="PreProc">ty</span>::re_var(_)) {
+                lattice_rvars(<span class="Statement">self</span>, a, b)
+              }
+
+              (f @ <span class="PreProc">ty</span>::re_free(f_id, _), <span class="PreProc">ty</span>::re_scope(s_id)) |
+              (<span class="PreProc">ty</span>::re_scope(s_id), f @ <span class="PreProc">ty</span>::re_free(f_id, _)) {
+                <span class="Comment">// A &quot;free&quot; region can be interpreted as &quot;some region</span>
+                <span class="Comment">// at least as big as the block f_id&quot;.  So, we can</span>
+                <span class="Comment">// reasonably compare free regions and scopes:</span>
+                <span class="Statement">let</span> rm = <span class="Statement">self</span>.infcx().tcx.region_map;
+                <span class="Statement">alt</span> <span class="PreProc">region</span>::nearest_common_ancestor(rm, f_id, s_id) {
+                  <span class="Comment">// if the free region's scope `f_id` is bigger than</span>
+                  <span class="Comment">// the scope region `s_id`, then the LUB is the free</span>
+                  <span class="Comment">// region itself:</span>
+                  <span class="Constant">some</span>(r_id) <span class="Statement">if</span> r_id == f_id { <span class="Constant">ok</span>(f) }
+
+                  <span class="Comment">// otherwise, we don't know what the free region is,</span>
+                  <span class="Comment">// so we must conservatively say the LUB is static:</span>
+                  _ { <span class="Constant">ok</span>(<span class="PreProc">ty</span>::re_static) }
+                }
+              }
+
+              (<span class="PreProc">ty</span>::re_scope(a_id), <span class="PreProc">ty</span>::re_scope(b_id)) {
+                <span class="Comment">// The region corresponding to an outer block is a</span>
+                <span class="Comment">// subtype of the region corresponding to an inner</span>
+                <span class="Comment">// block.</span>
+                <span class="Statement">let</span> rm = <span class="Statement">self</span>.infcx().tcx.region_map;
+                <span class="Statement">alt</span> <span class="PreProc">region</span>::nearest_common_ancestor(rm, a_id, b_id) {
+                  <span class="Constant">some</span>(r_id) { <span class="Constant">ok</span>(<span class="PreProc">ty</span>::re_scope(r_id)) }
+                  _ { <span class="Constant">ok</span>(<span class="PreProc">ty</span>::re_static) }
+                }
+              }
+
+              <span class="Comment">// For these types, we cannot define any additional</span>
+              <span class="Comment">// relationship:</span>
+              (<span class="PreProc">ty</span>::re_free(_, _), <span class="PreProc">ty</span>::re_free(_, _)) |
+              (<span class="PreProc">ty</span>::re_bound(_), <span class="PreProc">ty</span>::re_bound(_)) |
+              (<span class="PreProc">ty</span>::re_bound(_), <span class="PreProc">ty</span>::re_free(_, _)) |
+              (<span class="PreProc">ty</span>::re_bound(_), <span class="PreProc">ty</span>::re_scope(_)) |
+              (<span class="PreProc">ty</span>::re_free(_, _), <span class="PreProc">ty</span>::re_bound(_)) |
+              (<span class="PreProc">ty</span>::re_scope(_), <span class="PreProc">ty</span>::re_bound(_)) {
+                <span class="Statement">if</span> a == b {
+                    <span class="Constant">ok</span>(a)
+                } <span class="Statement">else</span> {
+                    <span class="Constant">ok</span>(<span class="PreProc">ty</span>::re_static)
+                }
+              }
+            }
+        }
+    }
+
+    <span class="Comment">// Traits please:</span>
+
+    <span class="Statement">fn</span> <span class="Identifier">tys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        lattice_tys(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">flds</span>(a: <span class="PreProc">ty</span>::field, b: <span class="PreProc">ty</span>::field) -&gt; cres&lt;<span class="PreProc">ty</span>::field&gt; {
+        super_flds(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vstores</span>(vk: <span class="PreProc">ty</span>::terr_vstore_kind,
+               a: <span class="PreProc">ty</span>::vstore, b: <span class="PreProc">ty</span>::vstore) -&gt; cres&lt;<span class="PreProc">ty</span>::vstore&gt; {
+        super_vstores(<span class="Statement">self</span>, vk, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">modes</span>(a: <span class="PreProc">ast</span>::mode, b: <span class="PreProc">ast</span>::mode) -&gt; cres&lt;<span class="PreProc">ast</span>::mode&gt; {
+        super_modes(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">args</span>(a: <span class="PreProc">ty</span>::arg, b: <span class="PreProc">ty</span>::arg) -&gt; cres&lt;<span class="PreProc">ty</span>::arg&gt; {
+        super_args(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">fns</span>(a: <span class="PreProc">ty</span>::fn_ty, b: <span class="PreProc">ty</span>::fn_ty) -&gt; cres&lt;<span class="PreProc">ty</span>::fn_ty&gt; {
+        super_fns(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">substs</span>(<span class="Statement">as</span>: <span class="PreProc">ty</span>::substs, bs: <span class="PreProc">ty</span>::substs) -&gt; cres&lt;<span class="PreProc">ty</span>::substs&gt; {
+        super_substs(<span class="Statement">self</span>, <span class="Statement">as</span>, bs)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tps</span>(<span class="Statement">as</span>: ~[<span class="PreProc">ty</span>::t], bs: ~[<span class="PreProc">ty</span>::t]) -&gt; cres&lt;~[<span class="PreProc">ty</span>::t]&gt; {
+        super_tps(<span class="Statement">self</span>, <span class="Statement">as</span>, bs)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">self_tys</span>(a: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, b: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; cres&lt;<span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;&gt; {
+        super_self_tys(<span class="Statement">self</span>, a, b)
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> combine <span class="Statement">for</span> glb {
+    <span class="Statement">fn</span> <span class="Identifier">infcx</span>() -&gt; infer_ctxt { *<span class="Statement">self</span> }
+    <span class="Statement">fn</span> <span class="Identifier">tag</span>() -&gt; ~<span class="Type">str</span> { ~<span class="Constant">&quot;glb&quot;</span> }
+
+    <span class="Statement">fn</span> <span class="Identifier">mts</span>(a: <span class="PreProc">ty</span>::mt, b: <span class="PreProc">ty</span>::mt) -&gt; cres&lt;<span class="PreProc">ty</span>::mt&gt; {
+        <span class="Statement">let</span> tcx = <span class="Statement">self</span>.infcx().tcx;
+
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;%s.mts(%s, %s)&quot;</span>,
+               <span class="Statement">self</span>.tag(),
+               mt_to_str(tcx, a),
+               mt_to_str(tcx, b));
+
+        <span class="Statement">alt</span> (a.mutbl, b.mutbl) {
+          <span class="Comment">// If one side or both is mut, then the GLB must use</span>
+          <span class="Comment">// the precise type from the mut side.</span>
+          (m_mutbl, m_const) {
+            sub(*<span class="Statement">self</span>).tys(a.ty, b.ty).chain(|_t| {
+                <span class="Constant">ok</span>({ty: a.ty, mutbl: m_mutbl})
+            })
+          }
+          (m_const, m_mutbl) {
+            sub(*<span class="Statement">self</span>).tys(b.ty, a.ty).chain(|_t| {
+                <span class="Constant">ok</span>({ty: b.ty, mutbl: m_mutbl})
+            })
+          }
+          (m_mutbl, m_mutbl) {
+            <span class="Statement">self</span>.infcx().eq_tys(a.ty, b.ty).then(|| {
+                <span class="Constant">ok</span>({ty: a.ty, mutbl: m_mutbl})
+            })
+          }
+
+          <span class="Comment">// If one side or both is immutable, we can use the GLB of</span>
+          <span class="Comment">// both sides but mutbl must be `m_imm`.</span>
+          (m_imm, m_const) |
+          (m_const, m_imm) |
+          (m_imm, m_imm) {
+            <span class="Statement">self</span>.tys(a.ty, b.ty).chain(|t| {
+                <span class="Constant">ok</span>({ty: t, mutbl: m_imm})
+            })
+          }
+
+          <span class="Comment">// If both sides are const, then we can use GLB of both</span>
+          <span class="Comment">// sides and mutbl of only `m_const`.</span>
+          (m_const, m_const) {
+            <span class="Statement">self</span>.tys(a.ty, b.ty).chain(|t| {
+                <span class="Constant">ok</span>({ty: t, mutbl: m_const})
+            })
+          }
+
+          <span class="Comment">// There is no mutual subtype of these combinations.</span>
+          (m_mutbl, m_imm) |
+          (m_imm, m_mutbl) {
+              <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_mutability)
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">contratys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        lub(<span class="Statement">self</span>.infcx()).tys(a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">protos</span>(p1: <span class="PreProc">ast</span>::proto, p2: <span class="PreProc">ast</span>::proto) -&gt; cres&lt;<span class="PreProc">ast</span>::proto&gt; {
+        <span class="Statement">if</span> p1 == <span class="PreProc">ast</span>::proto_any {
+            <span class="Constant">ok</span>(p2)
+        } <span class="Statement">else</span> <span class="Statement">if</span> p2 == <span class="PreProc">ast</span>::proto_any {
+            <span class="Constant">ok</span>(p1)
+        } <span class="Statement">else</span> <span class="Statement">if</span> p1 == p2 {
+            <span class="Constant">ok</span>(p1)
+        } <span class="Statement">else</span> {
+            <span class="Constant">ok</span>(<span class="PreProc">ast</span>::proto_bare)
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">purities</span>(f1: purity, f2: purity) -&gt; cres&lt;purity&gt; {
+        <span class="Statement">alt</span> (f1, f2) {
+          (pure_fn, _) | (_, pure_fn) {<span class="Constant">ok</span>(pure_fn)}
+          (extern_fn, _) | (_, extern_fn) {<span class="Constant">ok</span>(extern_fn)}
+          (impure_fn, _) | (_, impure_fn) {<span class="Constant">ok</span>(impure_fn)}
+          (<span class="Statement">unsafe</span>_fn, <span class="Statement">unsafe</span>_fn) {<span class="Constant">ok</span>(<span class="Statement">unsafe</span>_fn)}
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">ret_styles</span>(r1: ret_style, r2: ret_style) -&gt; cres&lt;ret_style&gt; {
+        <span class="Statement">alt</span> (r1, r2) {
+          (<span class="PreProc">ast</span>::return_val, <span class="PreProc">ast</span>::return_val) {
+            <span class="Constant">ok</span>(<span class="PreProc">ast</span>::return_val)
+          }
+          (<span class="PreProc">ast</span>::noreturn, _) |
+          (_, <span class="PreProc">ast</span>::noreturn) {
+            <span class="Constant">ok</span>(<span class="PreProc">ast</span>::noreturn)
+          }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">regions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;%s.regions(%?, %?)&quot;</span>,
+               <span class="Statement">self</span>.tag(),
+               a.to_str(<span class="Statement">self</span>.infcx()),
+               b.to_str(<span class="Statement">self</span>.infcx())];
+
+        <span class="Statement">do</span> indent {
+            <span class="Statement">alt</span> (a, b) {
+              (<span class="PreProc">ty</span>::re_static, r) | (r, <span class="PreProc">ty</span>::re_static) {
+                <span class="Comment">// static lives longer than everything else</span>
+                <span class="Constant">ok</span>(r)
+              }
+
+              (<span class="PreProc">ty</span>::re_var(_), _) | (_, <span class="PreProc">ty</span>::re_var(_)) {
+                lattice_rvars(<span class="Statement">self</span>, a, b)
+              }
+
+              (<span class="PreProc">ty</span>::re_free(f_id, _), s @ <span class="PreProc">ty</span>::re_scope(s_id)) |
+              (s @ <span class="PreProc">ty</span>::re_scope(s_id), <span class="PreProc">ty</span>::re_free(f_id, _)) {
+                <span class="Comment">// Free region is something &quot;at least as big as</span>
+                <span class="Comment">// `f_id`.&quot;  If we find that the scope `f_id` is bigger</span>
+                <span class="Comment">// than the scope `s_id`, then we can say that the GLB</span>
+                <span class="Comment">// is the scope `s_id`.  Otherwise, as we do not know</span>
+                <span class="Comment">// big the free region is precisely, the GLB is undefined.</span>
+                <span class="Statement">let</span> rm = <span class="Statement">self</span>.infcx().tcx.region_map;
+                <span class="Statement">alt</span> <span class="PreProc">region</span>::nearest_common_ancestor(rm, f_id, s_id) {
+                  <span class="Constant">some</span>(r_id) <span class="Statement">if</span> r_id == f_id { <span class="Constant">ok</span>(s) }
+                  _ { <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_regions_differ(b, a)) }
+                }
+              }
+
+              (<span class="PreProc">ty</span>::re_scope(a_id), <span class="PreProc">ty</span>::re_scope(b_id)) |
+              (<span class="PreProc">ty</span>::re_free(a_id, _), <span class="PreProc">ty</span>::re_free(b_id, _)) {
+                <span class="Comment">// We want to generate a region that is contained by both of</span>
+                <span class="Comment">// these: so, if one of these scopes is a subscope of the</span>
+                <span class="Comment">// other, return it.  Otherwise fail.</span>
+                <span class="Statement">let</span> rm = <span class="Statement">self</span>.infcx().tcx.region_map;
+                <span class="Statement">alt</span> <span class="PreProc">region</span>::nearest_common_ancestor(rm, a_id, b_id) {
+                  <span class="Constant">some</span>(r_id) <span class="Statement">if</span> a_id == r_id { <span class="Constant">ok</span>(b) }
+                  <span class="Constant">some</span>(r_id) <span class="Statement">if</span> b_id == r_id { <span class="Constant">ok</span>(a) }
+                  _ { <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_regions_differ(b, a)) }
+                }
+              }
+
+              <span class="Comment">// For these types, we cannot define any additional</span>
+              <span class="Comment">// relationship:</span>
+              (<span class="PreProc">ty</span>::re_bound(_), <span class="PreProc">ty</span>::re_bound(_)) |
+              (<span class="PreProc">ty</span>::re_bound(_), <span class="PreProc">ty</span>::re_free(_, _)) |
+              (<span class="PreProc">ty</span>::re_bound(_), <span class="PreProc">ty</span>::re_scope(_)) |
+              (<span class="PreProc">ty</span>::re_free(_, _), <span class="PreProc">ty</span>::re_bound(_)) |
+              (<span class="PreProc">ty</span>::re_scope(_), <span class="PreProc">ty</span>::re_bound(_)) {
+                <span class="Statement">if</span> a == b {
+                    <span class="Constant">ok</span>(a)
+                } <span class="Statement">else</span> {
+                    <span class="Constant">err</span>(<span class="PreProc">ty</span>::terr_regions_differ(b, a))
+                }
+              }
+            }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">contraregions</span>(a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+        lub(<span class="Statement">self</span>.infcx()).regions(a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tys</span>(a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        lattice_tys(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Comment">// Traits please:</span>
+
+    <span class="Statement">fn</span> <span class="Identifier">flds</span>(a: <span class="PreProc">ty</span>::field, b: <span class="PreProc">ty</span>::field) -&gt; cres&lt;<span class="PreProc">ty</span>::field&gt; {
+        super_flds(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">vstores</span>(vk: <span class="PreProc">ty</span>::terr_vstore_kind,
+               a: <span class="PreProc">ty</span>::vstore, b: <span class="PreProc">ty</span>::vstore) -&gt; cres&lt;<span class="PreProc">ty</span>::vstore&gt; {
+        super_vstores(<span class="Statement">self</span>, vk, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">modes</span>(a: <span class="PreProc">ast</span>::mode, b: <span class="PreProc">ast</span>::mode) -&gt; cres&lt;<span class="PreProc">ast</span>::mode&gt; {
+        super_modes(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">args</span>(a: <span class="PreProc">ty</span>::arg, b: <span class="PreProc">ty</span>::arg) -&gt; cres&lt;<span class="PreProc">ty</span>::arg&gt; {
+        super_args(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">fns</span>(a: <span class="PreProc">ty</span>::fn_ty, b: <span class="PreProc">ty</span>::fn_ty) -&gt; cres&lt;<span class="PreProc">ty</span>::fn_ty&gt; {
+        super_fns(<span class="Statement">self</span>, a, b)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">substs</span>(<span class="Statement">as</span>: <span class="PreProc">ty</span>::substs, bs: <span class="PreProc">ty</span>::substs) -&gt; cres&lt;<span class="PreProc">ty</span>::substs&gt; {
+        super_substs(<span class="Statement">self</span>, <span class="Statement">as</span>, bs)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">tps</span>(<span class="Statement">as</span>: ~[<span class="PreProc">ty</span>::t], bs: ~[<span class="PreProc">ty</span>::t]) -&gt; cres&lt;~[<span class="PreProc">ty</span>::t]&gt; {
+        super_tps(<span class="Statement">self</span>, <span class="Statement">as</span>, bs)
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">self_tys</span>(a: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;, b: <span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;) -&gt; cres&lt;<span class="Type">option</span>&lt;<span class="PreProc">ty</span>::t&gt;&gt; {
+        super_self_tys(<span class="Statement">self</span>, a, b)
+    }
+}
+
+<span class="Comment">// ______________________________________________________________________</span>
+<span class="Comment">// Lattice operations on variables</span>
+<span class="Comment">//</span>
+<span class="Comment">// This is common code used by both LUB and GLB to compute the LUB/GLB</span>
+<span class="Comment">// for pairs of variables or for variables and values.</span>
+
+<span class="Statement">iface</span> <span class="Identifier">lattice_ops</span> {
+    <span class="Statement">fn</span> <span class="Identifier">bnd</span>&lt;T:<span class="Statement">copy</span>&gt;(b: bounds&lt;T&gt;) -&gt; <span class="Type">option</span>&lt;T&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">with_bnd</span>&lt;T:<span class="Statement">copy</span>&gt;(b: bounds&lt;T&gt;, t: T) -&gt; bounds&lt;T&gt;;
+    <span class="Statement">fn</span> <span class="Identifier">ty_bot</span>(t: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt;;
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> lattice_ops <span class="Statement">for</span> lub {
+    <span class="Statement">fn</span> <span class="Identifier">bnd</span>&lt;T:<span class="Statement">copy</span>&gt;(b: bounds&lt;T&gt;) -&gt; <span class="Type">option</span>&lt;T&gt; { b.ub }
+    <span class="Statement">fn</span> <span class="Identifier">with_bnd</span>&lt;T:<span class="Statement">copy</span>&gt;(b: bounds&lt;T&gt;, t: T) -&gt; bounds&lt;T&gt; {
+        {ub: <span class="Constant">some</span>(t) <span class="Statement">with</span> b}
+    }
+    <span class="Statement">fn</span> <span class="Identifier">ty_bot</span>(t: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        <span class="Constant">ok</span>(t)
+    }
+}
+
+<span class="Statement">impl</span> <span class="Statement">of</span> lattice_ops <span class="Statement">for</span> glb {
+    <span class="Statement">fn</span> <span class="Identifier">bnd</span>&lt;T:<span class="Statement">copy</span>&gt;(b: bounds&lt;T&gt;) -&gt; <span class="Type">option</span>&lt;T&gt; { b.lb }
+    <span class="Statement">fn</span> <span class="Identifier">with_bnd</span>&lt;T:<span class="Statement">copy</span>&gt;(b: bounds&lt;T&gt;, t: T) -&gt; bounds&lt;T&gt; {
+        {lb: <span class="Constant">some</span>(t) <span class="Statement">with</span> b}
+    }
+    <span class="Statement">fn</span> <span class="Identifier">ty_bot</span>(_t: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+        <span class="Constant">ok</span>(<span class="PreProc">ty</span>::mk_bot(<span class="Statement">self</span>.infcx().tcx))
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">lattice_tys</span>&lt;L:lattice_ops combine&gt;(
+    <span class="Statement">self</span>: L, a: <span class="PreProc">ty</span>::t, b: <span class="PreProc">ty</span>::t) -&gt; cres&lt;<span class="PreProc">ty</span>::t&gt; {
+
+    <span class="PreProc">#debug</span>(<span class="Constant">&quot;%s.lattice_tys(%s, %s)&quot;</span>, <span class="Statement">self</span>.tag(),
+           a.to_str(<span class="Statement">self</span>.infcx()),
+           b.to_str(<span class="Statement">self</span>.infcx()));
+    <span class="Statement">if</span> a == b { <span class="Statement">ret</span> <span class="Constant">ok</span>(a); }
+    <span class="Statement">do</span> indent {
+        <span class="Statement">alt</span> (<span class="PreProc">ty</span>::get(a).<span class="Statement">struct</span>, <span class="PreProc">ty</span>::get(b).<span class="Statement">struct</span>) {
+          (<span class="PreProc">ty</span>::ty_bot, _) { <span class="Statement">self</span>.ty_bot(b) }
+          (_, <span class="PreProc">ty</span>::ty_bot) { <span class="Statement">self</span>.ty_bot(a) }
+
+          (<span class="PreProc">ty</span>::ty_var(a_id), <span class="PreProc">ty</span>::ty_var(b_id)) {
+            lattice_vars(<span class="Statement">self</span>, <span class="Statement">self</span>.infcx().tvb,
+                         a, a_id, b_id,
+                         |x, y| <span class="Statement">self</span>.tys(x, y) )
+          }
+
+          (<span class="PreProc">ty</span>::ty_var(a_id), _) {
+            lattice_var_t(<span class="Statement">self</span>, <span class="Statement">self</span>.infcx().tvb, a_id, b,
+                          |x, y| <span class="Statement">self</span>.tys(x, y) )
+          }
+
+          (_, <span class="PreProc">ty</span>::ty_var(b_id)) {
+            lattice_var_t(<span class="Statement">self</span>, <span class="Statement">self</span>.infcx().tvb, b_id, a,
+                          |x, y| <span class="Statement">self</span>.tys(x, y) )
+          }
+          _ {
+            super_tys(<span class="Statement">self</span>, a, b)
+          }
+        }
+    }
+}
+
+<span class="Comment">// Pull out some common code from LUB/GLB for handling region vars:</span>
+<span class="Statement">fn</span> <span class="Identifier">lattice_rvars</span>&lt;L:lattice_ops combine&gt;(
+    <span class="Statement">self</span>: L, a: <span class="PreProc">ty</span>::region, b: <span class="PreProc">ty</span>::region) -&gt; cres&lt;<span class="PreProc">ty</span>::region&gt; {
+
+    <span class="Statement">alt</span> (a, b) {
+      (<span class="PreProc">ty</span>::re_var(a_id), <span class="PreProc">ty</span>::re_var(b_id)) {
+        lattice_vars(<span class="Statement">self</span>, <span class="Statement">self</span>.infcx().rb,
+                     a, a_id, b_id,
+                     |x, y| <span class="Statement">self</span>.regions(x, y) )
+      }
+
+      (<span class="PreProc">ty</span>::re_var(v_id), r) | (r, <span class="PreProc">ty</span>::re_var(v_id)) {
+        lattice_var_t(<span class="Statement">self</span>, <span class="Statement">self</span>.infcx().rb,
+                      v_id, r,
+                      |x, y| <span class="Statement">self</span>.regions(x, y) )
+      }
+
+      _ {
+        <span class="Statement">self</span>.infcx().tcx.sess.bug(
+            <span class="PreProc">#fmt</span>[<span class="Constant">&quot;%s: lattice_rvars invoked with a=%s and b=%s, \</span>
+<span class="Constant">                  neither of which are region variables&quot;</span>,
+                 <span class="Statement">self</span>.tag(),
+                 a.to_str(<span class="Statement">self</span>.infcx()),
+                 b.to_str(<span class="Statement">self</span>.infcx())]);
+      }
+    }
+}
+
+<span class="Statement">fn</span> <span class="Identifier">lattice_vars</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span> to_str st, L:lattice_ops combine&gt;(
+    <span class="Statement">self</span>: L, vb: vals_and_bindings&lt;V, bounds&lt;T&gt;&gt;,
+    a_t: T, a_vid: V, b_vid: V,
+    c_ts: <span class="Statement">fn</span>(T, T) -&gt; cres&lt;T&gt;) -&gt; cres&lt;T&gt; {
+
+    <span class="Comment">// The comments in this function are written for LUB and types,</span>
+    <span class="Comment">// but they apply equally well to GLB and regions if you inverse</span>
+    <span class="Comment">// upper/lower/sub/super/etc.</span>
+
+    <span class="Comment">// Need to find a type that is a supertype of both a and b:</span>
+    <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.infcx().get(vb, a_vid);
+    <span class="Statement">let</span> nde_b = <span class="Statement">self</span>.infcx().get(vb, b_vid);
+    <span class="Statement">let</span> a_vid = nde_a.root;
+    <span class="Statement">let</span> b_vid = nde_b.root;
+    <span class="Statement">let</span> a_bounds = nde_a.possible_types;
+    <span class="Statement">let</span> b_bounds = nde_b.possible_types;
+
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;%s.lattice_vars(%s=%s &lt;: %s=%s)&quot;</span>,
+           <span class="Statement">self</span>.tag(),
+           a_vid.to_str(), a_bounds.to_str(<span class="Statement">self</span>.infcx()),
+           b_vid.to_str(), b_bounds.to_str(<span class="Statement">self</span>.infcx())];
+
+    <span class="Statement">if</span> a_vid == b_vid {
+        <span class="Statement">ret</span> <span class="Constant">ok</span>(a_t);
+    }
+
+    <span class="Comment">// If both A and B have an UB type, then we can just compute the</span>
+    <span class="Comment">// LUB of those types:</span>
+    <span class="Statement">let</span> a_bnd = <span class="Statement">self</span>.bnd(a_bounds), b_bnd = <span class="Statement">self</span>.bnd(b_bounds);
+    <span class="Statement">alt</span> (a_bnd, b_bnd) {
+      (<span class="Constant">some</span>(a_ty), <span class="Constant">some</span>(b_ty)) {
+        <span class="Statement">alt</span> <span class="Statement">self</span>.infcx().try(|| c_ts(a_ty, b_ty) ) {
+            <span class="Constant">ok</span>(t) { <span class="Statement">ret</span> <span class="Constant">ok</span>(t); }
+            <span class="Constant">err</span>(_) { <span class="Comment">/*fallthrough */</span> }
+        }
+      }
+      _ {<span class="Comment">/*fallthrough*/</span>}
+    }
+
+    <span class="Comment">// Otherwise, we need to merge A and B into one variable.  We can</span>
+    <span class="Comment">// then use either variable as an upper bound:</span>
+    <span class="Statement">self</span>.infcx().vars(vb, a_vid, b_vid).then(|| <span class="Constant">ok</span>(a_t) )
+}
+
+<span class="Statement">fn</span> <span class="Identifier">lattice_var_t</span>&lt;V:<span class="Statement">copy</span> vid, T:<span class="Statement">copy</span> to_str st, L:lattice_ops combine&gt;(
+    <span class="Statement">self</span>: L, vb: vals_and_bindings&lt;V, bounds&lt;T&gt;&gt;,
+    a_id: V, b: T,
+    c_ts: <span class="Statement">fn</span>(T, T) -&gt; cres&lt;T&gt;) -&gt; cres&lt;T&gt; {
+
+    <span class="Statement">let</span> nde_a = <span class="Statement">self</span>.infcx().get(vb, a_id);
+    <span class="Statement">let</span> a_id = nde_a.root;
+    <span class="Statement">let</span> a_bounds = nde_a.possible_types;
+
+    <span class="Comment">// The comments in this function are written for LUB, but they</span>
+    <span class="Comment">// apply equally well to GLB if you inverse upper/lower/sub/super/etc.</span>
+
+    <span class="PreProc">#debug</span>[<span class="Constant">&quot;%s.lattice_vart(%s=%s &lt;: %s)&quot;</span>,
+           <span class="Statement">self</span>.tag(),
+           a_id.to_str(), a_bounds.to_str(<span class="Statement">self</span>.infcx()),
+           b.to_str(<span class="Statement">self</span>.infcx())];
+
+    <span class="Statement">alt</span> <span class="Statement">self</span>.bnd(a_bounds) {
+      <span class="Constant">some</span>(a_bnd) {
+        <span class="Comment">// If a has an upper bound, return the LUB(a.ub, b)</span>
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;bnd=some(%s)&quot;</span>, a_bnd.to_str(<span class="Statement">self</span>.infcx())];
+        <span class="Statement">ret</span> c_ts(a_bnd, b);
+      }
+      <span class="Constant">none</span> {
+        <span class="Comment">// If a does not have an upper bound, make b the upper bound of a</span>
+        <span class="Comment">// and then return b.</span>
+        <span class="PreProc">#debug</span>[<span class="Constant">&quot;bnd=none&quot;</span>];
+        <span class="Statement">let</span> a_bounds = <span class="Statement">self</span>.with_bnd(a_bounds, b);
+        <span class="Statement">do</span> <span class="Statement">self</span>.infcx().bnds(a_bounds.lb, a_bounds.ub).then {
+            <span class="Statement">self</span>.infcx().set(vb, a_id, root(a_bounds,
+                                            nde_a.rank));
+            <span class="Constant">ok</span>(b)
+        }
+      }
+    }
+}
+</pre>
+</body>
+</html>
