@@ -42,10 +42,10 @@ body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
 
 <span class="Comment">// Simple types</span>
 
-<span class="Statement">type</span> <span class="Identifier">string</span> = <span class="Type">str</span>;
+<span class="Statement">type</span> <span class="Identifier">ustring</span> = ~<span class="Type">str</span>;
 
 <span class="Comment">// All of our errors are strings, so we typedef this for convenience.</span>
-<span class="Statement">type</span> <span class="Identifier">MP3Result</span>&lt;T&gt; = Result&lt;T,~string&gt;;
+<span class="Statement">type</span> <span class="Identifier">MP3Result</span>&lt;T&gt; = Result&lt;T,ustring&gt;;
 
 <span class="Comment">// Constants</span>
 
@@ -366,7 +366,7 @@ body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
 
 <span class="Comment">// Entry point.</span>
 
-<span class="Statement">fn</span> <span class="Identifier">main</span>(args: ~[~string]) {
+<span class="Statement">fn</span> <span class="Identifier">main</span>(args: ~[ustring]) {
     <span class="Statement">if</span> args.len() &lt; <span class="Constant">2</span> {
         println(<span class="PreProc">#fmt</span>(<span class="Constant">&quot;usage: %s file.mp3&quot;</span>, args[<span class="Constant">0</span>]));
         <span class="Statement">return</span>;
