@@ -111,36 +111,6 @@ body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
      (bytes[<span class="Constant">3</span>] <span class="Statement">as</span> <span class="Type">u32</span>)
 }
 
-<span class="Statement">trait</span> <span class="Identifier">ToInt</span> {
-    <span class="Statement">fn</span> <span class="Identifier">to_int</span>() -&gt; <span class="Type">int</span>;
-}
-
-<span class="Statement">impl</span> <span class="Type">bool</span> : ToInt {
-    <span class="Statement">fn</span> <span class="Identifier">to_int</span>() -&gt; <span class="Type">int</span> {
-        <span class="Statement">if</span> <span class="Statement">self</span> { <span class="Constant">0</span> } <span class="Statement">else</span> { <span class="Constant">1</span> }
-    }
-}
-
-<span class="Statement">trait</span> <span class="Identifier">ToU32</span> {
-    <span class="Statement">fn</span> <span class="Identifier">to_u32</span>() -&gt; <span class="Type">u32</span>;
-}
-
-<span class="Statement">impl</span> <span class="Type">bool</span> : ToU32 {
-    <span class="Statement">fn</span> <span class="Identifier">to_u32</span>() -&gt; <span class="Type">u32</span> {
-        <span class="Statement">if</span> <span class="Statement">self</span> { <span class="Constant">0</span> } <span class="Statement">else</span> { <span class="Constant">1</span> }
-    }
-}
-
-<span class="Statement">trait</span> <span class="Identifier">ToBool</span> {
-    <span class="Statement">fn</span> <span class="Identifier">to_bool</span>() -&gt; <span class="Type">bool</span>;
-}
-
-<span class="Statement">impl</span> <span class="Type">u32</span> : ToBool {
-    <span class="Statement">fn</span> <span class="Identifier">to_bool</span>() -&gt; <span class="Type">bool</span> {
-        <span class="Statement">self</span> != <span class="Constant">0</span>
-    }
-}
-
 <span class="Comment">// Miscelleous MP3 data structures</span>
 
 <span class="Statement">enum</span> <span class="Identifier">MP3Mode</span> {
@@ -201,7 +171,7 @@ body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
 <span class="Statement">fn</span> <span class="Identifier">decode_mp3_header</span>(header: <span class="Type">u32</span>) -&gt; MP3Result&lt;MP3Header&gt; {
     <span class="Statement">let</span> lsf, mpeg25;
     <span class="Statement">if</span> header &amp; (<span class="Constant">1</span> &lt;&lt; <span class="Constant">20</span>) == <span class="Constant">1</span> {
-        lsf = (header &amp; (<span class="Constant">1</span> &lt;&lt; <span class="Constant">19</span>)).to_bool();
+        lsf = (header &amp; (<span class="Constant">1</span> &lt;&lt; <span class="Constant">19</span>)) <span class="Statement">as</span> <span class="Type">bool</span>;
         mpeg25 = <span class="Constant">false</span>;
     } <span class="Statement">else</span> {
         lsf = <span class="Constant">true</span>;
@@ -209,9 +179,9 @@ body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
     }
 
     <span class="Statement">let</span> <span class="Statement">mut</span> sample_rate_index = (header &gt;&gt; <span class="Constant">10</span>) &amp; <span class="Constant">3</span>;
-    <span class="Statement">let</span> sample_rate = MP3_FREQ_TAB()[sample_rate_index] &gt;&gt; (lsf.to_int() + mpeg25.to_int());
-    sample_rate_index += <span class="Constant">3</span> * (lsf.to_u32() + mpeg25.to_u32());
-    <span class="Statement">let</span> error_protection = (((header &gt;&gt; <span class="Constant">16</span>) &amp; <span class="Constant">1</span>) ^ <span class="Constant">1</span>).to_bool();
+    <span class="Statement">let</span> sample_rate = MP3_FREQ_TAB()[sample_rate_index] &gt;&gt; ((lsf <span class="Statement">as</span> <span class="Type">int</span>) + (mpeg25 <span class="Statement">as</span> <span class="Type">int</span>));
+    sample_rate_index += <span class="Constant">3</span> * ((lsf <span class="Statement">as</span> <span class="Type">u32</span>) + (mpeg25 <span class="Statement">as</span> <span class="Type">u32</span>));
+    <span class="Statement">let</span> error_protection = (((header &gt;&gt; <span class="Constant">16</span>) &amp; <span class="Constant">1</span>) ^ <span class="Constant">1</span>) <span class="Statement">as</span> <span class="Type">bool</span>;
 
     <span class="Statement">let</span> bitrate_index = (header &gt;&gt; <span class="Constant">12</span>) &amp; <span class="Constant">0xf</span>;
     <span class="Statement">if</span> bitrate_index == <span class="Constant">0</span> {
@@ -223,10 +193,10 @@ body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
     <span class="Statement">let</span> mode_ext = ((header &gt;&gt; <span class="Constant">4</span>) &amp; <span class="Constant">3</span>) <span class="Statement">as</span> <span class="Type">i8</span>;
     <span class="Statement">let</span> nb_channels = <span class="Statement">if</span> mode == Mono { <span class="Constant">1</span> } <span class="Statement">else</span> { <span class="Constant">2</span> };
 
-    <span class="Statement">let</span> frame_size = MP3_BITRATE_TAB()[lsf.to_int()][bitrate_index] <span class="Statement">as</span> <span class="Type">i32</span>;
+    <span class="Statement">let</span> frame_size = MP3_BITRATE_TAB()[lsf <span class="Statement">as</span> <span class="Type">int</span>][bitrate_index] <span class="Statement">as</span> <span class="Type">i32</span>;
     <span class="Statement">let</span> bitrate_info = BitrateInfo {
         bitrate: frame_size * <span class="Constant">1000</span>,
-        frame_size: (frame_size * <span class="Constant">144000</span>) / (sample_rate &lt;&lt; lsf.to_int()) + (padding <span class="Statement">as</span> <span class="Type">i32</span>)
+        frame_size: (frame_size * <span class="Constant">144000</span>) / (sample_rate &lt;&lt; (lsf <span class="Statement">as</span> <span class="Type">int</span>)) + (padding <span class="Statement">as</span> <span class="Type">i32</span>)
     };
 
     <span class="Statement">return</span> OK(MP3Header {
