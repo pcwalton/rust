@@ -1,0 +1,391 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>~/Source/ferrous-mp3/ferrousmp3.rs.html</title>
+<meta name="Generator" content="Vim/7.3">
+<meta name="plugin-version" content="vim7.3_v10">
+<meta name="syntax" content="rust">
+<meta name="settings" content="use_css,pre_wrap,expand_tabs">
+<style type="text/css">
+<!--
+pre { white-space: pre-wrap; font-family: monospace; color: #93a1a1; background-color: #002b36; }
+body { font-family: monospace; color: #93a1a1; background-color: #002b36; }
+.Todo { color: #d33682; font-weight: bold; }
+.Identifier { color: #268bd2; }
+.Type { color: #b58900; }
+.Constant { color: #2aa198; }
+.PreProc { color: #cb4b16; }
+.Statement { color: #859900; }
+.Comment { color: #657b83; font-style: italic; }
+-->
+</style>
+</head>
+<body>
+<pre>
+<span class="Comment">//</span>
+<span class="Comment">// ferrousmp3/ferrousmp3.rs</span>
+<span class="Comment">//</span>
+<span class="Comment">// Based on minimp3: <a href="http://keyj.emphy.de/minimp3/">http://keyj.emphy.de/minimp3/</a></span>
+<span class="Comment">//</span>
+<span class="Comment">// Copyright (c) 2012 Mozilla Foundation</span>
+<span class="Comment">//</span>
+
+<span class="Statement">import</span> Array = <span class="PreProc">dvec</span>::dvec;
+<span class="Statement">import</span> Error = <span class="PreProc">result</span>::<span class="Constant">err</span>;
+<span class="Statement">import</span> OK = <span class="PreProc">result</span>::<span class="Constant">ok</span>;
+<span class="Statement">import</span> Result = <span class="PreProc">result</span>::result;
+<span class="Statement">import</span> <span class="PreProc">io</span>::{println, read_whole_file};
+<span class="Statement">import</span> <span class="PreProc">result</span>::{unwrap};
+<span class="Statement">import</span> <span class="Type">uint</span>::range;
+<span class="Statement">import</span> <span class="PreProc">vec</span>::{from_mut, to_mut, view};
+
+<span class="Comment">// Simple types</span>
+
+<span class="Statement">type</span> <span class="Identifier">string</span> = <span class="Type">str</span>;
+
+<span class="Comment">// All of our errors are strings, so we typedef this for convenience.</span>
+<span class="Statement">type</span> <span class="Identifier">MP3Result</span>&lt;T&gt; = Result&lt;T,~string&gt;;
+
+<span class="Comment">// Constants</span>
+
+<span class="Statement">const</span> MP3_MAX_CHANNELS: <span class="Type">uint</span> = <span class="Constant">2</span>;
+<span class="Statement">const</span> SBLIMIT: <span class="Type">uint</span> = <span class="Constant">32</span>;
+
+<span class="Statement">const</span> BACKSTEP_SIZE: <span class="Type">uint</span> = <span class="Constant">512</span>;
+<span class="Statement">const</span> EXTRA_BYTES: <span class="Type">uint</span> = <span class="Constant">24</span>;
+
+<span class="Statement">const</span> HEADER_SIZE: <span class="Type">uint</span> = <span class="Constant">4</span>;
+
+<span class="Comment">// Static tables</span>
+
+<span class="Statement">fn</span> <span class="Identifier">MP3_BITRATE_TAB</span>() -&gt; [[<span class="Type">u16</span>]/<span class="Constant">15</span>]/<span class="Constant">2</span> { [
+    [ <span class="Constant">0</span>, <span class="Constant">32</span>, <span class="Constant">40</span>, <span class="Constant">48</span>, <span class="Constant">56</span>, <span class="Constant">64</span>, <span class="Constant">80</span>, <span class="Constant">96</span>, <span class="Constant">112</span>, <span class="Constant">128</span>, <span class="Constant">160</span>, <span class="Constant">192</span>, <span class="Constant">224</span>, <span class="Constant">256</span>, <span class="Constant">320</span> ],
+    [ <span class="Constant">0</span>, <span class="Constant">8</span>, <span class="Constant">16</span>, <span class="Constant">24</span>, <span class="Constant">32</span>, <span class="Constant">40</span>, <span class="Constant">48</span>, <span class="Constant">56</span>, <span class="Constant">64</span>, <span class="Constant">80</span>, <span class="Constant">96</span>, <span class="Constant">112</span>, <span class="Constant">128</span>, <span class="Constant">144</span>, <span class="Constant">160</span> ]
+] }
+
+<span class="Statement">fn</span> <span class="Identifier">MP3_FREQ_TAB</span>() -&gt; [<span class="Type">i32</span>]/<span class="Constant">3</span> { [ <span class="Constant">44100</span>, <span class="Constant">48000</span>, <span class="Constant">32000</span> ] }
+
+<span class="Statement">fn</span> <span class="Identifier">MP3_ENWINDOW</span>() -&gt; [<span class="Type">i32</span>]/<span class="Constant">257</span> { [
+         <span class="Constant">0</span>,    -<span class="Constant">1</span>,    -<span class="Constant">1</span>,    -<span class="Constant">1</span>,    -<span class="Constant">1</span>,    -<span class="Constant">1</span>,    -<span class="Constant">1</span>,    -<span class="Constant">2</span>,
+        -<span class="Constant">2</span>,    -<span class="Constant">2</span>,    -<span class="Constant">2</span>,    -<span class="Constant">3</span>,    -<span class="Constant">3</span>,    -<span class="Constant">4</span>,    -<span class="Constant">4</span>,    -<span class="Constant">5</span>,
+        -<span class="Constant">5</span>,    -<span class="Constant">6</span>,    -<span class="Constant">7</span>,    -<span class="Constant">7</span>,    -<span class="Constant">8</span>,    -<span class="Constant">9</span>,   -<span class="Constant">10</span>,   -<span class="Constant">11</span>,
+       -<span class="Constant">13</span>,   -<span class="Constant">14</span>,   -<span class="Constant">16</span>,   -<span class="Constant">17</span>,   -<span class="Constant">19</span>,   -<span class="Constant">21</span>,   -<span class="Constant">24</span>,   -<span class="Constant">26</span>,
+       -<span class="Constant">29</span>,   -<span class="Constant">31</span>,   -<span class="Constant">35</span>,   -<span class="Constant">38</span>,   -<span class="Constant">41</span>,   -<span class="Constant">45</span>,   -<span class="Constant">49</span>,   -<span class="Constant">53</span>,
+       -<span class="Constant">58</span>,   -<span class="Constant">63</span>,   -<span class="Constant">68</span>,   -<span class="Constant">73</span>,   -<span class="Constant">79</span>,   -<span class="Constant">85</span>,   -<span class="Constant">91</span>,   -<span class="Constant">97</span>,
+      -<span class="Constant">104</span>,  -<span class="Constant">111</span>,  -<span class="Constant">117</span>,  -<span class="Constant">125</span>,  -<span class="Constant">132</span>,  -<span class="Constant">139</span>,  -<span class="Constant">147</span>,  -<span class="Constant">154</span>,
+      -<span class="Constant">161</span>,  -<span class="Constant">169</span>,  -<span class="Constant">176</span>,  -<span class="Constant">183</span>,  -<span class="Constant">190</span>,  -<span class="Constant">196</span>,  -<span class="Constant">202</span>,  -<span class="Constant">208</span>,
+       <span class="Constant">213</span>,   <span class="Constant">218</span>,   <span class="Constant">222</span>,   <span class="Constant">225</span>,   <span class="Constant">227</span>,   <span class="Constant">228</span>,   <span class="Constant">228</span>,   <span class="Constant">227</span>,
+       <span class="Constant">224</span>,   <span class="Constant">221</span>,   <span class="Constant">215</span>,   <span class="Constant">208</span>,   <span class="Constant">200</span>,   <span class="Constant">189</span>,   <span class="Constant">177</span>,   <span class="Constant">163</span>,
+       <span class="Constant">146</span>,   <span class="Constant">127</span>,   <span class="Constant">106</span>,    <span class="Constant">83</span>,    <span class="Constant">57</span>,    <span class="Constant">29</span>,    -<span class="Constant">2</span>,   -<span class="Constant">36</span>,
+       -<span class="Constant">72</span>,  -<span class="Constant">111</span>,  -<span class="Constant">153</span>,  -<span class="Constant">197</span>,  -<span class="Constant">244</span>,  -<span class="Constant">294</span>,  -<span class="Constant">347</span>,  -<span class="Constant">401</span>,
+      -<span class="Constant">459</span>,  -<span class="Constant">519</span>,  -<span class="Constant">581</span>,  -<span class="Constant">645</span>,  -<span class="Constant">711</span>,  -<span class="Constant">779</span>,  -<span class="Constant">848</span>,  -<span class="Constant">919</span>,
+      -<span class="Constant">991</span>, -<span class="Constant">1064</span>, -<span class="Constant">1137</span>, -<span class="Constant">1210</span>, -<span class="Constant">1283</span>, -<span class="Constant">1356</span>, -<span class="Constant">1428</span>, -<span class="Constant">1498</span>,
+     -<span class="Constant">1567</span>, -<span class="Constant">1634</span>, -<span class="Constant">1698</span>, -<span class="Constant">1759</span>, -<span class="Constant">1817</span>, -<span class="Constant">1870</span>, -<span class="Constant">1919</span>, -<span class="Constant">1962</span>,
+     -<span class="Constant">2001</span>, -<span class="Constant">2032</span>, -<span class="Constant">2057</span>, -<span class="Constant">2075</span>, -<span class="Constant">2085</span>, -<span class="Constant">2087</span>, -<span class="Constant">2080</span>, -<span class="Constant">2063</span>,
+      <span class="Constant">2037</span>,  <span class="Constant">2000</span>,  <span class="Constant">1952</span>,  <span class="Constant">1893</span>,  <span class="Constant">1822</span>,  <span class="Constant">1739</span>,  <span class="Constant">1644</span>,  <span class="Constant">1535</span>,
+      <span class="Constant">1414</span>,  <span class="Constant">1280</span>,  <span class="Constant">1131</span>,   <span class="Constant">970</span>,   <span class="Constant">794</span>,   <span class="Constant">605</span>,   <span class="Constant">402</span>,   <span class="Constant">185</span>,
+       -<span class="Constant">45</span>,  -<span class="Constant">288</span>,  -<span class="Constant">545</span>,  -<span class="Constant">814</span>, -<span class="Constant">1095</span>, -<span class="Constant">1388</span>, -<span class="Constant">1692</span>, -<span class="Constant">2006</span>,
+     -<span class="Constant">2330</span>, -<span class="Constant">2663</span>, -<span class="Constant">3004</span>, -<span class="Constant">3351</span>, -<span class="Constant">3705</span>, -<span class="Constant">4063</span>, -<span class="Constant">4425</span>, -<span class="Constant">4788</span>,
+     -<span class="Constant">5153</span>, -<span class="Constant">5517</span>, -<span class="Constant">5879</span>, -<span class="Constant">6237</span>, -<span class="Constant">6589</span>, -<span class="Constant">6935</span>, -<span class="Constant">7271</span>, -<span class="Constant">7597</span>,
+     -<span class="Constant">7910</span>, -<span class="Constant">8209</span>, -<span class="Constant">8491</span>, -<span class="Constant">8755</span>, -<span class="Constant">8998</span>, -<span class="Constant">9219</span>, -<span class="Constant">9416</span>, -<span class="Constant">9585</span>,
+     -<span class="Constant">9727</span>, -<span class="Constant">9838</span>, -<span class="Constant">9916</span>, -<span class="Constant">9959</span>, -<span class="Constant">9966</span>, -<span class="Constant">9935</span>, -<span class="Constant">9863</span>, -<span class="Constant">9750</span>,
+     -<span class="Constant">9592</span>, -<span class="Constant">9389</span>, -<span class="Constant">9139</span>, -<span class="Constant">8840</span>, -<span class="Constant">8492</span>, -<span class="Constant">8092</span>, -<span class="Constant">7640</span>, -<span class="Constant">7134</span>,
+      <span class="Constant">6574</span>,  <span class="Constant">5959</span>,  <span class="Constant">5288</span>,  <span class="Constant">4561</span>,  <span class="Constant">3776</span>,  <span class="Constant">2935</span>,  <span class="Constant">2037</span>,  <span class="Constant">1082</span>,
+        <span class="Constant">70</span>,  -<span class="Constant">998</span>, -<span class="Constant">2122</span>, -<span class="Constant">3300</span>, -<span class="Constant">4533</span>, -<span class="Constant">5818</span>, -<span class="Constant">7154</span>, -<span class="Constant">8540</span>,
+     -<span class="Constant">9975</span>,-<span class="Constant">11455</span>,-<span class="Constant">12980</span>,-<span class="Constant">14548</span>,-<span class="Constant">16155</span>,-<span class="Constant">17799</span>,-<span class="Constant">19478</span>,-<span class="Constant">21189</span>,
+    -<span class="Constant">22929</span>,-<span class="Constant">24694</span>,-<span class="Constant">26482</span>,-<span class="Constant">28289</span>,-<span class="Constant">30112</span>,-<span class="Constant">31947</span>,-<span class="Constant">33791</span>,-<span class="Constant">35640</span>,
+    -<span class="Constant">37489</span>,-<span class="Constant">39336</span>,-<span class="Constant">41176</span>,-<span class="Constant">43006</span>,-<span class="Constant">44821</span>,-<span class="Constant">46617</span>,-<span class="Constant">48390</span>,-<span class="Constant">50137</span>,
+    -<span class="Constant">51853</span>,-<span class="Constant">53534</span>,-<span class="Constant">55178</span>,-<span class="Constant">56778</span>,-<span class="Constant">58333</span>,-<span class="Constant">59838</span>,-<span class="Constant">61289</span>,-<span class="Constant">62684</span>,
+    -<span class="Constant">64019</span>,-<span class="Constant">65290</span>,-<span class="Constant">66494</span>,-<span class="Constant">67629</span>,-<span class="Constant">68692</span>,-<span class="Constant">69679</span>,-<span class="Constant">70590</span>,-<span class="Constant">71420</span>,
+    -<span class="Constant">72169</span>,-<span class="Constant">72835</span>,-<span class="Constant">73415</span>,-<span class="Constant">73908</span>,-<span class="Constant">74313</span>,-<span class="Constant">74630</span>,-<span class="Constant">74856</span>,-<span class="Constant">74992</span>,
+     <span class="Constant">75038</span>
+]/<span class="Constant">257</span> }
+
+<span class="Comment">// General utility routines</span>
+
+<span class="Statement">fn</span> <span class="Identifier">get_big_endian_u32</span>(bytes: &amp;[<span class="Type">u8</span>]) -&gt; <span class="Type">u32</span> {
+    ((bytes[<span class="Constant">0</span>] <span class="Statement">as</span> <span class="Type">u32</span>) &lt;&lt; <span class="Constant">24</span>) |
+    ((bytes[<span class="Constant">1</span>] <span class="Statement">as</span> <span class="Type">u32</span>) &lt;&lt; <span class="Constant">16</span>) |
+    ((bytes[<span class="Constant">2</span>] <span class="Statement">as</span> <span class="Type">u32</span>) &lt;&lt; <span class="Constant">8</span>) |
+     (bytes[<span class="Constant">3</span>] <span class="Statement">as</span> <span class="Type">u32</span>)
+}
+
+<span class="Statement">trait</span> <span class="Identifier">ToInt</span> {
+    <span class="Statement">fn</span> <span class="Identifier">to_int</span>() -&gt; <span class="Type">int</span>;
+}
+
+<span class="Statement">impl</span> <span class="Type">bool</span> : ToInt {
+    <span class="Statement">fn</span> <span class="Identifier">to_int</span>() -&gt; <span class="Type">int</span> {
+        <span class="Statement">if</span> <span class="Statement">self</span> { <span class="Constant">0</span> } <span class="Statement">else</span> { <span class="Constant">1</span> }
+    }
+}
+
+<span class="Statement">trait</span> <span class="Identifier">ToU32</span> {
+    <span class="Statement">fn</span> <span class="Identifier">to_u32</span>() -&gt; <span class="Type">u32</span>;
+}
+
+<span class="Statement">impl</span> <span class="Type">bool</span> : ToU32 {
+    <span class="Statement">fn</span> <span class="Identifier">to_u32</span>() -&gt; <span class="Type">u32</span> {
+        <span class="Statement">if</span> <span class="Statement">self</span> { <span class="Constant">0</span> } <span class="Statement">else</span> { <span class="Constant">1</span> }
+    }
+}
+
+<span class="Statement">trait</span> <span class="Identifier">ToBool</span> {
+    <span class="Statement">fn</span> <span class="Identifier">to_bool</span>() -&gt; <span class="Type">bool</span>;
+}
+
+<span class="Statement">impl</span> <span class="Type">u32</span> : ToBool {
+    <span class="Statement">fn</span> <span class="Identifier">to_bool</span>() -&gt; <span class="Type">bool</span> {
+        <span class="Statement">self</span> != <span class="Constant">0</span>
+    }
+}
+
+<span class="Comment">// Miscelleous MP3 data structures</span>
+
+<span class="Statement">enum</span> <span class="Identifier">MP3Mode</span> {
+    Stereo,
+    JStereo,
+    Dual,
+    Mono
+}
+
+<span class="Comment">// </span><span class="Todo">TODO</span><span class="Comment">: Make this a static typeclass method.</span>
+<span class="Statement">fn</span> <span class="Identifier">u32_to_mp3_mode</span>(mode: <span class="Type">u32</span>) -&gt; MP3Mode {
+    <span class="Statement">match</span> mode {
+        <span class="Constant">0</span> =&gt; { Stereo               }
+        <span class="Constant">1</span> =&gt; { JStereo              }
+        <span class="Constant">2</span> =&gt; { Dual                 }
+        <span class="Constant">3</span> =&gt; { Mono                 }
+        _ =&gt; { <span class="Statement">fail</span> ~<span class="Constant">&quot;unknown mode&quot;</span> }
+    }
+}
+
+<span class="Comment">// MP3 headers</span>
+
+<span class="Statement">struct</span> <span class="Identifier">BitrateInfo</span> {
+    bitrate: <span class="Type">i32</span>;
+    frame_size: <span class="Type">i32</span>;
+}
+
+<span class="Statement">struct</span> <span class="Identifier">MP3Header</span> {
+    info: MP3Info;
+    error_protection: <span class="Type">bool</span>;
+    mode: MP3Mode;
+    mode_ext: <span class="Type">i8</span>;
+    sample_rate_index: <span class="Type">u32</span>;
+    bitrate_info: BitrateInfo;
+    lsf: <span class="Type">bool</span>;
+}
+
+<span class="Statement">fn</span> <span class="Identifier">check_mp3_header</span>(header: <span class="Type">u32</span>) -&gt; <span class="Type">bool</span> {
+    <span class="Comment">// Header</span>
+    <span class="Statement">if</span> (header &amp; <span class="Constant">0xffe00000</span>) != <span class="Constant">0xffe00000</span> {
+        <span class="Statement">return</span> <span class="Constant">false</span>;
+    }
+    <span class="Comment">// Layer check</span>
+    <span class="Statement">if</span> (header &amp; (<span class="Constant">3</span> &lt;&lt; <span class="Constant">17</span>)) != (<span class="Constant">1</span> &lt;&lt; <span class="Constant">17</span>) {
+        <span class="Statement">return</span> <span class="Constant">false</span>;
+    }
+    <span class="Comment">// Bitrate</span>
+    <span class="Statement">if</span> (header &amp; (<span class="Constant">0xf</span> &lt;&lt; <span class="Constant">12</span>)) == (<span class="Constant">0xf</span> &lt;&lt; <span class="Constant">12</span>) {
+        <span class="Statement">return</span> <span class="Constant">false</span>;
+    }
+    <span class="Comment">// Frequency</span>
+    <span class="Statement">if</span> (header &amp; (<span class="Constant">3</span> &lt;&lt; <span class="Constant">10</span>)) == (<span class="Constant">3</span> &lt;&lt; <span class="Constant">10</span>) {
+        <span class="Statement">return</span> <span class="Constant">false</span>;
+    }
+    <span class="Statement">return</span> <span class="Constant">true</span>;
+}
+
+<span class="Statement">fn</span> <span class="Identifier">decode_mp3_header</span>(header: <span class="Type">u32</span>) -&gt; MP3Result&lt;MP3Header&gt; {
+    <span class="Statement">let</span> lsf, mpeg25;
+    <span class="Statement">if</span> header &amp; (<span class="Constant">1</span> &lt;&lt; <span class="Constant">20</span>) == <span class="Constant">1</span> {
+        lsf = (header &amp; (<span class="Constant">1</span> &lt;&lt; <span class="Constant">19</span>)).to_bool();
+        mpeg25 = <span class="Constant">false</span>;
+    } <span class="Statement">else</span> {
+        lsf = <span class="Constant">true</span>;
+        mpeg25 = <span class="Constant">true</span>;
+    }
+
+    <span class="Statement">let</span> <span class="Statement">mut</span> sample_rate_index = (header &gt;&gt; <span class="Constant">10</span>) &amp; <span class="Constant">3</span>;
+    <span class="Statement">let</span> sample_rate = MP3_FREQ_TAB()[sample_rate_index] &gt;&gt; (lsf.to_int() + mpeg25.to_int());
+    sample_rate_index += <span class="Constant">3</span> * (lsf.to_u32() + mpeg25.to_u32());
+    <span class="Statement">let</span> error_protection = (((header &gt;&gt; <span class="Constant">16</span>) &amp; <span class="Constant">1</span>) ^ <span class="Constant">1</span>).to_bool();
+
+    <span class="Statement">let</span> bitrate_index = (header &gt;&gt; <span class="Constant">12</span>) &amp; <span class="Constant">0xf</span>;
+    <span class="Statement">if</span> bitrate_index == <span class="Constant">0</span> {
+        <span class="Statement">return</span> Error(~<span class="Constant">&quot;couldn't compute frame size&quot;</span>);
+    }
+
+    <span class="Statement">let</span> padding = (header &gt;&gt; <span class="Constant">9</span>) &amp; <span class="Constant">1</span>;
+    <span class="Statement">let</span> mode = u32_to_mp3_mode((header &gt;&gt; <span class="Constant">6</span>) &amp; <span class="Constant">3</span>);
+    <span class="Statement">let</span> mode_ext = ((header &gt;&gt; <span class="Constant">4</span>) &amp; <span class="Constant">3</span>) <span class="Statement">as</span> <span class="Type">i8</span>;
+    <span class="Statement">let</span> nb_channels = <span class="Statement">if</span> mode == Mono { <span class="Constant">1</span> } <span class="Statement">else</span> { <span class="Constant">2</span> };
+
+    <span class="Statement">let</span> frame_size = MP3_BITRATE_TAB()[lsf.to_int()][bitrate_index] <span class="Statement">as</span> <span class="Type">i32</span>;
+    <span class="Statement">let</span> bitrate_info = BitrateInfo {
+        bitrate: frame_size * <span class="Constant">1000</span>,
+        frame_size: (frame_size * <span class="Constant">144000</span>) / (sample_rate &lt;&lt; lsf.to_int()) + (padding <span class="Statement">as</span> <span class="Type">i32</span>)
+    };
+
+    <span class="Statement">return</span> OK(MP3Header {
+        info: MP3Info { sample_rate: sample_rate, channels: nb_channels, audio_bytes: <span class="Constant">0</span> },
+        error_protection: error_protection,
+        mode: mode,
+        mode_ext: mode_ext,
+        sample_rate_index: sample_rate_index,
+        bitrate_info: bitrate_info,
+        lsf: lsf
+    });
+}
+
+<span class="Comment">// Global decoding context</span>
+
+<span class="Statement">struct</span> <span class="Identifier">MP3Decoder</span> {
+    <span class="Statement">mut</span> window: ~[<span class="Type">i16</span>];
+}
+
+<span class="Statement">fn</span> <span class="Identifier">MP3Decoder</span>() -&gt; MP3Decoder {
+    <span class="Comment">// Initialize the synth.</span>
+    <span class="Comment">// </span><span class="Todo">TODO</span><span class="Comment">: This shouldn't be heap-allocated, but I'm not writing 512 zeroes.</span>
+    <span class="Statement">let</span> window = to_mut(<span class="PreProc">vec</span>::from_elem(<span class="Constant">512</span>, <span class="Constant">0</span>));
+    <span class="Statement">for</span> MP3_ENWINDOW().eachi |i, v| {
+        <span class="Statement">let</span> <span class="Statement">mut</span> v = <span class="Statement">copy</span> v;
+        window[i] = v <span class="Statement">as</span> <span class="Type">i16</span>;
+        <span class="Statement">if</span> (i &amp; <span class="Constant">63</span>) != <span class="Constant">0</span> {
+            v = -v;
+        }
+        <span class="Statement">if</span> i != <span class="Constant">0</span> {
+            window[<span class="Constant">512</span> - i] = v <span class="Statement">as</span> <span class="Type">i16</span>;
+        }
+    }
+    <span class="Statement">let</span> window = from_mut(window);
+
+    <span class="Statement">return</span> MP3Decoder { window: window };
+}
+
+<span class="Comment">// Decoding</span>
+
+<span class="Statement">fn</span> <span class="Identifier">decode</span>(header: MP3Header, bytes: &amp;[<span class="Type">u8</span>]) -&gt; MP3Result&lt;~[<span class="Type">i16</span>]&gt; {
+    Error(~<span class="Constant">&quot;</span><span class="Todo">TODO</span><span class="Constant">&quot;</span>)
+}
+
+<span class="Comment">// MP3 context</span>
+
+<span class="Statement">type</span> <span class="Identifier">VLCType</span> = <span class="Type">i16</span>;
+
+<span class="Statement">struct</span> <span class="Identifier">Bitstream</span> {
+    buffer: &amp;[<span class="Type">u8</span>];
+    index: <span class="Type">i32</span>;
+    size_in_bits: <span class="Type">i32</span>;
+}
+
+<span class="Statement">struct</span> <span class="Identifier">VLCTable</span> {
+    code: Array&lt;VLCType&gt;;
+    bits: Array&lt;VLCType&gt;;
+}
+
+<span class="Statement">struct</span> <span class="Identifier">VLC</span> {
+    bits: <span class="Type">i32</span>;
+    table: VLCTable;
+}
+
+<span class="Statement">struct</span> <span class="Identifier">MP3Info</span> {
+    sample_rate: <span class="Type">i32</span>;
+    channels: <span class="Type">i8</span>;
+    <span class="Comment">// The generated amount of audio per frame.</span>
+    audio_bytes: <span class="Type">i32</span>;
+}
+
+<span class="Statement">struct</span> <span class="Identifier">DecodeResult</span> {
+    samples: ~[<span class="Type">i16</span>];
+    extra_bytes: <span class="Type">uint</span>;
+}
+
+<span class="Statement">struct</span> <span class="Identifier">MP3Context</span> {
+    <span class="Statement">mut</span> last_buf: ~[<span class="Statement">mut</span> <span class="Type">u8</span>];
+}
+
+<span class="Statement">fn</span> <span class="Identifier">MP3Context</span>() -&gt; MP3Context {
+    MP3Context {
+        last_buf: to_mut(<span class="PreProc">vec</span>::from_elem(<span class="Constant">2</span> * BACKSTEP_SIZE + EXTRA_BYTES, <span class="Constant">0</span>))
+    }
+}
+
+<span class="Statement">impl</span> MP3Context {
+    <span class="Statement">fn</span> <span class="Identifier">decode_frame</span>(bytes: &amp;[<span class="Type">u8</span>]) -&gt; MP3Result&lt;DecodeResult&gt; {
+        <span class="Statement">let</span> <span class="Statement">mut</span> bytes = bytes;
+        <span class="Statement">let</span> <span class="Statement">mut</span> header_word;
+        <span class="Statement">let</span> <span class="Statement">mut</span> extra_bytes = <span class="Constant">0</span>;
+        <span class="Statement">loop</span> {
+            <span class="Statement">if</span> bytes.len() &lt; HEADER_SIZE {
+                <span class="Statement">return</span> Error(~<span class="Constant">&quot;buffer size less than header&quot;</span>);
+            }
+
+            header_word = get_big_endian_u32(bytes);
+            <span class="Statement">if</span> !check_mp3_header(header_word) {
+                <span class="Comment">// Move to the next byte.</span>
+                <span class="PreProc">#debug</span>(<span class="Constant">&quot;didn't find header, skipping byte&quot;</span>);
+                bytes = view(bytes, <span class="Constant">1</span>, bytes.len());
+                extra_bytes += <span class="Constant">1</span>;
+                <span class="Statement">again</span>;
+            }
+
+            <span class="Statement">break</span>;
+        }
+
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;found mp3 header&quot;</span>);
+
+        <span class="Statement">let</span> header;
+        <span class="Statement">match</span> decode_mp3_header(header_word) {
+            Error(e) =&gt; { <span class="Statement">return</span> Error(<span class="Statement">copy</span> e); }
+            OK(h)    =&gt; { header = h; }
+        }
+
+        <span class="PreProc">#debug</span>(<span class="Constant">&quot;decoded mp3 header: %?&quot;</span>, header);
+
+        <span class="Statement">let</span> frame_size = header.bitrate_info.frame_size;
+        <span class="Statement">if</span> frame_size &lt;= <span class="Constant">0</span> || frame_size &gt; (bytes.len() <span class="Statement">as</span> <span class="Type">i32</span>) {
+            <span class="Statement">return</span> Error(~<span class="Constant">&quot;incomplete frame&quot;</span>);
+        }
+        <span class="Statement">if</span> frame_size &lt; (bytes.len() <span class="Statement">as</span> <span class="Type">i32</span>) {
+            bytes = view(bytes, <span class="Constant">0</span>, frame_size <span class="Statement">as</span> <span class="Type">uint</span>);
+        }
+
+        <span class="Statement">match</span> decode(header, bytes) {
+            Error(e)    =&gt; { Error(<span class="Statement">copy</span> e) }
+            OK(samples) =&gt; { OK(DecodeResult { samples: samples, extra_bytes: extra_bytes }) }
+        }
+    }
+
+    <span class="Statement">fn</span> <span class="Identifier">decode</span>(bytes: &amp;[<span class="Type">u8</span>]) -&gt; MP3Result&lt;DecodeResult&gt; {
+        <span class="Statement">self</span>.decode_frame(bytes)
+    }
+}
+
+<span class="Comment">// Entry point.</span>
+
+<span class="Statement">fn</span> <span class="Identifier">main</span>(args: ~[~string]) {
+    <span class="Statement">if</span> args.len() &lt; <span class="Constant">2</span> {
+        println(<span class="PreProc">#fmt</span>(<span class="Constant">&quot;usage: %s file.mp3&quot;</span>, args[<span class="Constant">0</span>]));
+        <span class="Statement">return</span>;
+    }
+
+    <span class="Statement">let</span> result = read_whole_file(args[<span class="Constant">1</span>]);
+    <span class="Statement">let</span> bytes;
+    <span class="Statement">match</span> result {
+        OK(_)    =&gt; { bytes = unwrap(result); }
+        Error(e) =&gt; { println(e); <span class="Statement">return</span>; }
+    }
+
+    <span class="Statement">let</span> context = MP3Context();
+    <span class="Statement">match</span> context.decode(bytes) {
+        OK(_)    =&gt; {} <span class="Comment">// </span><span class="Todo">TODO</span>
+        Error(e) =&gt; { println(e); <span class="Statement">return</span>; }
+    }
+}
+
+</pre>
+</body>
+</html>
