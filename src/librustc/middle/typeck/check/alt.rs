@@ -70,11 +70,15 @@ fn check_legality_of_move_bindings(fcx: @fn_ctxt,
     for pats.each |pat| {
         do pat_util::pat_bindings(def_map, *pat) |bm, _id, span, _path| {
             match bm {
-                ast::bind_by_ref(_) | ast::bind_by_implicit_ref => {
+                ast::bind_by_ref(_) => {
                     by_ref = Some(span);
                 }
                 ast::bind_by_move => {
                     any_by_move = true;
+                }
+                ast::bind_infer => {
+                    // XXX: Do nothing. This is unsound. Move this to
+                    // check_alt.rs.
                 }
                 _ => { }
             }
@@ -424,13 +428,7 @@ fn check_pat(pcx: pat_ctxt, pat: @ast::pat, expected: ty::t) {
             demand::eqtype(fcx, pat.span, region_ty, typ);
           }
           // otherwise the type of x is the expected type T
-          ast::bind_by_value => {
-            demand::eqtype(fcx, pat.span, expected, typ);
-          }
-          ast::bind_by_move => {
-            demand::eqtype(fcx, pat.span, expected, typ);
-          }
-          ast::bind_by_implicit_ref => {
+          ast::bind_by_value | ast::bind_by_move | ast::bind_infer => {
             demand::eqtype(fcx, pat.span, expected, typ);
           }
         }
