@@ -80,20 +80,20 @@ impl cmp::Eq for bool {
 #[test]
 pub fn test_bool_from_str() {
     do all_values |v| {
-        assert Some(v) == from_str(to_str(v))
+        fail_unless!(Some(v) == from_str(to_str(v)))
     }
 }
 
 #[test]
 pub fn test_bool_to_str() {
-    assert to_str(false) == ~"false";
-    assert to_str(true) == ~"true";
+    fail_unless!(to_str(false) == ~"false");
+    fail_unless!(to_str(true) == ~"true");
 }
 
 #[test]
 pub fn test_bool_to_bit() {
     do all_values |v| {
-        assert to_bit(v) == if is_true(v) { 1u8 } else { 0u8 };
+        fail_unless!(to_bit(v) == if is_true(v) { 1u8 } else { 0u8 });
     }
 }
 

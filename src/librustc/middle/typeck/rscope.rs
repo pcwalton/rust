@@ -47,8 +47,8 @@ impl region_scope for MethodRscope {
         result::Err(~"anonymous region types are not permitted here")
     }
     fn self_region(&self, _span: span) -> Result<ty::Region, ~str> {
-        assert self.region_parameterization.is_some() ||
-            self.self_ty.is_borrowed();
+        fail_unless!(self.region_parameterization.is_some() ||
+            self.self_ty.is_borrowed());
         result::Ok(ty::re_bound(ty::br_self))
     }
     fn named_region(&self, span: span, id: ast::ident)
@@ -64,7 +64,7 @@ impl region_scope for type_rscope {
     fn anon_region(&self, _span: span) -> Result<ty::Region, ~str> {
         // if the anon or self region is used, region parameterization should
         // have inferred that this type is RP
-        assert self.is_some();
+        fail_unless!(self.is_some());
         result::Ok(ty::re_bound(ty::br_self))
     }
     fn self_region(&self, span: span) -> Result<ty::Region, ~str> {

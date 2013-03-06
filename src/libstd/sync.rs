@@ -585,7 +585,7 @@ pub impl &RWlock {
             do task::unkillable {
                 let mut first_reader = false;
                 do self.state.with |state| {
-                    assert !state.read_mode;
+                    fail_unless!(!state.read_mode);
                     state.read_mode = true;
                     first_reader = (state.read_count == 0);
                     state.read_count += 1;
@@ -615,8 +615,8 @@ impl Drop for RWlockReleaseRead {
             do task::unkillable {
                 let mut last_reader = false;
                 do self.lock.state.with |state| {
-                    assert state.read_mode;
-                    assert state.read_count > 0;
+                    fail_unless!(state.read_mode);
+                    fail_unless!(state.read_count > 0);
                     state.read_count -= 1;
                     if state.read_count == 0 {
                         last_reader = true;
@@ -650,7 +650,7 @@ impl Drop for RWlockReleaseDowngrade {
                 let mut writer_or_last_reader = false;
                 do self.lock.state.with |state| {
                     if state.read_mode {
-                        assert state.read_count > 0;
+                        fail_unless!(state.read_count > 0);
                         state.read_count -= 1;
                         if state.read_count == 0 {
                             // Case 1: Writer downgraded & was the last reader
@@ -834,7 +834,7 @@ mod tests {
         access_shared(sharedstate, m, 10);
         let _ = p.recv();
 
-        assert *sharedstate == 20;
+        fail_unless!(*sharedstate == 20);
 
         fn access_shared(sharedstate: &mut int, m: &Mutex, n: uint) {
             for n.times {
@@ -856,7 +856,7 @@ mod tests {
             do task::spawn || {
                 do m2.lock_cond |cond| {
                     let woken = cond.signal();
-                    assert woken;
+                    fail_unless!(woken);
                 }
             }
             cond.wait();
@@ -874,7 +874,7 @@ mod tests {
         let _ = port.recv(); // Wait until child gets in the mutex
         do m.lock_cond |cond| {
             let woken = cond.signal();
-            assert woken;
+            fail_unless!(woken);
         }
         let _ = port.recv(); // Wait until child wakes up
     }
@@ -900,7 +900,7 @@ mod tests {
         for ports.each |port| { let _ = port.recv(); }
         do m.lock_cond |cond| {
             let num_woken = cond.broadcast();
-            assert num_woken == num_waiters;
+            fail_unless!(num_woken == num_waiters);
         }
         // wait until all children wake up
         for ports.each |port| { let _ = port.recv(); }
@@ -921,7 +921,7 @@ mod tests {
             do m.lock_cond |_x| { }
         };
         do m2.lock_cond |cond| {
-            assert !cond.signal();
+            fail_unless!(!cond.signal());
         }
     }
     #[test] #[ignore(cfg(windows))]
@@ -935,7 +935,7 @@ mod tests {
                 fail!();
             }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
         // child task must have finished by the time try returns
         do m.lock { }
     }
@@ -958,11 +958,11 @@ mod tests {
                 cond.wait(); // block forever
             }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
         // child task must have finished by the time try returns
         do m.lock_cond |cond| {
             let woken = cond.signal();
-            assert !woken;
+            fail_unless!(!woken);
         }
     }
     #[test] #[ignore(cfg(windows))]
@@ -995,12 +995,12 @@ mod tests {
             c.send(sibling_convos); // let parent wait on all children
             fail!();
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
         // child task must have finished by the time try returns
         for vec::each(p.recv()) |p| { p.recv(); } // wait on all its siblings
         do m.lock_cond |cond| {
             let woken = cond.broadcast();
-            assert woken == 0;
+            fail_unless!(woken == 0);
         }
         struct SendOnFailure {
             c: comm::Chan<()>,
@@ -1051,7 +1051,7 @@ mod tests {
                 }
             }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
     }
     #[test] #[ignore(cfg(windows))]
     pub fn test_mutex_no_condvars() {
@@ -1059,17 +1059,17 @@ mod tests {
             let m = ~mutex_with_condvars(0);
             do m.lock_cond |cond| { cond.wait(); }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
         let result = do task::try {
             let m = ~mutex_with_condvars(0);
             do m.lock_cond |cond| { cond.signal(); }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
         let result = do task::try {
             let m = ~mutex_with_condvars(0);
             do m.lock_cond |cond| { cond.broadcast(); }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
     }
     /************************************************************************
      * Reader/writer lock tests
@@ -1111,7 +1111,7 @@ mod tests {
         access_shared(sharedstate, x, mode2, 10);
         let _ = p.recv();
 
-        assert *sharedstate == 20;
+        fail_unless!(*sharedstate == 20);
 
         fn access_shared(sharedstate: &mut int, x: &RWlock, mode: RWlockMode,
                          n: uint) {
@@ -1205,7 +1205,7 @@ mod tests {
             do task::spawn || {
                 do x2.write_cond |cond| {
                     let woken = cond.signal();
-                    assert woken;
+                    fail_unless!(woken);
                 }
             }
             cond.wait();
@@ -1224,7 +1224,7 @@ mod tests {
         do x.read { } // Must be able to get in as a reader in the meantime
         do x.write_cond |cond| { // Or as another writer
             let woken = cond.signal();
-            assert woken;
+            fail_unless!(woken);
         }
         let _ = port.recv(); // Wait until child wakes up
         do x.read { } // Just for good measure
@@ -1263,7 +1263,7 @@ mod tests {
         for ports.each |port| { let _ = port.recv(); }
         do lock_cond(x, dg2) |cond| {
             let num_woken = cond.broadcast();
-            assert num_woken == num_waiters;
+            fail_unless!(num_woken == num_waiters);
         }
         // wait until all children wake up
         for ports.each |port| { let _ = port.recv(); }
@@ -1290,7 +1290,7 @@ mod tests {
                 fail!();
             }
         };
-        assert result.is_err();
+        fail_unless!(result.is_err());
         // child task must have finished by the time try returns
         do lock_rwlock_in_mode(x, mode2) { }
     }

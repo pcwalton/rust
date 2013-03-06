@@ -835,7 +835,7 @@ pub fn extract_variant_args(bcx: block,
     let ccx = *bcx.fcx.ccx;
     let enum_ty_substs = match ty::get(node_id_type(bcx, pat_id)).sty {
       ty::ty_enum(id, ref substs) => {
-        assert id == enm;
+        fail_unless!(id == enm);
         /*bad*/copy (*substs).tps
       }
       _ => bcx.sess().bug(~"extract_variant_args: pattern has non-enum type")
@@ -1238,7 +1238,7 @@ pub fn compile_submatch(bcx: block,
     /*
       For an empty match, a fall-through case must exist
      */
-    assert(m.len() > 0u || chk.is_some());
+    fail_unless!((m.len() > 0u || chk.is_some()));
     let _icx = bcx.insn_ctxt("match::compile_submatch");
     let mut bcx = bcx;
     let tcx = bcx.tcx(), dm = tcx.def_map;
@@ -1378,7 +1378,7 @@ pub fn compile_submatch(bcx: block,
                     let discrimptr = GEPi(bcx, enumptr, [0u, 0u]);
 
 
-                    assert variants.len() > 1;
+                    fail_unless!(variants.len() > 1);
                     let min_discrim = do variants.foldr(0) |&x, y| {
                         int::min(x.disr_val, y)
                     };
