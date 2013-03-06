@@ -589,9 +589,6 @@ pub enum expr_ {
     expr_ret(Option<@expr>),
     expr_log(log_level, @expr, @expr),
 
-    /* just an assert */
-    expr_assert(@expr),
-
     expr_mac(mac),
 
     // A struct literal expression.
