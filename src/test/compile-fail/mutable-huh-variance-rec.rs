@@ -15,11 +15,11 @@ struct S {
 }
 
 fn main() {
-    let v = S {g: ~[0]};
+    let mut v = S {g: ~[0]};
 
-    fn f(&&v: {g: ~[const int]}) {
+    fn f(&mut v: S) {
         v.g = ~[3]
     }
 
-    f(v);
+    f(&mut v);
 }

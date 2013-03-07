@@ -13,7 +13,10 @@
 
 type a = &int;
 type b = @a;
-type c = {f: @b};
+
+struct c {
+    f: @b
+}
 
 trait set_f {
     fn set_f_ok(b: @b/&self);

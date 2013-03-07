@@ -8,16 +8,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-type item_ty_yes0 = {
+struct item_ty_yes0 {
     x: &uint
-};
+}
 
-type item_ty_yes1 = {
+struct item_ty_yes1 {
     x: &self/uint
-};
+}
 
-type item_ty_yes2 = {
+struct item_ty_yes2 {
     x: &foo/uint //~ ERROR named regions other than `self` are not allowed as part of a type declaration
-};
+}
 
 fn main() {}

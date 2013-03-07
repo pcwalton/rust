@@ -8,6 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+struct S {
+    x: fn(uint)
+}
+
 pure fn range(from: uint, to: uint, f: fn(uint) -> bool) {
     let mut i = from;
     while i < to {
@@ -22,7 +26,7 @@ pure fn range2(from: uint, to: uint, f: fn(uint)) {
     }
 }
 
-pure fn range3(from: uint, to: uint, f: {x: fn(uint)}) {
+pure fn range3(from: uint, to: uint, f: S) {
     for range(from, to) |i| {
         (f.x)(i*2u); //~ ERROR access to impure function prohibited
     }
