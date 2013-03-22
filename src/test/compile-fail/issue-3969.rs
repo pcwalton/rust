@@ -13,7 +13,7 @@ struct Bike {
 }
 
 trait BikeMethods {
-    fn woops(&const self) -> ~str;
+    fn woops() -> ~str;
 }
 
 impl BikeMethods for Bike {
