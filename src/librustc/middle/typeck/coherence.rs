@@ -800,7 +800,7 @@ pub impl CoherenceChecker {
     }
 
     fn span_of_impl(&self, implementation: @Impl) -> span {
-        fail_unless!(implementation.did.crate == local_crate);
+        assert!(implementation.did.crate == local_crate);
         match self.crate_context.tcx.items.find(&implementation.did.node) {
             Some(&node_item(item, _)) => {
                 return item.span;

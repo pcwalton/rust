@@ -1335,7 +1335,7 @@ pub mod test {
                     stream as *libc::c_void);
                 let err_msg = get_last_err_info(test_loop);
                 debug!(err_msg);
-                fail_unless!(false);
+                assert!(false);
             }
             debug!(~"finishing on_connect_cb");
         }
@@ -1407,12 +1407,12 @@ pub mod test {
                 }
                 else {
                    debug!(~"tcp_connect() failure");
-                   fail_unless!(false);
+                   assert!(false);
                 }
             }
             else {
                 debug!(~"tcp_init() failure");
-                fail_unless!(false);
+                assert!(false);
             }
             loop_delete(test_loop);
         }
@@ -1488,7 +1488,7 @@ pub mod test {
                         debug!(get_last_err_info(
                             get_loop_for_uv_handle(client_stream_ptr
                                 as *libc::c_void)));
-                        fail_unless!(false);
+                        assert!(false);
                     }
                 }
                 else {
@@ -1548,19 +1548,19 @@ pub mod test {
                     else {
                         debug!("server_connection_cb: bad read:%d",
                                         read_result as int);
-                        fail_unless!(false);
+                        assert!(false);
                     }
                 }
                 else {
                     debug!("server_connection_cb: bad accept: %d",
                                 accept_result as int);
-                    fail_unless!(false);
+                    assert!(false);
                 }
             }
             else {
                 debug!("server_connection_cb: bad client init: %d",
                             client_init_result as int);
-                fail_unless!(false);
+                assert!(false);
             }
         }
     }
@@ -1679,25 +1679,25 @@ pub mod test {
                         else {
                             debug!("uv_async_init failure: %d",
                                     async_result as int);
-                            fail_unless!(false);
+                            assert!(false);
                         }
                     }
                     else {
                         debug!("non-zero result on uv_listen: %d",
                                     listen_result as int);
-                        fail_unless!(false);
+                        assert!(false);
                     }
                 }
                 else {
                     debug!("non-zero result on uv_tcp_bind: %d",
                                 bind_result as int);
-                    fail_unless!(false);
+                    assert!(false);
                 }
             }
             else {
                 debug!("non-zero result on uv_tcp_init: %d",
                             tcp_init_result as int);
-                fail_unless!(false);
+                assert!(false);
             }
             loop_delete(test_loop);
         }
@@ -1745,8 +1745,8 @@ pub mod test {
             let msg_from_client = server_port.recv();
             let msg_from_server = client_port.recv();
 
-            fail_unless!(str::contains(msg_from_client, kill_server_msg));
-            fail_unless!(str::contains(msg_from_server, server_resp_msg));
+            assert!(str::contains(msg_from_client, kill_server_msg));
+            assert!(str::contains(msg_from_server, server_resp_msg));
         }
     }
 
@@ -1790,7 +1790,7 @@ pub mod test {
                     t_name, rust_size, foreign_size as uint);
                 debug!(output);
             }
-            fail_unless!(sizes_match);
+            assert!(sizes_match);
         }
     }
 
@@ -1855,7 +1855,7 @@ pub mod test {
             // .. can't get the uv::ll::sockaddr_in6 to == 28 :/
             // .. so the type always appears to be 32 in size.. which is
             // good, i guess.. better too big than too little
-            fail_unless!((4u+foreign_handle_size as uint) ==
+            assert!((4u+foreign_handle_size as uint) ==
                 rust_handle_size);
         }
     }
@@ -1870,7 +1870,7 @@ pub mod test {
                               foreign_handle_size as uint, rust_handle_size);
             debug!(output);
             // FIXME #1645 .. see note above about struct padding
-            fail_unless!((4u+foreign_handle_size as uint) ==
+            assert!((4u+foreign_handle_size as uint) ==
                 rust_handle_size);
         }
     }
