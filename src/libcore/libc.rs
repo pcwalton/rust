@@ -1096,9 +1096,13 @@ pub mod funcs {
                               -> c_long;
                 unsafe fn strtoul(s: *c_char, endp: **c_char, base: c_int)
                                -> c_ulong;
+                #[fast_ffi]
                 unsafe fn calloc(nobj: size_t, size: size_t) -> *c_void;
+                #[fast_ffi]
                 unsafe fn malloc(size: size_t) -> *c_void;
+                #[fast_ffi]
                 unsafe fn realloc(p: *c_void, size: size_t) -> *c_void;
+                #[fast_ffi]
                 unsafe fn free(p: *c_void);
                 unsafe fn abort() -> !;
                 unsafe fn exit(status: c_int) -> !;

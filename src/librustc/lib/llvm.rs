@@ -694,8 +694,8 @@ pub mod llvm {
         pub unsafe fn LLVMGetGC(Fn: ValueRef) -> *c_char;
         pub unsafe fn LLVMSetGC(Fn: ValueRef, Name: *c_char);
         pub unsafe fn LLVMAddFunctionAttr(Fn: ValueRef,
-                                          PA: c_ulonglong,
-                                          HighPA: c_ulonglong);
+                                          PA: c_uint,
+                                          HighPA: c_uint);
         pub unsafe fn LLVMGetFunctionAttr(Fn: ValueRef) -> c_ulonglong;
         pub unsafe fn LLVMRemoveFunctionAttr(Fn: ValueRef,
                                              PA: c_ulonglong,
