@@ -33,8 +33,8 @@ impl Bar for A {
 
 pub fn main() {
     let a = &A { x: 3 };
-    let afoo = a as &Foo;
-    let abar = a as &Bar;
+    let afoo: &Foo = a;
+    let abar: &Bar = a;
     assert!(afoo.f() == 10);
     assert!(abar.g() == 20);
 }
