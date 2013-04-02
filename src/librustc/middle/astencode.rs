@@ -1129,56 +1129,6 @@ impl ebml_decoder_decoder_helpers for reader::Decoder {
         }
     }
 
-    #[cfg(stage0)]
-    fn read_auto_adjustment(&self, xcx: @ExtendedDecodeContext)
-                         -> ty::AutoAdjustment {
-        do self.read_enum("AutoAdjustment") {
-            do self.read_enum_variant |i| {
-                match i {
-                    0 => {
-                        let region: ty::Region =
-                            do self.read_enum_variant_arg(0) {
-                                Decodable::decode(self)
-                            };
-                        let sigil: ast::Sigil =
-                            do self.read_enum_variant_arg(1) {
-                                Decodable::decode(self)
-                            };
-                        ty::AutoAddEnv(region.tr(xcx), sigil)
-                    }
-                    1 => {
-                        let auto_deref_ref: ty::AutoDerefRef =
-                            do self.read_enum_variant_arg(0) {
-                                Decodable::decode(self)
-                            };
-                        ty::AutoDerefRef(auto_deref_ref.tr(xcx))
-                    }
-                    2 => {
-                        let sigil_and_region: ty::SigilAndRegion =
-                            do self.read_enum_variant_arg(0) {
-                                Decodable::decode(self)
-                            };
-                        let def_id: ast::def_id =
-                            do self.read_enum_variant_arg(1) {
-                                Decodable::decode(self)
-                            };
-                        let substs: ty::substs =
-                            do self.read_enum_variant_arg(2) {
-                                self.read_substs(xcx)
-                            };
-                        ty::AutoObject(sigil_and_region.tr(xcx),
-                                       def_id,
-                                       substs)
-                    }
-                    _ => fail!(~"bad enum variant")
-                }
-            }
-        }
-    }
-
-    #[cfg(stage1)]
-    #[cfg(stage2)]
-    #[cfg(stage3)]
     fn read_auto_adjustment(&self, xcx: @ExtendedDecodeContext)
                          -> ty::AutoAdjustment {
         do self.read_enum("AutoAdjustment") {

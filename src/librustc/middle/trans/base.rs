@@ -462,7 +462,7 @@ pub fn set_always_inline(f: ValueRef) {
 
 pub fn set_fixed_stack_segment(f: ValueRef) {
     unsafe {
-        llvm::LLVMAddFunctionAttr(f, 0, 1 << 1);
+        llvm::LLVMAddFunctionAttr(f, 0, 1 << (39 - 32));
     }
 }
 

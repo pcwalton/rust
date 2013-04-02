@@ -318,7 +318,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
             build_direct_fn(ccx, llwrapfn, foreign_item,
                             &tys, cc);
         } else if attr::attrs_contains_name(foreign_item.attrs, "fast_ffi") {
-            build_fast_ffi_fn(ccx, llwrapfn, *foreign_item, &tys, cc);
+            build_fast_ffi_fn(ccx, llwrapfn, foreign_item, &tys, cc);
         } else {
             let llshimfn = build_shim_fn(ccx, foreign_item,
                                          &tys, cc);
