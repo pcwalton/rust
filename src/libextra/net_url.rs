@@ -416,7 +416,9 @@ fn get_authority(rawurl: &str) ->
     let mut port = None;
 
     let mut colon_count = 0;
-    let mut (pos, begin, end) = (0, 2, len);
+    let mut pos = 0;
+    let mut begin = 2;
+    let mut end = len;
 
     for str::each_chari(rawurl) |i,c| {
         if i < 2 { loop; } // ignore the leading //
