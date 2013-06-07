@@ -618,6 +618,15 @@ pub enum Privacy {
     Public
 }
 
+/// Returns true if the given pattern consists solely of an identifier
+/// and false otherwise.
+pub fn pat_is_ident(pat: @ast::pat) -> bool {
+    match pat.node {
+        ast::pat_ident(*) => true,
+        _ => false,
+    }
+}
+
 // HYGIENE FUNCTIONS
 
 /// Construct an identifier with the given repr and an empty context:

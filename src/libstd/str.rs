@@ -663,7 +663,8 @@ fn each_split_char_inner<'a>(s: &'a str,
     if sep < 128u as char {
         let (b, l) = (sep as u8, len(s));
         let mut done = 0u;
-        let mut (i, start) = (0u, 0u);
+        let mut i = 0u;
+        let mut start = 0u;
         while i < l && done < count {
             if s[i] == b {
                 if allow_empty || start < i {
@@ -725,7 +726,9 @@ fn each_split_inner<'a>(s: &'a str,
                         allow_trailing_empty: bool,
                         it: &fn(&'a str) -> bool) -> bool {
     let l = len(s);
-    let mut (i, start, done) = (0u, 0u, 0u);
+    let mut i = 0u;
+    let mut start = 0u;
+    let mut done = 0u;
     while i < l && done < count {
         let CharRange {ch, next} = char_range_at(s, i);
         if sepfn(ch) {
@@ -750,7 +753,9 @@ fn iter_matches<'a,'b>(s: &'a str, sep: &'b str,
                        f: &fn(uint, uint) -> bool) -> bool {
     let (sep_len, l) = (len(sep), len(s));
     assert!(sep_len > 0u);
-    let mut (i, match_start, match_i) = (0u, 0u, 0u);
+    let mut i = 0u;
+    let mut match_start = 0u;
+    let mut match_i = 0u;
 
     while i < l {
         if s[i] == sep[match_i] {
@@ -977,7 +982,8 @@ pub fn each_split_within<'a>(ss: &'a str,
  * The original string with all occurances of `from` replaced with `to`
  */
 pub fn replace(s: &str, from: &str, to: &str) -> ~str {
-    let mut (result, first) = (~"", true);
+    let mut result = ~"";
+    let mut first = true;
     for iter_between_matches(s, from) |start, end| {
         if first {
             first = false;
@@ -1951,7 +1957,8 @@ pub fn with_capacity(capacity: uint) -> ~str {
 pub fn count_chars(s: &str, start: uint, end: uint) -> uint {
     assert!(is_char_boundary(s, start));
     assert!(is_char_boundary(s, end));
-    let mut (i, len) = (start, 0u);
+    let mut i = start;
+    let mut len = 0u;
     while i < end {
         let next = char_range_at(s, i).next;
         len += 1u;
@@ -1964,7 +1971,8 @@ pub fn count_chars(s: &str, start: uint, end: uint) -> uint {
 /// starting from `start`.
 pub fn count_bytes<'b>(s: &'b str, start: uint, n: uint) -> uint {
     assert!(is_char_boundary(s, start));
-    let mut (end, cnt) = (start, n);
+    let mut end = start;
+    let mut cnt = n;
     let l = len(s);
     while cnt > 0u {
         assert!(end < l);
@@ -2407,7 +2415,8 @@ pub mod raw {
 
     /// Create a Rust string from a null-terminated *u8 buffer
     pub unsafe fn from_buf(buf: *u8) -> ~str {
-        let mut (curr, i) = (buf, 0u);
+        let mut curr = buf;
+        let mut i = 0u;
         while *curr != 0u8 {
             i += 1u;
             curr = ptr::offset(buf, i);
