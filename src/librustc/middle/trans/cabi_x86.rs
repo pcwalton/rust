@@ -17,8 +17,10 @@ use super::cabi::*;
 use super::common::*;
 use super::machine::*;
 
+use core::cast;
+
 struct X86_ABIInfo {
-    ccx: @CrateContext
+    ccx: &'static CrateContext
 }
 
 impl ABIInfo for X86_ABIInfo {
@@ -71,8 +73,10 @@ impl ABIInfo for X86_ABIInfo {
     }
 }
 
-pub fn abi_info(ccx: @CrateContext) -> @ABIInfo {
-    return @X86_ABIInfo {
-        ccx: ccx
-    } as @ABIInfo;
+pub fn abi_info(ccx: &CrateContext) -> @ABIInfo {
+    unsafe {
+        return @X86_ABIInfo {
+            ccx: cast::transmute(ccx),
+        } as @ABIInfo;
+    }
 }

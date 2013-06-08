@@ -46,7 +46,7 @@ use syntax::abi::{X86, X86_64, Arm, Mips};
 use syntax::abi::{RustIntrinsic, Rust, Stdcall, Fastcall,
                   Cdecl, Aapcs, C};
 
-fn abi_info(ccx: @CrateContext) -> @cabi::ABIInfo {
+fn abi_info(ccx: &CrateContext) -> @cabi::ABIInfo {
     return match ccx.sess.targ_cfg.arch {
         X86 => cabi_x86::abi_info(ccx),
         X86_64 => cabi_x86_64::abi_info(),
@@ -55,7 +55,7 @@ fn abi_info(ccx: @CrateContext) -> @cabi::ABIInfo {
     }
 }
 
-pub fn link_name(ccx: @CrateContext, i: @ast::foreign_item) -> @~str {
+pub fn link_name(ccx: &CrateContext, i: @ast::foreign_item) -> @~str {
      match attr::first_attr_value_str_by_name(i.attrs, "link_name") {
         None => ccx.sess.str_of(i.ident),
         Some(ln) => ln,
@@ -89,7 +89,7 @@ struct LlvmSignature {
     sret: bool,
 }
 
-fn foreign_signature(ccx: @CrateContext, fn_sig: &ty::FnSig)
+fn foreign_signature(ccx: &CrateContext, fn_sig: &ty::FnSig)
                      -> LlvmSignature {
     /*!
      * The ForeignSignature is the LLVM types of the arguments/return type
@@ -108,7 +108,7 @@ fn foreign_signature(ccx: @CrateContext, fn_sig: &ty::FnSig)
     }
 }
 
-fn shim_types(ccx: @CrateContext, id: ast::node_id) -> ShimTypes {
+fn shim_types(ccx: &CrateContext, id: ast::node_id) -> ShimTypes {
     let fn_sig = match ty::get(ty::node_id_to_type(ccx.tcx, id)).sty {
         ty::ty_bare_fn(ref fn_ty) => copy fn_ty.sig,
         _ => ccx.sess.bug("c_arg_and_ret_lltys called on non-function type")
@@ -141,7 +141,7 @@ type shim_ret_builder<'self> =
               llargbundle: ValueRef,
               llretval: ValueRef);
 
-fn build_shim_fn_(ccx: @CrateContext,
+fn build_shim_fn_(ccx: &CrateContext,
                   shim_name: ~str,
                   llbasefn: ValueRef,
                   tys: &ShimTypes,
@@ -184,7 +184,7 @@ type wrap_ret_builder<'self> = &'self fn(bcx: block,
                                          tys: &ShimTypes,
                                          llargbundle: ValueRef);
 
-fn build_wrap_fn_(ccx: @CrateContext,
+fn build_wrap_fn_(ccx: &CrateContext,
                   tys: &ShimTypes,
                   llshimfn: ValueRef,
                   llwrapfn: ValueRef,
@@ -198,7 +198,7 @@ fn build_wrap_fn_(ccx: @CrateContext,
     // Patch up the return type if it's not immediate and we're returning via
     // the C ABI.
     if needs_c_return && !ty::type_is_immediate(tys.fn_sig.output) {
-        let lloutputtype = type_of::type_of(*fcx.ccx, tys.fn_sig.output);
+        let lloutputtype = type_of::type_of(fcx.ccx, tys.fn_sig.output);
         fcx.llretptr = Some(alloca(raw_block(fcx, false, fcx.llstaticallocas),
                                    lloutputtype));
     }
@@ -282,7 +282,7 @@ fn build_wrap_fn_(ccx: @CrateContext,
 // round of copies.  (In fact, the shim function itself is
 // unnecessary). We used to do this, in fact, and will perhaps do so
 // in the future.
-pub fn trans_foreign_mod(ccx: @CrateContext,
+pub fn trans_foreign_mod(ccx: &CrateContext,
                          path: &ast_map::path,
                          foreign_mod: &ast::foreign_mod) {
     let _icx = ccx.insn_ctxt("foreign::trans_foreign_mod");
@@ -350,7 +350,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
         }
     }
 
-    fn build_foreign_fn(ccx: @CrateContext,
+    fn build_foreign_fn(ccx: &CrateContext,
                         id: ast::node_id,
                         foreign_item: @ast::foreign_item,
                         cc: lib::llvm::CallConv) {
@@ -367,7 +367,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
         }
     }
 
-    fn build_shim_fn(ccx: @CrateContext,
+    fn build_shim_fn(ccx: &CrateContext,
                      foreign_item: @ast::foreign_item,
                      tys: &ShimTypes,
                      cc: lib::llvm::CallConv)
@@ -415,7 +415,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
                        build_ret)
     }
 
-    fn base_fn(ccx: @CrateContext,
+    fn base_fn(ccx: &CrateContext,
                lname: &str,
                tys: &ShimTypes,
                cc: lib::llvm::CallConv)
@@ -428,7 +428,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
 
     // FIXME (#2535): this is very shaky and probably gets ABIs wrong all
     // over the place
-    fn build_direct_fn(ccx: @CrateContext,
+    fn build_direct_fn(ccx: &CrateContext,
                        decl: ValueRef,
                        item: @ast::foreign_item,
                        tys: &ShimTypes,
@@ -455,7 +455,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
 
     // FIXME (#2535): this is very shaky and probably gets ABIs wrong all
     // over the place
-    fn build_fast_ffi_fn(ccx: @CrateContext,
+    fn build_fast_ffi_fn(ccx: &CrateContext,
                          decl: ValueRef,
                          item: @ast::foreign_item,
                          tys: &ShimTypes,
@@ -482,7 +482,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
         finish_fn(fcx, lltop);
     }
 
-    fn build_wrap_fn(ccx: @CrateContext,
+    fn build_wrap_fn(ccx: &CrateContext,
                      tys: &ShimTypes,
                      llshimfn: ValueRef,
                      llwrapfn: ValueRef) {
@@ -546,7 +546,7 @@ pub fn trans_foreign_mod(ccx: @CrateContext,
     }
 }
 
-pub fn trans_intrinsic(ccx: @CrateContext,
+pub fn trans_intrinsic(ccx: &CrateContext,
                        decl: ValueRef,
                        item: @ast::foreign_item,
                        path: ast_map::path,
@@ -1202,7 +1202,7 @@ pub fn trans_intrinsic(ccx: @CrateContext,
  *         R(args->z, NULL, args->x, args->y);
  *     }
  */
-pub fn trans_foreign_fn(ccx: @CrateContext,
+pub fn trans_foreign_fn(ccx: &CrateContext,
                         path: ast_map::path,
                         decl: &ast::fn_decl,
                         body: &ast::blk,
@@ -1210,7 +1210,7 @@ pub fn trans_foreign_fn(ccx: @CrateContext,
                         id: ast::node_id) {
     let _icx = ccx.insn_ctxt("foreign::build_foreign_fn");
 
-    fn build_rust_fn(ccx: @CrateContext,
+    fn build_rust_fn(ccx: &CrateContext,
                      path: ast_map::path,
                      decl: &ast::fn_decl,
                      body: &ast::blk,
@@ -1238,7 +1238,7 @@ pub fn trans_foreign_fn(ccx: @CrateContext,
         return llfndecl;
     }
 
-    fn build_shim_fn(ccx: @CrateContext,
+    fn build_shim_fn(ccx: &CrateContext,
                      path: ast_map::path,
                      llrustfn: ValueRef,
                      tys: &ShimTypes)
@@ -1323,7 +1323,7 @@ pub fn trans_foreign_fn(ccx: @CrateContext,
                        build_ret)
     }
 
-    fn build_wrap_fn(ccx: @CrateContext,
+    fn build_wrap_fn(ccx: &CrateContext,
                      llshimfn: ValueRef,
                      llwrapfn: ValueRef,
                      tys: &ShimTypes) {
@@ -1376,7 +1376,7 @@ pub fn trans_foreign_fn(ccx: @CrateContext,
     build_wrap_fn(ccx, llshimfn, llwrapfn, &tys)
 }
 
-pub fn register_foreign_fn(ccx: @CrateContext,
+pub fn register_foreign_fn(ccx: &CrateContext,
                            sp: span,
                            path: ast_map::path,
                            node_id: ast::node_id,

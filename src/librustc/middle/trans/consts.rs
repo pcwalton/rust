@@ -34,7 +34,7 @@ use core::libc::c_uint;
 use core::str;
 use syntax::{ast, ast_util, ast_map};
 
-pub fn const_lit(cx: @CrateContext, e: @ast::expr, lit: ast::lit)
+pub fn const_lit(cx: &CrateContext, e: @ast::expr, lit: ast::lit)
     -> ValueRef {
     let _icx = cx.insn_ctxt("trans_lit");
     match lit.node {
@@ -73,7 +73,7 @@ pub fn const_lit(cx: @CrateContext, e: @ast::expr, lit: ast::lit)
     }
 }
 
-pub fn const_ptrcast(cx: @CrateContext, a: ValueRef, t: TypeRef) -> ValueRef {
+pub fn const_ptrcast(cx: &CrateContext, a: ValueRef, t: TypeRef) -> ValueRef {
     unsafe {
         let b = llvm::LLVMConstPointerCast(a, T_ptr(t));
         assert!(cx.const_globals.insert(b as int, a));
@@ -81,7 +81,7 @@ pub fn const_ptrcast(cx: @CrateContext, a: ValueRef, t: TypeRef) -> ValueRef {
     }
 }
 
-pub fn const_vec(cx: @CrateContext, e: @ast::expr, es: &[@ast::expr])
+pub fn const_vec(cx: &CrateContext, e: @ast::expr, es: &[@ast::expr])
     -> (ValueRef, ValueRef, TypeRef) {
     unsafe {
         let vec_ty = ty::expr_ty(cx.tcx, e);
@@ -100,7 +100,7 @@ pub fn const_vec(cx: @CrateContext, e: @ast::expr, es: &[@ast::expr])
     }
 }
 
-fn const_addr_of(cx: @CrateContext, cv: ValueRef) -> ValueRef {
+fn const_addr_of(cx: &CrateContext, cv: ValueRef) -> ValueRef {
     unsafe {
         let gv = do str::as_c_str("const") |name| {
             llvm::LLVMAddGlobal(cx.llmod, val_ty(cv), name)
@@ -112,7 +112,7 @@ fn const_addr_of(cx: @CrateContext, cv: ValueRef) -> ValueRef {
     }
 }
 
-fn const_deref_ptr(cx: @CrateContext, v: ValueRef) -> ValueRef {
+fn const_deref_ptr(cx: &CrateContext, v: ValueRef) -> ValueRef {
     let v = match cx.const_globals.find(&(v as int)) {
         Some(&v) => v,
         None => v
@@ -123,13 +123,13 @@ fn const_deref_ptr(cx: @CrateContext, v: ValueRef) -> ValueRef {
     }
 }
 
-fn const_deref_newtype(cx: @CrateContext, v: ValueRef, t: ty::t)
+fn const_deref_newtype(cx: &CrateContext, v: ValueRef, t: ty::t)
     -> ValueRef {
     let repr = adt::represent_type(cx, t);
     adt::const_get_field(cx, repr, v, 0, 0)
 }
 
-fn const_deref(cx: @CrateContext, v: ValueRef, t: ty::t, explicit: bool)
+fn const_deref(cx: &CrateContext, v: ValueRef, t: ty::t, explicit: bool)
     -> (ValueRef, ty::t) {
     match ty::deref(cx.tcx, t, explicit) {
         Some(ref mt) => {
@@ -155,7 +155,7 @@ fn const_deref(cx: @CrateContext, v: ValueRef, t: ty::t, explicit: bool)
     }
 }
 
-pub fn get_const_val(cx: @CrateContext, def_id: ast::def_id) -> ValueRef {
+pub fn get_const_val(cx: &CrateContext, def_id: ast::def_id) -> ValueRef {
     let mut def_id = def_id;
     if !ast_util::is_local(def_id) ||
        !cx.const_values.contains_key(&def_id.node) {
@@ -174,7 +174,7 @@ pub fn get_const_val(cx: @CrateContext, def_id: ast::def_id) -> ValueRef {
     cx.const_values.get_copy(&def_id.node)
 }
 
-pub fn const_expr(cx: @CrateContext, e: @ast::expr) -> ValueRef {
+pub fn const_expr(cx: &CrateContext, e: @ast::expr) -> ValueRef {
     let mut llconst = const_expr_unadjusted(cx, e);
     let ety = ty::expr_ty(cx.tcx, e);
     match cx.tcx.adjustments.find(&e.id) {
@@ -246,7 +246,7 @@ pub fn const_expr(cx: @CrateContext, e: @ast::expr) -> ValueRef {
     llconst
 }
 
-fn const_expr_unadjusted(cx: @CrateContext, e: @ast::expr) -> ValueRef {
+fn const_expr_unadjusted(cx: &CrateContext, e: @ast::expr) -> ValueRef {
     unsafe {
         let _icx = cx.insn_ctxt("const_expr");
         return match e.node {
@@ -580,7 +580,7 @@ fn const_expr_unadjusted(cx: @CrateContext, e: @ast::expr) -> ValueRef {
     }
 }
 
-pub fn trans_const(ccx: @CrateContext, _e: @ast::expr, id: ast::node_id) {
+pub fn trans_const(ccx: &CrateContext, _e: @ast::expr, id: ast::node_id) {
     unsafe {
         let _icx = ccx.insn_ctxt("trans_const");
         let g = base::get_item_val(ccx, id);

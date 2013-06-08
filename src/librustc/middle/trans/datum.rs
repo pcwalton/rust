@@ -105,6 +105,7 @@ use middle::ty;
 use util::common::indenter;
 use util::ppaux::ty_to_str;
 
+use core::cast;
 use core::uint;
 use syntax::ast;
 use syntax::codemap::span;
@@ -844,8 +845,10 @@ impl DatumBlock {
         rslt(self.bcx, self.datum.to_appropriate_llval(self.bcx))
     }
 
-    pub fn ccx(&self) -> @CrateContext {
-        self.bcx.ccx()
+    pub fn ccx(&self) -> &'static CrateContext {
+        unsafe {
+            cast::transmute(self.bcx.ccx())
+        }
     }
 
     pub fn tcx(&self) -> ty::ctxt {

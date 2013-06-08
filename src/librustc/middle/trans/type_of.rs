@@ -21,21 +21,21 @@ use util::ppaux;
 
 use syntax::ast;
 
-pub fn arg_is_indirect(_: @CrateContext, arg_ty: &ty::t) -> bool {
+pub fn arg_is_indirect(_: &CrateContext, arg_ty: &ty::t) -> bool {
     !ty::type_is_immediate(*arg_ty)
 }
 
-pub fn type_of_explicit_arg(ccx: @CrateContext, arg_ty: &ty::t) -> TypeRef {
+pub fn type_of_explicit_arg(ccx: &CrateContext, arg_ty: &ty::t) -> TypeRef {
     let llty = type_of(ccx, *arg_ty);
     if arg_is_indirect(ccx, arg_ty) {T_ptr(llty)} else {llty}
 }
 
-pub fn type_of_explicit_args(ccx: @CrateContext,
+pub fn type_of_explicit_args(ccx: &CrateContext,
                              inputs: &[ty::t]) -> ~[TypeRef] {
     inputs.map(|arg_ty| type_of_explicit_arg(ccx, arg_ty))
 }
 
-pub fn type_of_fn(cx: @CrateContext, inputs: &[ty::t], output: ty::t)
+pub fn type_of_fn(cx: &CrateContext, inputs: &[ty::t], output: ty::t)
                -> TypeRef {
     unsafe {
         let mut atys: ~[TypeRef] = ~[];
@@ -64,7 +64,7 @@ pub fn type_of_fn(cx: @CrateContext, inputs: &[ty::t], output: ty::t)
 }
 
 // Given a function type and a count of ty params, construct an llvm type
-pub fn type_of_fn_from_ty(cx: @CrateContext, fty: ty::t) -> TypeRef {
+pub fn type_of_fn_from_ty(cx: &CrateContext, fty: ty::t) -> TypeRef {
     match ty::get(fty).sty {
         ty::ty_closure(ref f) => type_of_fn(cx, f.sig.inputs, f.sig.output),
         ty::ty_bare_fn(ref f) => type_of_fn(cx, f.sig.inputs, f.sig.output),
@@ -74,7 +74,7 @@ pub fn type_of_fn_from_ty(cx: @CrateContext, fty: ty::t) -> TypeRef {
     }
 }
 
-pub fn type_of_non_gc_box(cx: @CrateContext, t: ty::t) -> TypeRef {
+pub fn type_of_non_gc_box(cx: &CrateContext, t: ty::t) -> TypeRef {
     assert!(!ty::type_needs_infer(t));
 
     let t_norm = ty::normalize_ty(cx.tcx, t);
@@ -107,7 +107,7 @@ pub fn type_of_non_gc_box(cx: @CrateContext, t: ty::t) -> TypeRef {
 //     recursive types. For example, `static_size_of_enum()` relies on this
 //     behavior.
 
-pub fn sizing_type_of(cx: @CrateContext, t: ty::t) -> TypeRef {
+pub fn sizing_type_of(cx: &CrateContext, t: ty::t) -> TypeRef {
     match cx.llsizingtypes.find(&t) {
         Some(t) => return *t,
         None => ()
@@ -177,7 +177,7 @@ pub fn sizing_type_of(cx: @CrateContext, t: ty::t) -> TypeRef {
 }
 
 // NB: If you update this, be sure to update `sizing_type_of()` as well.
-pub fn type_of(cx: @CrateContext, t: ty::t) -> TypeRef {
+pub fn type_of(cx: &CrateContext, t: ty::t) -> TypeRef {
     debug!("type_of %?: %?", t, ty::get(t));
 
     // Check the cache.
@@ -310,7 +310,7 @@ pub fn type_of(cx: @CrateContext, t: ty::t) -> TypeRef {
 // Want refinements! (Or case classes, I guess
 pub enum named_ty { a_struct, an_enum }
 
-pub fn llvm_type_name(cx: @CrateContext,
+pub fn llvm_type_name(cx: &CrateContext,
                       what: named_ty,
                       did: ast::def_id,
                       tps: &[ty::t]) -> ~str {
@@ -330,18 +330,18 @@ pub fn llvm_type_name(cx: @CrateContext,
     );
 }
 
-pub fn type_of_dtor(ccx: @CrateContext, self_ty: ty::t) -> TypeRef {
+pub fn type_of_dtor(ccx: &CrateContext, self_ty: ty::t) -> TypeRef {
     T_fn([T_ptr(type_of(ccx, self_ty))] /* self */, T_nil())
 }
 
-pub fn type_of_rooted(ccx: @CrateContext, t: ty::t) -> TypeRef {
+pub fn type_of_rooted(ccx: &CrateContext, t: ty::t) -> TypeRef {
     let addrspace = base::get_tydesc(ccx, t).addrspace;
     debug!("type_of_rooted %s in addrspace %u",
            ppaux::ty_to_str(ccx.tcx, t), addrspace as uint);
     return T_root(type_of(ccx, t), addrspace);
 }
 
-pub fn type_of_glue_fn(ccx: @CrateContext, t: ty::t) -> TypeRef {
+pub fn type_of_glue_fn(ccx: &CrateContext, t: ty::t) -> TypeRef {
     let tydescpp = T_ptr(T_ptr(ccx.tydesc_type));
     let llty = T_ptr(type_of(ccx, t));
     return T_fn([T_ptr(T_nil()), tydescpp, llty], T_nil());

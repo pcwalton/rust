@@ -171,7 +171,7 @@ pub enum Dest {
 }
 
 impl Dest {
-    pub fn to_str(&self, ccx: @CrateContext) -> ~str {
+    pub fn to_str(&self, ccx: &CrateContext) -> ~str {
         match *self {
             SaveIn(v) => fmt!("SaveIn(%s)", val_str(ccx.tn, v)),
             Ignore => ~"Ignore"
@@ -949,7 +949,7 @@ fn trans_lvalue_unadjusted(bcx: block, expr: @ast::expr) -> DatumBlock {
             ast::def_const(did) => {
                 let const_ty = expr_ty(bcx, ref_expr);
 
-                fn get_did(ccx: @CrateContext, did: ast::def_id)
+                fn get_did(ccx: &CrateContext, did: ast::def_id)
                     -> ast::def_id {
                     if did.crate != ast::local_crate {
                         inline::maybe_instantiate_inline(ccx, did, true)

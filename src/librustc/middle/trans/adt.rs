@@ -110,7 +110,7 @@ pub fn represent_node(bcx: block, node: ast::node_id) -> @Repr {
 }
 
 /// Decides how to represent a given type.
-pub fn represent_type(cx: @CrateContext, t: ty::t) -> @Repr {
+pub fn represent_type(cx: &CrateContext, t: ty::t) -> @Repr {
     debug!("Representing: %s", ty_to_str(cx.tcx, t));
     match cx.adt_reprs.find(&t) {
         Some(repr) => return *repr,
@@ -122,7 +122,7 @@ pub fn represent_type(cx: @CrateContext, t: ty::t) -> @Repr {
     return repr;
 }
 
-fn represent_type_uncached(cx: @CrateContext, t: ty::t) -> Repr {
+fn represent_type_uncached(cx: &CrateContext, t: ty::t) -> Repr {
     match ty::get(t).sty {
         ty::ty_tup(ref elems) => {
             return Univariant(mk_struct(cx, *elems, false), false)
@@ -141,7 +141,7 @@ fn represent_type_uncached(cx: @CrateContext, t: ty::t) -> Repr {
         ty::ty_enum(def_id, ref substs) => {
             struct Case { discr: int, tys: ~[ty::t] };
             impl Case {
-                fn is_zerolen(&self, cx: @CrateContext) -> bool {
+                fn is_zerolen(&self, cx: &CrateContext) -> bool {
                     mk_struct(cx, self.tys, false).size == 0
                 }
                 fn find_ptr(&self) -> Option<uint> {
@@ -210,7 +210,7 @@ fn represent_type_uncached(cx: @CrateContext, t: ty::t) -> Repr {
     }
 }
 
-fn mk_struct(cx: @CrateContext, tys: &[ty::t], packed: bool) -> Struct {
+fn mk_struct(cx: &CrateContext, tys: &[ty::t], packed: bool) -> Struct {
     let lltys = tys.map(|&ty| type_of::sizing_type_of(cx, ty));
     let llty_rec = T_struct(lltys, packed);
     Struct {
@@ -226,14 +226,14 @@ fn mk_struct(cx: @CrateContext, tys: &[ty::t], packed: bool) -> Struct {
  * All nominal types are LLVM structs, in order to be able to use
  * forward-declared opaque types to prevent circularity in `type_of`.
  */
-pub fn fields_of(cx: @CrateContext, r: &Repr) -> ~[TypeRef] {
+pub fn fields_of(cx: &CrateContext, r: &Repr) -> ~[TypeRef] {
     generic_fields_of(cx, r, false)
 }
 /// Like `fields_of`, but for `type_of::sizing_type_of` (q.v.).
-pub fn sizing_fields_of(cx: @CrateContext, r: &Repr) -> ~[TypeRef] {
+pub fn sizing_fields_of(cx: &CrateContext, r: &Repr) -> ~[TypeRef] {
     generic_fields_of(cx, r, true)
 }
-fn generic_fields_of(cx: @CrateContext, r: &Repr, sizing: bool)
+fn generic_fields_of(cx: &CrateContext, r: &Repr, sizing: bool)
     -> ~[TypeRef] {
     match *r {
         CEnum(*) => ~[T_enum_discrim(cx)],
@@ -267,7 +267,7 @@ fn generic_fields_of(cx: @CrateContext, r: &Repr, sizing: bool)
     }
 }
 
-fn struct_llfields(cx: @CrateContext, st: &Struct, sizing: bool)
+fn struct_llfields(cx: &CrateContext, st: &Struct, sizing: bool)
     -> ~[TypeRef] {
     if sizing {
         st.fields.map(|&ty| type_of::sizing_type_of(cx, ty))
@@ -493,7 +493,7 @@ pub fn trans_drop_flag_ptr(bcx: block, r: &Repr, val: ValueRef) -> ValueRef {
  * this could be changed in the future to avoid allocating unnecessary
  * space after values of shorter-than-maximum cases.
  */
-pub fn trans_const(ccx: @CrateContext, r: &Repr, discr: int,
+pub fn trans_const(ccx: &CrateContext, r: &Repr, discr: int,
                    vals: &[ValueRef]) -> ValueRef {
     match *r {
         CEnum(min, max) => {
@@ -537,7 +537,7 @@ pub fn trans_const(ccx: @CrateContext, r: &Repr, discr: int,
  * a two-element struct will locate it at offset 4, and accesses to it
  * will read the wrong memory.
  */
-fn build_const_struct(ccx: @CrateContext, st: &Struct, vals: &[ValueRef])
+fn build_const_struct(ccx: &CrateContext, st: &Struct, vals: &[ValueRef])
     -> ~[ValueRef] {
     assert_eq!(vals.len(), st.fields.len());
 
@@ -578,7 +578,7 @@ fn padding(size: u64) -> ValueRef {
 fn roundup(x: u64, a: u64) -> u64 { ((x + (a - 1)) / a) * a }
 
 /// Get the discriminant of a constant value.  (Not currently used.)
-pub fn const_get_discrim(ccx: @CrateContext, r: &Repr, val: ValueRef)
+pub fn const_get_discrim(ccx: &CrateContext, r: &Repr, val: ValueRef)
     -> int {
     match *r {
         CEnum(*) => const_to_int(val) as int,
@@ -597,7 +597,7 @@ pub fn const_get_discrim(ccx: @CrateContext, r: &Repr, val: ValueRef)
  * (Not to be confused with `common::const_get_elt`, which operates on
  * raw LLVM-level structs and arrays.)
  */
-pub fn const_get_field(ccx: @CrateContext, r: &Repr, val: ValueRef,
+pub fn const_get_field(ccx: &CrateContext, r: &Repr, val: ValueRef,
                        _discr: int, ix: uint) -> ValueRef {
     match *r {
         CEnum(*) => ccx.sess.bug("element access in C-like enum const"),
@@ -608,7 +608,7 @@ pub fn const_get_field(ccx: @CrateContext, r: &Repr, val: ValueRef,
 }
 
 /// Extract field of struct-like const, skipping our alignment padding.
-fn const_struct_field(ccx: @CrateContext, val: ValueRef, ix: uint)
+fn const_struct_field(ccx: &CrateContext, val: ValueRef, ix: uint)
     -> ValueRef {
     // Get the ix-th non-undef element of the struct.
     let mut real_ix = 0; // actual position in the struct

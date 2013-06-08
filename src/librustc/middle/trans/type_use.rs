@@ -33,6 +33,7 @@ use middle::trans::inline;
 use middle::ty;
 use middle::typeck;
 
+use core::cast;
 use core::iterator::IteratorUtil;
 use core::option::{Some, None};
 use core::uint;
@@ -52,11 +53,11 @@ pub static use_repr: uint = 1;   /* Dependency on size/alignment/mode and
 pub static use_tydesc: uint = 2; /* Takes the tydesc, or compares */
 
 pub struct Context {
-    ccx: @CrateContext,
+    ccx: &'static CrateContext,
     uses: @mut ~[type_uses]
 }
 
-pub fn type_uses_for(ccx: @CrateContext, fn_id: def_id, n_tps: uint)
+pub fn type_uses_for(ccx: &CrateContext, fn_id: def_id, n_tps: uint)
     -> @~[type_uses] {
     match ccx.type_use_cache.find(&fn_id) {
       Some(uses) => return *uses,
@@ -72,9 +73,11 @@ pub fn type_uses_for(ccx: @CrateContext, fn_id: def_id, n_tps: uint)
     // Conservatively assume full use for recursive loops
     ccx.type_use_cache.insert(fn_id, @vec::from_elem(n_tps, 3u));
 
-    let cx = Context {
-        ccx: ccx,
-        uses: @mut vec::from_elem(n_tps, 0)
+    let cx = unsafe {
+        Context {
+            ccx: cast::transmute(ccx),
+            uses: @mut vec::from_elem(n_tps, 0)
+        }
     };
     match ty::get(ty::lookup_item_type(cx.ccx.tcx, fn_id).ty).sty {
         ty::ty_bare_fn(ty::BareFnTy {sig: ref sig, _}) |

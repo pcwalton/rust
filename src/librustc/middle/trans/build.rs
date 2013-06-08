@@ -550,7 +550,7 @@ pub fn AtomicLoad(cx: block, PointerVal: ValueRef, order: AtomicOrdering) -> Val
             return llvm::LLVMGetUndef(ccx.int_type);
         }
         count_insn(cx, "load.atomic");
-        let align = llalign_of_min(*ccx, ccx.int_type);
+        let align = llalign_of_min(ccx, ccx.int_type);
         return llvm::LLVMBuildAtomicLoad(B(cx), PointerVal, noname(), order, align as c_uint);
     }
 }
