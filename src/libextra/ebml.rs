@@ -94,10 +94,10 @@ pub mod reader {
 
     use serialize;
 
-    use core::prelude::*;
     use core::cast::transmute;
     use core::int;
     use core::io;
+    use core::option::{None, Option, Some};
     use core::str;
 
     #[cfg(target_arch = "x86")]
