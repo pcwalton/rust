@@ -98,7 +98,6 @@ pub mod reader {
     use core::int;
     use core::io;
     use core::option::{None, Option, Some};
-    use core::str;
 
     #[cfg(target_arch = "x86")]
     #[cfg(target_arch = "x86_64")]
