@@ -365,7 +365,7 @@ pub fn expand_stmt(extsbox: @mut SyntaxEnv,
 // from a given pattern and puts them in a mutable
 // array (passed in to the traversal)
 pub fn new_name_finder() -> @Visitor<@mut ~[ast::ident]> {
-    let default_visitor = visit::default_visitor();
+    /*let default_visitor = visit::default_visitor();
     @Visitor{
         visit_pat : |p:@ast::pat,
                      (ident_accum, v): (@mut ~[ast::ident], visit::vt<@mut ~[ast::ident]>)| {
@@ -389,7 +389,8 @@ pub fn new_name_finder() -> @Visitor<@mut ~[ast::ident]> {
             }
         },
         .. *default_visitor
-    }
+    }*/
+    fail!()
 }
 
 pub fn expand_block(extsbox: @mut SyntaxEnv,
