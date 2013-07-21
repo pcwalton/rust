@@ -87,26 +87,174 @@ pub struct Ctx {
     diag: @span_handler,
 }
 
-//pub type vt<'self> = visit::vt<'self, @mut Ctx>;
+impl Ctx {
+    fn extend(@mut self, elt: ident) -> @path {
+        @vec::append(self.path.clone(), [path_name(elt)])
+    }
 
-pub fn extend(cx: @mut Ctx, elt: ident) -> @path {
-    @(vec::append(cx.path.clone(), [path_name(elt)]))
+    fn map_method(@mut self,
+                  impl_did: def_id,
+                  impl_path: @path,
+                  m: @method,
+                  is_provided: bool) {
+        let entry = if is_provided {
+            node_trait_method(@provided(m), impl_did, impl_path)
+        } else {
+            node_method(m, impl_did, impl_path)
+        };
+        self.map.insert(m.id, entry);
+        self.map.insert(m.self_id, node_local(special_idents::self_));
+    }
+
+    fn map_struct_def(@mut self,
+                      struct_def: @ast::struct_def,
+                      parent_node: ast_node,
+                      ident: ast::ident) {
+        let p = self.extend(ident);
+
+        // If this is a tuple-like struct, register the constructor.
+        match struct_def.ctor_id {
+            None => {}
+            Some(ctor_id) => {
+                match parent_node {
+                    node_item(item, _) => {
+                        cx.map.insert(ctor_id,
+                                      node_struct_ctor(struct_def, item, p));
+                    }
+                    _ => fail!("struct def parent wasn't an item")
+                }
+            }
+        }
+    }
+
+    fn map_expr(@mut self, ex: @expr) {
+        self.map.insert(ex.id, node_expr(ex));
+
+        // Expressions which are or might be calls:
+        {
+            let r = ex.get_callee_id();
+            for r.iter().advance |callee_id| {
+                self.map.insert(*callee_id, node_callee_scope(ex));
+            }
+        }
+
+        visit::visit_expr(self as @Visitor<()>, ex, ());
+    }
+
+    fn map_fn(@mut self,
+              fk: &visit::fn_kind,
+              decl: &fn_decl,
+              body: &blk,
+              sp: codemap::span,
+              id: node_id) {
+        for decl.inputs.iter().advance |a| {
+            self.map.insert(a.id, node_arg);
+        }
+        visit::visit_fn(self as @Visitor<()>, fk, decl, body, sp, id, ());
+    }
+
+    fn map_stmt(@mut self, stmt: @stmt) {
+        self.map.insert(stmt_id(stmt), node_stmt(stmt));
+        visit::visit_stmt(self as @Visitor<()>, stmt, ());
+    }
+
+    fn map_block(@mut self, b: &blk) {
+        // clone is FIXME #2543
+        self.map.insert(b.id, node_block((*b).clone()));
+        visit::visit_block(self as @Visitor<()>, b, ());
+    }
+
+    fn map_pat(@mut self, pat: @pat) {
+        match pat.node {
+            pat_ident(_, ref path, _) => {
+                // Note: this is at least *potentially* a pattern...
+                self.map.insert(pat.id,
+                                node_local(ast_util::path_to_ident(path)));
+            }
+            _ => ()
+        }
+
+        visit::visit_pat(self as @Visitor<()>, pat, ());
+    }
 }
 
-pub fn mk_ast_map_visitor() -> @Visitor<@mut Ctx> {
-    /*return visit::mk_vt(@visit::Visitor {
-        visit_item: map_item,
-        visit_expr: map_expr,
-        visit_stmt: map_stmt,
-        visit_fn: map_fn,
-        visit_block: map_block,
-        visit_pat: map_pat,
-        .. *visit::default_visitor()
-    });*/
-    fail!()
-}
+impl Visitor<()> for Ctx {
+    fn visit_item(@mut self, i: @item, _: ()) {
+        // clone is FIXME #2543
+        let item_path = @self.path.clone();
+        self.map.insert(i.id, node_item(i, item_path));
+        match i.node {
+            item_impl(_, _, _, ref ms) => {
+                let impl_did = ast_util::local_def(i.id);
+                for ms.iter().advance |m| {
+                    self.map_method(impl_did, self.extend(i.ident), *m, false)
+                }
+            }
+            item_enum(ref enum_definition, _) => {
+                for (*enum_definition).variants.iter().advance |v| {
+                    // FIXME #2543: bad clone
+                    self.map.insert(v.node.id,
+                                    node_variant((*v).clone(),
+                                                 i,
+                                                 self.extend(i.ident)));
+                }
+            }
+            item_foreign_mod(ref nm) => {
+                for nm.items.iter().advance |nitem| {
+                    // Compute the visibility for this native item.
+                    let visibility = match nitem.vis {
+                        public => public,
+                        private => private,
+                        inherited => i.vis
+                    };
 
-/*
+                    self.map.insert(nitem.id,
+                                    node_foreign_item(*nitem,
+                                                      nm.abis,
+                                                      visibility,
+                                                      // FIXME (#2543)
+                                                      if nm.sort ==
+                                                            ast::named {
+                                                        self.extend(i.ident)
+                                                      } else {
+                                                        // Anonymous extern
+                                                        // mods go in the
+                                                        // parent scope.
+                                                        @cx.path.clone()
+                                                      }));
+                }
+            }
+            item_struct(struct_def, _) => {
+                self.map_struct_def(struct_def,
+                                    node_item(i, item_path),
+                                    i.ident)
+            }
+            item_trait(_, ref traits, ref methods) => {
+                for traits.iter().advance |p| {
+                    self.map.insert(p.ref_id, node_item(i, item_path));
+                }
+                for methods.iter().advance |tm| {
+                    let id = ast_util::trait_method_to_ty_method(tm).id;
+                    let d_id = ast_util::local_def(i.id);
+                    self.map.insert(id,
+                                    node_trait_method(@(*tm).clone(),
+                                                      d_id,
+                                                      item_path));
+                }
+            }
+            _ => {}
+        }
+
+        match i.node {
+            item_mod(_) | item_foreign_mod(_) => {
+                self.path.push(path_mod(i.ident));
+            }
+            _ => self.path.push(path_name(i.ident))
+        }
+        visit::visit_item(self as @Visitor<()>, i, ());
+        self.path.pop();
+    }
+}
 
 pub fn map_crate(diag: @span_handler, c: &crate) -> map {
     let cx = @mut Ctx {
@@ -114,10 +262,9 @@ pub fn map_crate(diag: @span_handler, c: &crate) -> map {
         path: ~[],
         diag: diag,
     };
-    visit::visit_crate(c, (cx, mk_ast_map_visitor()));
+    visit::visit_crate(cx as @Visitor<()>, c, ());
     cx.map
-    fail!()
-}*/
+}
 
 /*
 
@@ -159,159 +306,6 @@ pub fn map_decoded_item(diag: @span_handler,
 
     // visit the item / method contents and add those to the map:
     ii.accept(cx, v);
-}
-
-pub fn map_fn(fk: &visit::fn_kind,
-              decl: &fn_decl,
-              body: &blk,
-              sp: codemap::span,
-              id: node_id,
-              cx: @mut Ctx) {
-    for decl.inputs.iter().advance |a| {
-        cx.map.insert(a.id, node_arg);
-    }
-    visit::visit_fn(fk, decl, body, sp, id, cx);
-}
-
-pub fn map_block(b: &blk, cx: @mut Ctx) {
-    // clone is FIXME #2543
-    cx.map.insert(b.id, node_block((*b).clone()));
-    visit::visit_block(b, cx);
-}
-
-pub fn map_pat(pat: @pat, cx: @mut Ctx) {
-    match pat.node {
-        pat_ident(_, ref path, _) => {
-            // Note: this is at least *potentially* a pattern...
-            cx.map.insert(pat.id, node_local(ast_util::path_to_ident(path)));
-        }
-        _ => ()
-    }
-
-    visit::visit_pat(pat, cx);
-}
-
-pub fn map_method(impl_did: def_id, impl_path: @path,
-                  m: @method, is_provided: bool, cx: @mut Ctx) {
-    let entry = if is_provided {
-        node_trait_method(@provided(m), impl_did, impl_path)
-    } else { node_method(m, impl_did, impl_path) };
-    cx.map.insert(m.id, entry);
-    cx.map.insert(m.self_id, node_local(special_idents::self_));
-}
-
-pub fn map_item(i: @item, cx: @mut Ctx) {
-    // clone is FIXME #2543
-    let item_path = @cx.path.clone();
-    cx.map.insert(i.id, node_item(i, item_path));
-    match i.node {
-        item_impl(_, _, _, ref ms) => {
-            let impl_did = ast_util::local_def(i.id);
-            for ms.iter().advance |m| {
-                map_method(impl_did, extend(cx, i.ident), *m, false, cx);
-            }
-        }
-        item_enum(ref enum_definition, _) => {
-            for (*enum_definition).variants.iter().advance |v| {
-                // FIXME #2543: clone
-                cx.map.insert(v.node.id, node_variant(
-                    (*v).clone(),
-                    i,
-                    extend(cx, i.ident)));
-            }
-        }
-        item_foreign_mod(ref nm) => {
-            for nm.items.iter().advance |nitem| {
-                // Compute the visibility for this native item.
-                let visibility = match nitem.vis {
-                    public => public,
-                    private => private,
-                    inherited => i.vis
-                };
-
-                cx.map.insert(nitem.id,
-                    node_foreign_item(
-                        *nitem,
-                        nm.abis,
-                        visibility,
-                        // FIXME (#2543)
-                        if nm.sort == ast::named {
-                            extend(cx, i.ident)
-                        } else {
-                            // Anonymous extern mods go in the parent scope
-                            @cx.path.clone()
-                        }
-                    )
-                );
-            }
-        }
-        item_struct(struct_def, _) => {
-            map_struct_def(struct_def,
-                           node_item(i, item_path),
-                           i.ident,
-                           cx);
-        }
-        item_trait(_, ref traits, ref methods) => {
-            for traits.iter().advance |p| {
-                cx.map.insert(p.ref_id, node_item(i, item_path));
-            }
-            for methods.iter().advance |tm| {
-                let id = ast_util::trait_method_to_ty_method(tm).id;
-                let d_id = ast_util::local_def(i.id);
-                cx.map.insert(
-                    id,
-                    node_trait_method(@(*tm).clone(), d_id, item_path)
-                );
-            }
-        }
-        _ => ()
-    }
-
-    match i.node {
-        item_mod(_) | item_foreign_mod(_) => {
-            cx.path.push(path_mod(i.ident));
-        }
-        _ => cx.path.push(path_name(i.ident))
-    }
-    visit::visit_item(i, cx);
-    cx.path.pop();
-}
-
-pub fn map_struct_def(struct_def: @ast::struct_def,
-                      parent_node: ast_node,
-                      ident: ast::ident,
-                      cx: @mut Ctx) {
-    let p = extend(cx, ident);
-    // If this is a tuple-like struct, register the constructor.
-    match struct_def.ctor_id {
-        None => {}
-        Some(ctor_id) => {
-            match parent_node {
-                node_item(item, _) => {
-                    cx.map.insert(ctor_id,
-                                  node_struct_ctor(struct_def, item, p));
-                }
-                _ => fail!("struct def parent wasn't an item")
-            }
-        }
-    }
-}
-
-pub fn map_expr(ex: @expr, cx: @mut Ctx) {
-    cx.map.insert(ex.id, node_expr(ex));
-    // Expressions which are or might be calls:
-    {
-        let r = ex.get_callee_id();
-        for r.iter().advance |callee_id| {
-            cx.map.insert(*callee_id, node_callee_scope(ex));
-        }
-    }
-    visit::visit_expr(ex, cx);
-}
-
-pub fn map_stmt(stmt: @stmt, cx: @mut Ctx) {
-    cx.map.insert(stmt_id(stmt), node_stmt(stmt));
-    visit::visit_stmt(stmt, cx);
 }
 
 */

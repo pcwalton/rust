@@ -14,7 +14,7 @@ use ast_util;
 use codemap::{span, dummy_sp};
 use opt_vec;
 use parse::token;
-use visit::Visitor;
+use visit::{SimpleVisitor, SimpleVisitorVisitor, Visitor};
 use visit;
 
 use std::hashmap::HashMap;
@@ -645,13 +645,91 @@ pub trait EachViewItem {
     pub fn each_view_item(&self, f: @fn(&ast::view_item) -> bool) -> bool;
 }
 
+struct EachViewItemData {
+    callback: @fn(&ast::view_item) -> bool,
+}
+
+impl SimpleVisitor for EachViewItemData {
+    fn visit_mod(@mut self, _: &_mod, _: span, _: node_id) {
+        // XXX: Default method.
+    }
+    fn visit_view_item(@mut self, view_item: &view_item) {
+        let _ = (self.callback)(view_item);
+    }
+    fn visit_foreign_item(@mut self, _: @foreign_item) {
+        // XXX: Default method.
+    }
+    fn visit_item(@mut self, _: @item) {
+        // XXX: Default method.
+    }
+    fn visit_local(@mut self, _: @local) {
+        // XXX: Default method.
+    }
+    fn visit_block(@mut self, _: &blk) {
+        // XXX: Default method.
+    }
+    fn visit_stmt(@mut self, _: @stmt) {
+        // XXX: Default method.
+    }
+    fn visit_arm(@mut self, _: &arm) {
+        // XXX: Default method.
+    }
+    fn visit_pat(@mut self, _: @pat) {
+        // XXX: Default method.
+    }
+    fn visit_decl(@mut self, _: @decl) {
+        // XXX: Default method.
+    }
+    fn visit_expr(@mut self, _: @expr) {
+        // XXX: Default method.
+    }
+    fn visit_expr_post(@mut self, _: @expr) {
+        // XXX: Default method.
+    }
+    fn visit_ty(@mut self, _: &Ty) {
+        // XXX: Default method.
+    }
+    fn visit_generics(@mut self, _: &Generics) {
+        // XXX: Default method.
+    }
+    fn visit_fn(@mut self,
+                _: &visit::fn_kind,
+                _: &fn_decl,
+                _: &blk,
+                _: span,
+                _: node_id) {
+        // XXX: Default method.
+    }
+    fn visit_ty_method(@mut self, _: &ty_method) {
+        // XXX: Default method.
+    }
+    fn visit_trait_method(@mut self, _: &trait_method) {
+        // XXX: Default method.
+    }
+    fn visit_struct_def(@mut self,
+                        _: @struct_def,
+                        _: ident,
+                        _: &Generics,
+                        _: node_id) {
+        // XXX: Default method.
+    }
+    fn visit_struct_field(@mut self, _: @struct_field) {
+        // XXX: Default method.
+    }
+    fn visit_struct_method(@mut self, _: @method) {
+        // XXX: Default method.
+    }
+}
+
 impl EachViewItem for ast::crate {
     fn each_view_item(&self, f: @fn(&ast::view_item) -> bool) -> bool {
-        /*let broke = @mut false;
-        let vtor: visit::vt<()> = visit::mk_simple_visitor(@visit::SimpleVisitor {
-            visit_view_item: |vi| { *broke = f(vi); }, ..*visit::default_simple_visitor()
-        });
-        visit::visit_crate(self, ((), vtor));*/
+        let data = @mut EachViewItemData {
+            callback: f,
+        };
+        let visitor = @mut SimpleVisitorVisitor {
+            simple_visitor: data as @SimpleVisitor,
+        };
+        visit::visit_crate(visitor as @Visitor<()>, self, ());
         true
     }
 }
