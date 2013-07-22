@@ -13,12 +13,13 @@ use ast::*;
 use ast;
 use ast_util::{inlined_item_utils, stmt_id};
 use ast_util;
+use codemap::span;
 use codemap;
 use diagnostic::span_handler;
 use parse::token::ident_interner;
 use parse::token::special_idents;
 use print::pprust;
-use visit::Visitor;
+use visit::{Visitor, fn_kind};
 use visit;
 
 use std::hashmap::HashMap;
@@ -118,8 +119,10 @@ impl Ctx {
             Some(ctor_id) => {
                 match parent_node {
                     node_item(item, _) => {
-                        cx.map.insert(ctor_id,
-                                      node_struct_ctor(struct_def, item, p));
+                        self.map.insert(ctor_id,
+                                        node_struct_ctor(struct_def,
+                                                         item,
+                                                         p));
                     }
                     _ => fail!("struct def parent wasn't an item")
                 }
@@ -220,7 +223,7 @@ impl Visitor<()> for Ctx {
                                                         // Anonymous extern
                                                         // mods go in the
                                                         // parent scope.
-                                                        @cx.path.clone()
+                                                        @self.path.clone()
                                                       }));
                 }
             }
@@ -254,6 +257,102 @@ impl Visitor<()> for Ctx {
         visit::visit_item(self as @Visitor<()>, i, ());
         self.path.pop();
     }
+
+    // XXX: Methods below can become default methods.
+
+    fn visit_mod(@mut self, module: &_mod, _: span, _: node_id, _: ()) {
+        visit::visit_mod(self as @Visitor<()>, module, ())
+    }
+
+    fn visit_view_item(@mut self, view_item: &view_item, _: ()) {
+        visit::visit_view_item(self as @Visitor<()>, view_item, ())
+    }
+
+    fn visit_foreign_item(@mut self, foreign_item: @foreign_item, _: ()) {
+        visit::visit_foreign_item(self as @Visitor<()>, foreign_item, ())
+    }
+
+    fn visit_local(@mut self, local: @local, _: ()) {
+        visit::visit_local(self as @Visitor<()>, local, ())
+    }
+
+    fn visit_block(@mut self, block: &blk, _: ()) {
+        visit::visit_block(self as @Visitor<()>, block, ())
+    }
+
+    fn visit_stmt(@mut self, stmt: @stmt, _: ()) {
+        visit::visit_stmt(self as @Visitor<()>, stmt, ())
+    }
+
+    fn visit_arm(@mut self, arm: &arm, _: ()) {
+        visit::visit_arm(self as @Visitor<()>, arm, ())
+    }
+
+    fn visit_pat(@mut self, pat: @pat, _: ()) {
+        visit::visit_pat(self as @Visitor<()>, pat, ())
+    }
+
+    fn visit_decl(@mut self, decl: @decl, _: ()) {
+        visit::visit_decl(self as @Visitor<()>, decl, ())
+    }
+
+    fn visit_expr(@mut self, expr: @expr, _: ()) {
+        visit::visit_expr(self as @Visitor<()>, expr, ())
+    }
+
+    fn visit_expr_post(@mut self, _: @expr, _: ()) {
+        // Empty!
+    }
+
+    fn visit_ty(@mut self, typ: &Ty, _: ()) {
+        visit::visit_ty(self as @Visitor<()>, typ, ())
+    }
+
+    fn visit_generics(@mut self, generics: &Generics, _: ()) {
+        visit::visit_generics(self as @Visitor<()>, generics, ())
+    }
+
+    fn visit_fn(@mut self,
+                function_kind: &fn_kind,
+                function_declaration: &fn_decl,
+                block: &blk,
+                span: span,
+                node_id: node_id,
+                _: ()) {
+        visit::visit_fn(self as @Visitor<()>,
+                        function_kind,
+                        function_declaration,
+                        block,
+                        span,
+                        node_id,
+                        ())
+    }
+
+    fn visit_ty_method(@mut self, ty_method: &ty_method, _: ()) {
+        visit::visit_ty_method(self as @Visitor<()>, ty_method, ())
+    }
+
+    fn visit_trait_method(@mut self, trait_method: &trait_method, _: ()) {
+        visit::visit_trait_method(self as @Visitor<()>, trait_method, ())
+    }
+
+    fn visit_struct_def(@mut self,
+                        struct_def: @struct_def,
+                        ident: ident,
+                        generics: &Generics,
+                        node_id: node_id,
+                        _: ()) {
+        visit::visit_struct_def(self as @Visitor<()>,
+                                struct_def,
+                                ident,
+                                generics,
+                                node_id,
+                                ())
+    }
+
+    fn visit_struct_field(@mut self, struct_field: @struct_field, _: ()) {
+        visit::visit_struct_field(self as @Visitor<()>, struct_field, ())
+    }
 }
 
 pub fn map_crate(diag: @span_handler, c: &crate) -> map {
@@ -266,8 +365,6 @@ pub fn map_crate(diag: @span_handler, c: &crate) -> map {
     cx.map
 }
 
-/*
-
 // Used for items loaded from external crate that are being inlined into this
 // crate.  The `path` should be the path to the item but should not include
 // the item itself.
@@ -277,38 +374,32 @@ pub fn map_decoded_item(diag: @span_handler,
                         ii: &inlined_item) {
     // I believe it is ok for the local IDs of inlined items from other crates
     // to overlap with the local ids from this crate, so just generate the ids
-    // starting from 0.  (In particular, I think these ids are only used in
-    // alias analysis, which we will not be running on the inlined items, and
-    // even if we did I think it only needs an ordering between local
-    // variables that are simultaneously in scope).
+    // starting from 0.
     let cx = @mut Ctx {
         map: map,
         path: path.clone(),
         diag: diag,
     };
-    let v = mk_ast_map_visitor();
 
     // methods get added to the AST map when their impl is visited.  Since we
     // don't decode and instantiate the impl, but just the method, we have to
     // add it to the table now:
     match *ii {
-      ii_item(*) => {} // fallthrough
-      ii_foreign(i) => {
-        cx.map.insert(i.id, node_foreign_item(i,
-                                              AbiSet::Intrinsic(),
-                                              i.vis,    // Wrong but OK
-                                              @path));
-      }
-      ii_method(impl_did, is_provided, m) => {
-        map_method(impl_did, @path, m, is_provided, cx);
-      }
+        ii_item(*) => {} // fallthrough
+        ii_foreign(i) => {
+            cx.map.insert(i.id, node_foreign_item(i,
+                                                  AbiSet::Intrinsic(),
+                                                  i.vis,    // Wrong but OK
+                                                  @path));
+        }
+        ii_method(impl_did, is_provided, m) => {
+            cx.map_method(impl_did, @path, m, is_provided);
+        }
     }
 
     // visit the item / method contents and add those to the map:
-    ii.accept(cx, v);
+    ii.accept((), cx as @Visitor<()>);
 }
-
-*/
 
 pub fn node_id_to_str(map: map, id: node_id, itr: @ident_interner) -> ~str {
     match map.find(&id) {
