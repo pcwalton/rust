@@ -26,7 +26,7 @@ use std::ops::{BitOr, BitAnd};
 use std::result::{Result};
 use syntax::ast;
 use syntax::ast_map;
-use syntax::visit;
+use syntax::oldvisit;
 use syntax::codemap::span;
 use syntax::parse::token;
 
@@ -87,9 +87,9 @@ pub fn check_crate(
         }
     };
 
-    let v = visit::mk_vt(@visit::Visitor {visit_fn: borrowck_fn,
-                                          ..*visit::default_visitor()});
-    visit::visit_crate(crate, (bccx, v));
+    let v = oldvisit::mk_vt(@oldvisit::Visitor {visit_fn: borrowck_fn,
+                                          ..*oldvisit::default_visitor()});
+    oldvisit::visit_crate(crate, (bccx, v));
 
     if tcx.sess.borrowck_stats() {
         io::println("--- borrowck stats ---");
@@ -114,21 +114,21 @@ pub fn check_crate(
     }
 }
 
-fn borrowck_fn(fk: &visit::fn_kind,
+fn borrowck_fn(fk: &oldvisit::fn_kind,
                decl: &ast::fn_decl,
                body: &ast::blk,
                sp: span,
                id: ast::node_id,
                (this, v): (@BorrowckCtxt,
-                           visit::vt<@BorrowckCtxt>)) {
+                           oldvisit::vt<@BorrowckCtxt>)) {
     match fk {
-        &visit::fk_anon(*) |
-        &visit::fk_fn_block(*) => {
+        &oldvisit::fk_anon(*) |
+        &oldvisit::fk_fn_block(*) => {
             // Closures are checked as part of their containing fn item.
         }
 
-        &visit::fk_item_fn(*) |
-        &visit::fk_method(*) => {
+        &oldvisit::fk_item_fn(*) |
+        &oldvisit::fk_method(*) => {
             debug!("borrowck_fn(id=%?)", id);
 
             // Check the body of fn items.
@@ -157,7 +157,7 @@ fn borrowck_fn(fk: &visit::fn_kind,
         }
     }
 
-    visit::visit_fn(fk, decl, body, sp, id, (this, v));
+    oldvisit::visit_fn(fk, decl, body, sp, id, (this, v));
 }
 
 // ----------------------------------------------------------------------

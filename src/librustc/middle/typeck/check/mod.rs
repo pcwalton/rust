@@ -129,7 +129,7 @@ use syntax::opt_vec;
 use syntax::parse::token;
 use syntax::parse::token::special_idents;
 use syntax::print::pprust;
-use syntax::visit;
+use syntax::oldvisit;
 use syntax;
 
 pub mod _match;
@@ -304,11 +304,11 @@ impl ExprTyProvider for FnCtxt {
 }
 
 pub fn check_item_types(ccx: @mut CrateCtxt, crate: &ast::crate) {
-    let visit = visit::mk_simple_visitor(@visit::SimpleVisitor {
+    let visit = oldvisit::mk_simple_visitor(@oldvisit::SimpleVisitor {
         visit_item: |a| check_item(ccx, a),
-        .. *visit::default_simple_visitor()
+        .. *oldvisit::default_simple_visitor()
     });
-    visit::visit_crate(crate, ((), visit));
+    oldvisit::visit_crate(crate, ((), visit));
 }
 
 pub fn check_bare_fn(ccx: @mut CrateCtxt,
@@ -484,7 +484,7 @@ pub fn check_fn(ccx: @mut CrateCtxt,
         }
 
         // Add explicitly-declared locals.
-        let visit_local: @fn(@ast::local, ((), visit::vt<()>)) =
+        let visit_local: @fn(@ast::local, ((), oldvisit::vt<()>)) =
                 |local, (e, v)| {
             let o_ty = match local.node.ty.node {
               ast::ty_infer => None,
@@ -495,11 +495,11 @@ pub fn check_fn(ccx: @mut CrateCtxt,
                    fcx.pat_to_str(local.node.pat),
                    fcx.infcx().ty_to_str(
                        fcx.inh.locals.get_copy(&local.node.id)));
-            visit::visit_local(local, (e, v));
+            oldvisit::visit_local(local, (e, v));
         };
 
         // Add pattern bindings.
-        let visit_pat: @fn(@ast::pat, ((), visit::vt<()>)) = |p, (e, v)| {
+        let visit_pat: @fn(@ast::pat, ((), oldvisit::vt<()>)) = |p, (e, v)| {
             match p.node {
               ast::pat_ident(_, ref path, _)
                   if pat_util::pat_is_binding(fcx.ccx.tcx.def_map, p) => {
@@ -511,32 +511,33 @@ pub fn check_fn(ccx: @mut CrateCtxt,
               }
               _ => {}
             }
-            visit::visit_pat(p, (e, v));
+            oldvisit::visit_pat(p, (e, v));
         };
 
-        let visit_block: @fn(&ast::blk, ((), visit::vt<()>)) = |b, (e, v)| {
+        let visit_block:
+                @fn(&ast::blk, ((), oldvisit::vt<()>)) = |b, (e, v)| {
             // non-obvious: the `blk` variable maps to region lb, so
             // we have to keep this up-to-date.  This
             // is... unfortunate.  It'd be nice to not need this.
             do fcx.with_region_lb(b.id) {
-                visit::visit_block(b, (e, v));
+                oldvisit::visit_block(b, (e, v));
             }
         };
 
         // Don't descend into fns and items
-        fn visit_fn(_fk: &visit::fn_kind, _decl: &ast::fn_decl,
+        fn visit_fn(_fk: &oldvisit::fn_kind, _decl: &ast::fn_decl,
                     _body: &ast::blk, _sp: span,
-                    _id: ast::node_id, (_t,_v): ((), visit::vt<()>)) {
+                    _id: ast::node_id, (_t,_v): ((), oldvisit::vt<()>)) {
         }
-        fn visit_item(_i: @ast::item, (_e,_v): ((), visit::vt<()>)) { }
+        fn visit_item(_i: @ast::item, (_e,_v): ((), oldvisit::vt<()>)) { }
 
-        let visit = visit::mk_vt(
-            @visit::Visitor {visit_local: visit_local,
+        let visit = oldvisit::mk_vt(
+            @oldvisit::Visitor {visit_local: visit_local,
                              visit_pat: visit_pat,
                              visit_fn: visit_fn,
                              visit_item: visit_item,
                              visit_block: visit_block,
-                             ..*visit::default_visitor()});
+                             ..*oldvisit::default_visitor()});
 
         (visit.visit_block)(body, ((), visit));
     }
