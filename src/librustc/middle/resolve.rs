@@ -471,12 +471,18 @@ pub struct Module {
 
     // The index of the import we're resolving.
     resolved_import_count: uint,
+
+    // Whether this module is populated. If not populated, any attempt to
+    // access the children must be preceded with a
+    // `populate_module_if_necessary` call.
+    populated: bool,
 }
 
 pub fn Module(parent_link: ParentLink,
               def_id: Option<def_id>,
-              kind: ModuleKind)
-           -> Module {
+              kind: ModuleKind,
+              external: bool)
+              -> Module {
     Module {
         parent_link: parent_link,
         def_id: def_id,
@@ -488,6 +494,7 @@ pub fn Module(parent_link: ParentLink,
         import_resolutions: @mut HashMap::new(),
         glob_count: 0,
         resolved_import_count: 0,
+        populated: !external,
     }
 }
 
@@ -534,9 +541,10 @@ impl NameBindings {
                          parent_link: ParentLink,
                          def_id: Option<def_id>,
                          kind: ModuleKind,
+                         external: bool,
                          sp: span) {
         // Merges the module with the existing type def or creates a new one.
-        let module_ = @mut Module(parent_link, def_id, kind);
+        let module_ = @mut Module(parent_link, def_id, kind, external);
         match self.type_def {
             None => {
                 self.type_def = Some(TypeNsDef {
@@ -563,10 +571,11 @@ impl NameBindings {
                            parent_link: ParentLink,
                            def_id: Option<def_id>,
                            kind: ModuleKind,
+                           external: bool,
                            _sp: span) {
         match self.type_def {
             None => {
-                let module = @mut Module(parent_link, def_id, kind);
+                let module = @mut Module(parent_link, def_id, kind, external);
                 self.type_def = Some(TypeNsDef {
                     privacy: privacy,
                     module_def: Some(module),
@@ -577,7 +586,10 @@ impl NameBindings {
             Some(type_def) => {
                 match type_def.module_def {
                     None => {
-                        let module = @mut Module(parent_link, def_id, kind);
+                        let module = @mut Module(parent_link,
+                                                 def_id,
+                                                 kind,
+                                                 external);
                         self.type_def = Some(TypeNsDef {
                             privacy: privacy,
                             module_def: Some(module),
@@ -799,6 +811,7 @@ pub fn Resolver(session: Session,
                              NoParentLink,
                              Some(def_id { crate: 0, node: 0 }),
                              NormalModuleKind,
+                             false,
                              crate.span);
 
     let current_module = graph_root.get_module();
@@ -1158,6 +1171,7 @@ impl Resolver {
                                             parent_link,
                                             Some(def_id),
                                             NormalModuleKind,
+                                            false,
                                             sp);
 
                 let new_parent =
@@ -1180,6 +1194,7 @@ impl Resolver {
                                                     parent_link,
                                                     Some(def_id),
                                                     ExternModuleKind,
+                                                    false,
                                                     sp);
 
                         ModuleReducedGraphParent(name_bindings.get_module())
@@ -1304,6 +1319,7 @@ impl Resolver {
                                                             parent_link,
                                                             Some(def_id),
                                                             ImplModuleKind,
+                                                            false,
                                                             sp);
 
                                 ModuleReducedGraphParent(
@@ -1361,6 +1377,7 @@ impl Resolver {
                                             parent_link,
                                             Some(local_def(item.id)),
                                             TraitModuleKind,
+                                            false,
                                             sp);
                 let module_parent = ModuleReducedGraphParent(name_bindings.
                                                              get_module());
@@ -1550,7 +1567,8 @@ impl Resolver {
                             (self.get_module_from_parent(parent), name);
                         let external_module = @mut Module(parent_link,
                                                           Some(def_id),
-                                                          NormalModuleKind);
+                                                          NormalModuleKind,
+                                                          false);
 
                         parent.external_module_children.insert(
                             name,
@@ -1614,7 +1632,8 @@ impl Resolver {
             let new_module = @mut Module(
                 BlockParentLink(parent_module, block_id),
                 None,
-                AnonymousModuleKind);
+                AnonymousModuleKind,
+                false);
             parent_module.anonymous_children.insert(block_id, new_module);
             new_parent = ModuleReducedGraphParent(new_module);
         } else {
@@ -1650,6 +1669,7 @@ impl Resolver {
                                                   parent_link,
                                                   Some(def_id),
                                                   NormalModuleKind,
+                                                  true,
                                                   dummy_sp());
               }
             }
@@ -1711,6 +1731,7 @@ impl Resolver {
                                                   parent_link,
                                                   Some(def_id),
                                                   TraitModuleKind,
+                                                  true,
                                                   dummy_sp())
           }
           def_ty(_) => {
@@ -1749,8 +1770,19 @@ impl Resolver {
         match def_like {
             dl_def(def) => {
                 // Add the new child item, if necessary.
-                let optional_module = match def {
-                    def_foreign_mod(*) => Some(root),
+                match def {
+                    def_foreign_mod(def_id) => {
+                        // Foreign modules have no names. Recur and populate
+                        // eagerly.
+                        do csearch::each_child_of_item(self.session.cstore,
+                                                       def_id)
+                                |def_like, child_ident| {
+                            self.build_reduced_graph_for_external_crate_def(
+                                root,
+                                def_like,
+                                child_ident)
+                        }
+                    }
                     _ => {
                         let (child_name_bindings, new_parent) =
                             self.add_child(ident,
@@ -1764,28 +1796,6 @@ impl Resolver {
                                                  self.session.str_of(ident),
                                                  ident,
                                                  new_parent);
-
-                        /*println(fmt!(">>> child item added: %s",
-                                     self.session.str_of(ident)));*/
-
-                        child_name_bindings.get_module_if_available()
-                    }
-                };
-
-                match optional_module {
-                    None => {}
-                    Some(module) => {
-                        do csearch::each_child_of_item(self.session.cstore,
-                                                       def_id_of_def(def))
-                                |def_like, child_ident| {
-                            /*println(fmt!(">>> each_child_of_item: %s %s",
-                                         self.session.str_of(ident),
-                                         self.session.str_of(child_ident)));*/
-                            self.build_reduced_graph_for_external_crate_def(
-                                module,
-                                def_like,
-                                child_ident)
-                        }
                     }
                 }
             }
@@ -1838,6 +1848,7 @@ impl Resolver {
                                             parent_link,
                                             Some(def),
                                             ImplModuleKind,
+                                            true,
                                             dummy_sp());
                                         type_module =
                                             child_name_bindings.
@@ -1882,6 +1893,31 @@ impl Resolver {
                         ignoring field");
             }
         }
+    }
+
+    /// Builds the reduced graph rooted at the given external module.
+    fn populate_external_module(@mut self, module: @mut Module) {
+        let def_id = match module.def_id {
+            None => return,
+            Some(def_id) => def_id,
+        };
+
+        do csearch::each_child_of_item(self.session.cstore, def_id)
+                |def_like, child_ident| {
+            self.build_reduced_graph_for_external_crate_def(module,
+                                                            def_like,
+                                                            child_ident)
+        }
+        module.populated = true
+    }
+
+    /// Ensures that the reduced graph rooted at the given external module
+    /// is built, building it if it is not.
+    fn populate_module_if_necessary(@mut self, module: @mut Module) {
+        if !module.populated {
+            self.populate_external_module(module)
+        }
+        assert!(module.populated)
     }
 
     /// Builds the reduced graph rooted at the 'use' directive for an external
@@ -1993,6 +2029,7 @@ impl Resolver {
                self.module_to_str(module_));
         self.resolve_imports_for_module(module_);
 
+        self.populate_module_if_necessary(module_);
         for (_, &child_node) in module_.children.iter() {
             match child_node.get_module_if_available() {
                 None => {
@@ -2221,6 +2258,7 @@ impl Resolver {
         let mut type_result = UnknownResult;
 
         // Search for direct children of the containing module.
+        self.populate_module_if_necessary(containing_module);
         match containing_module.children.find(&source) {
             None => {
                 // Continue.
@@ -2539,6 +2577,7 @@ impl Resolver {
         };
 
         // Add all children from the containing module.
+        self.populate_module_if_necessary(containing_module);
         for (&ident, name_bindings) in containing_module.children.iter() {
             merge_import_resolution(ident, *name_bindings);
         }
@@ -2773,6 +2812,7 @@ impl Resolver {
 
         // The current module node is handled specially. First, check for
         // its immediate children.
+        self.populate_module_if_necessary(module_);
         match module_.children.find(&name) {
             Some(name_bindings)
                     if name_bindings.defined_in_namespace(namespace) => {
@@ -3027,6 +3067,7 @@ impl Resolver {
                self.module_to_str(module_));
 
         // First, check the direct children of the module.
+        self.populate_module_if_necessary(module_);
         match module_.children.find(&name) {
             Some(name_bindings)
                     if name_bindings.defined_in_namespace(namespace) => {
@@ -3116,6 +3157,7 @@ impl Resolver {
         }
 
         // Descend into children and anonymous children.
+        self.populate_module_if_necessary(module_);
         for (_, &child_node) in module_.children.iter() {
             match child_node.get_module_if_available() {
                 None => {
@@ -3174,6 +3216,7 @@ impl Resolver {
         }
 
         self.record_exports_for_module(module_);
+        self.populate_module_if_necessary(module_);
 
         for (_, &child_name_bindings) in module_.children.iter() {
             match child_name_bindings.get_module_if_available() {
@@ -3287,6 +3330,7 @@ impl Resolver {
                 // Nothing to do.
             }
             Some(name) => {
+                self.populate_module_if_necessary(orig_module);
                 match orig_module.children.find(&name) {
                     None => {
                         debug!("!!! (with scope) didn't find `%s` in `%s`",
@@ -4568,6 +4612,7 @@ impl Resolver {
                                                 xray: XrayFlag)
                                                 -> NameDefinition {
         // First, search children.
+        self.populate_module_if_necessary(containing_module);
         match containing_module.children.find(&name) {
             Some(child_name_bindings) => {
                 match (child_name_bindings.def_for_namespace(namespace),
@@ -5197,7 +5242,9 @@ impl Resolver {
                 }
 
                 // Look for trait children.
-                for (_, &child_name_bindings) in search_module.children.iter() {
+                self.populate_module_if_necessary(search_module);
+                for (_, &child_name_bindings) in
+                        search_module.children.iter() {
                     match child_name_bindings.def_for_namespace(TypeNS) {
                         Some(def) => {
                             match def {
@@ -5396,6 +5443,7 @@ impl Resolver {
         debug!("Dump of module `%s`:", self.module_to_str(module_));
 
         debug!("Children:");
+        self.populate_module_if_necessary(module_);
         for (&name, _) in module_.children.iter() {
             debug!("* %s", self.session.str_of(name));
         }
