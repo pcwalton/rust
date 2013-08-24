@@ -739,6 +739,8 @@ fn each_child_of_item_or_crate(intr: @ident_interner,
                                        tag_items_data_item_reexport_name);
         let name = name_doc.as_str_slice();
 
+        println(fmt!("found reexport: %s", name));
+
         // This reexport may be in yet another crate.
         let other_crates_items = if child_def_id.crate == cdata.cnum {
             reader::get_doc(reader::Doc(cdata.data), tag_items)

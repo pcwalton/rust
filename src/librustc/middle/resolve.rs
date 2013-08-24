@@ -1652,7 +1652,8 @@ impl Resolver {
                            new_parent: ReducedGraphParent) {
         let privacy = visibility_to_privacy(visibility);
         match def {
-          def_mod(def_id) | def_foreign_mod(def_id) => {
+          def_mod(def_id) | def_foreign_mod(def_id) | def_struct(def_id) |
+          def_ty(def_id) => {
             match child_name_bindings.type_def {
               Some(TypeNsDef { module_def: Some(module_def), _ }) => {
                 debug!("(building reduced graph for external crate) \
@@ -1674,6 +1675,11 @@ impl Resolver {
               }
             }
           }
+          _ => {}
+        }
+
+        match def {
+          def_mod(_) | def_foreign_mod(_) => {}
           def_variant(*) => {
             debug!("(building reduced graph for external crate) building \
                     variant %s",
@@ -1685,7 +1691,7 @@ impl Resolver {
           }
           def_fn(*) | def_static_method(*) | def_static(*) => {
             debug!("(building reduced graph for external \
-                    crate) building value %s", final_ident);
+                    crate) building value (fn/static) %s", final_ident);
             child_name_bindings.define_value(privacy, def, dummy_sp());
           }
           def_trait(def_id) => {
