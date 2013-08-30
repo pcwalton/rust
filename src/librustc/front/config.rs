@@ -9,7 +9,6 @@
 // except according to those terms.
 
 
-use std::option;
 use syntax::fold::ast_fold;
 use syntax::{ast, fold, attr};
 

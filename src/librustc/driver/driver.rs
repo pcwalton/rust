@@ -502,21 +502,6 @@ pub fn pretty_print_input(sess: Session,
                           cfg: ast::CrateConfig,
                           input: &input,
                           ppm: pp_mode) {
-    fn ann_typed_post(tcx: ty::ctxt, node: pprust::ann_node) {
-        match node {
-          pprust::node_expr(s, expr) => {
-            pp::space(s.s);
-            pp::word(s.s, "as");
-            pp::space(s.s);
-            pp::word(s.s, ppaux::ty_to_str(tcx, ty::expr_ty(tcx, expr)));
-            pprust::pclose(s);
-          }
-          _ => ()
-        }
-    }
-    fn ann_identified_post(node: pprust::ann_node) {
-    }
-
     let crate = phase_1_parse_input(sess, cfg.clone(), input);
 
     let (crate, is_expanded) = match ppm {
