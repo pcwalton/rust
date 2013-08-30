@@ -14,9 +14,10 @@ use extra::getopts::groups::getopts;
 use syntax::ast_util::*;
 use syntax::codemap::{dummy_sp, Spanned};
 use syntax::ext::base::ExtCtxt;
-use syntax::{ast, attr, codemap, diagnostic, fold};
+use syntax::{ast, attr, codemap, diagnostic, fold, visit};
 use syntax::attr::AttrMetaMethods;
 use syntax::fold::ast_fold;
+use syntax::visit::Visitor;
 use rustc::back::link::output_type_exe;
 use rustc::driver::session::{lib_crate, bin_crate};
 use context::{Ctx, in_target};
@@ -342,32 +343,28 @@ pub fn compile_crate(ctxt: &Ctx, pkg_id: &PkgId,
     compile_input(ctxt, pkg_id, crate, workspace, flags, cfgs, opt, what)
 }
 
+struct ViewItemVisitor<'self> {
+    ctxt: &'self Ctx,
+    workspace: &'self Path,
+    sess: session::Session,
+    save: @fn(Path),
+}
 
-/// Collect all `extern mod` directives in `c`, then
-/// try to install their targets, failing if any target
-/// can't be found.
-pub fn find_and_install_dependencies(ctxt: &Ctx,
-                                 sess: session::Session,
-                                 workspace: &Path,
-                                 c: &ast::Crate,
-                                 save: @fn(Path)
-                                ) {
-    // :-(
-    debug!("In find_and_install_dependencies...");
-    let my_workspace = (*workspace).clone();
-    let my_ctxt      = *ctxt;
-    do c.each_view_item() |vi: &ast::view_item| {
+impl<'self> Visitor<()> for ViewItemVisitor<'self> {
+    fn visit_view_item(&mut self, vi: &ast::view_item, env: ()) {
         debug!("A view item!");
         match vi.node {
             // ignore metadata, I guess
             ast::view_item_extern_mod(lib_ident, path_opt, _, _) => {
-                match my_ctxt.sysroot_opt {
+                match self.ctxt.sysroot_opt {
                     Some(ref x) => debug!("*** sysroot: %s", x.to_str()),
                     None => debug!("No sysroot given")
                 };
                 let lib_name = match path_opt { // ???
-                    Some(p) => p, None => sess.str_of(lib_ident) };
-                match find_library_in_search_path(my_ctxt.sysroot_opt, lib_name) {
+                    Some(p) => p,
+                    None => self.sess.str_of(lib_ident)
+                };
+                match find_library_in_search_path(self.ctxt.sysroot_opt, lib_name) {
                     Some(installed_path) => {
                         debug!("It exists: %s", installed_path.to_str());
                     }
@@ -379,21 +376,21 @@ pub fn find_and_install_dependencies(ctxt: &Ctx,
                                       installed_path.to_str());
                                // Once workcache is implemented, we'll actually check
                                // whether or not the library at installed_path is fresh
-                               save(installed_path.pop());
+                               (self.save)(installed_path.pop());
                             }
                             None => {
                                debug!("Trying to install library %s, rebuilding it",
                                       lib_name.to_str());
                                // Try to install it
                                let pkg_id = PkgId::new(lib_name);
-                               my_ctxt.install(&my_workspace, &pkg_id);
+                               self.ctxt.install(self.workspace, &pkg_id);
                                // Also, add an additional search path
                                debug!("let installed_path...")
                                let installed_path = target_library_in_workspace(&pkg_id,
-                                                                         &my_workspace).pop();
+                                                                         self.workspace).pop();
                                debug!("Great, I installed %s, and it's in %s",
                                    lib_name, installed_path.to_str());
-                               save(installed_path);
+                               (self.save)(installed_path);
                            }
                     }
                 }
@@ -402,8 +399,27 @@ pub fn find_and_install_dependencies(ctxt: &Ctx,
             // Ignore `use`s
             _ => ()
         }
-        true
+
+        visit::walk_view_item(self, vi, env)
+    }
+}
+
+/// Collect all `extern mod` directives in `c`, then
+/// try to install their targets, failing if any target
+/// can't be found.
+pub fn find_and_install_dependencies(ctxt: &Ctx,
+                                     sess: session::Session,
+                                     workspace: &Path,
+                                     c: &ast::Crate,
+                                     save: @fn(Path)) {
+    debug!("In find_and_install_dependencies...");
+    let mut visitor = ViewItemVisitor {
+        ctxt: ctxt,
+        workspace: workspace,
+        sess: sess,
+        save: save,
     };
+    visit::walk_crate(&mut visitor, c, ())
 }
 
 #[cfg(windows)]
