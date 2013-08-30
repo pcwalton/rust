@@ -1189,7 +1189,7 @@ trait CustomFailureHandler {
 
 struct DynamicFailureHandler {
     bcx: @mut Block,
-    sp: span,
+    sp: Span,
     msg: @str,
     finished: @mut Option<BasicBlockRef>,
 }
