@@ -213,7 +213,10 @@ pub fn compile_input(ctxt: &Ctx,
         addl_lib_search_paths: @mut (~[out_dir.clone()]),
         // output_type should be conditional
         output_type: output_type_exe, // Use this to get a library? That's weird
-        .. (*driver::build_session_options(binary, &matches, diagnostic::emit)).clone()
+        .. (*driver::build_session_options(binary,
+                                           &matches,
+                                           @diagnostic::DefaultEmitter as
+                                            @diagnostic::Emitter)).clone()
     };
 
     let addl_lib_search_paths = @mut options.addl_lib_search_paths;
@@ -228,7 +231,9 @@ pub fn compile_input(ctxt: &Ctx,
         }
     }
 
-    let sess = driver::build_session(options, diagnostic::emit);
+    let sess = driver::build_session(options,
+                                     @diagnostic::DefaultEmitter as
+                                        @diagnostic::Emitter);
 
     // Infer dependencies that rustpkg needs to build, by scanning for
     // `extern mod` directives.

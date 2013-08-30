@@ -131,7 +131,8 @@ fn build_ctxt(sess: Session,
 
 fn build_session() -> Session {
     let sopts: @options = basic_options();
-    let emitter = syntax::diagnostic::emit;
+    let emitter = @syntax::diagnostic::DefaultEmitter as
+        @syntax::diagnostic::Emitter;
 
     let session = driver::build_session(sopts, emitter);
     session
