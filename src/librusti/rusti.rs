@@ -112,7 +112,7 @@ struct EncodableWarningEmitter;
 
 impl diagnostic::Emitter for EncodableWarningEmitter {
     fn emit(&self,
-            cm: Option<(@codemap::CodeMap, codemap::span)>,
+            cm: Option<(@codemap::CodeMap, codemap::Span)>,
             msg: &str,
             lvl: diagnostic::level) {
         diagnostic::DefaultEmitter.emit(cm, msg, lvl);

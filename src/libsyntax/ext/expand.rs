@@ -76,9 +76,9 @@ pub fn expand_expr(extsbox: @mut SyntaxEnv,
                             let marked_before = mark_tts(*tts,fm);
                             let marked_ctxt = new_mark(fm, ctxt);
                             let expanded =
-                                match expandfun(cx, mac.span, marked_before, marked_ctxt) {
+                                match expandfun.expand(cx, mac.span, marked_before, marked_ctxt) {
                                     MRExpr(e) => e,
-                                    MRAny(expr_maker,_,_) => expr_maker(),
+                                    MRAny(any_macro) => any_macro.make_expr(),
                                     _ => {
                                         cx.span_fatal(
                                             pth.span,
@@ -359,7 +359,7 @@ pub fn expand_item_mac(extsbox: @mut SyntaxEnv,
             // mark before expansion:
             let marked_before = mark_tts(tts,fm);
             let marked_ctxt = new_mark(fm,ctxt);
-            expander(cx, it.span, marked_before, marked_ctxt)
+            expander.expand(cx, it.span, marked_before, marked_ctxt)
         }
         Some(@SE(IdentTT(expander, span))) => {
             if it.ident.name == parse::token::special_idents::invalid.name {
@@ -377,7 +377,7 @@ pub fn expand_item_mac(extsbox: @mut SyntaxEnv,
             // mark before expansion:
             let marked_tts = mark_tts(tts,fm);
             let marked_ctxt = new_mark(fm,ctxt);
-            expander(cx, it.span, it.ident, marked_tts, marked_ctxt)
+            expander.expand(cx, it.span, it.ident, marked_tts, marked_ctxt)
         }
         _ => cx.span_fatal(
             it.span, fmt!("%s! is not legal in item position", extnamestr))
@@ -387,7 +387,7 @@ pub fn expand_item_mac(extsbox: @mut SyntaxEnv,
         MRItem(it) => mark_item(it,fm).chain(|i| {fld.fold_item(i)}),
         MRExpr(_) => cx.span_fatal(pth.span,
                                    fmt!("expr macro in item position: %s", extnamestr)),
-        MRAny(_, item_maker, _) => item_maker().chain(|i| {mark_item(i,fm)})
+        MRAny(any_macro) => any_macro.make_item().chain(|i| {mark_item(i,fm)})
                                       .chain(|i| {fld.fold_item(i)}),
         MRDef(ref mdef) => {
             // yikes... no idea how to apply the mark to this. I'm afraid
@@ -458,14 +458,14 @@ pub fn expand_stmt(extsbox: @mut SyntaxEnv,
             // mark before expansion:
             let marked_tts = mark_tts(tts,fm);
             let marked_ctxt = new_mark(fm,ctxt);
-            let expanded = match expandfun(cx, mac.span, marked_tts, marked_ctxt) {
+            let expanded = match expandfun.expand(cx, mac.span, marked_tts, marked_ctxt) {
                 MRExpr(e) => {
                     @codemap::Spanned {
                         node: StmtExpr(e, cx.next_id()),
                         span: e.span
                     }
                 }
-                MRAny(_,_,stmt_mkr) => stmt_mkr(),
+                MRAny(any_macro) => any_macro.make_stmt(),
                 _ => cx.span_fatal(
                     pth.span,
                     fmt!("non-stmt macro in stmt pos: %s", extnamestr))
