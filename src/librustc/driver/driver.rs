@@ -114,8 +114,8 @@ pub fn build_configuration(sess: Session) ->
 }
 
 // Convert strings provided as --cfg [cfgspec] into a crate_cfg
-fn parse_cfgspecs(cfgspecs: ~[~str],
-                  demitter: diagnostic::Emitter) -> ast::CrateConfig {
+fn parse_cfgspecs(cfgspecs: ~[~str], demitter: @diagnostic::Emitter)
+                  -> ast::CrateConfig {
     do cfgspecs.move_iter().map |s| {
         let sess = parse::new_parse_sess(Some(demitter));
         parse::parse_meta_from_source_str(@"cfgspec", s.to_managed(), ~[], sess)
@@ -586,8 +586,8 @@ static architecture_abis : &'static [(&'static str, abi::Architecture)] = &'stat
     ("mips",   abi::Mips)];
 
 pub fn build_target_config(sopts: @session::options,
-                           demitter: diagnostic::Emitter)
-                        -> @session::config {
+                           demitter: @diagnostic::Emitter)
+                           -> @session::config {
     let os = match get_os(sopts.target_triple) {
       Some(os) => os,
       None => early_error(demitter, ~"unknown operating system")
@@ -635,8 +635,8 @@ pub fn host_triple() -> ~str {
 
 pub fn build_session_options(binary: @str,
                              matches: &getopts::Matches,
-                             demitter: diagnostic::Emitter)
-                          -> @session::options {
+                             demitter: @diagnostic::Emitter)
+                             -> @session::options {
     let crate_type = if opt_present(matches, "lib") {
         session::lib_crate
     } else if opt_present(matches, "bin") {
@@ -810,8 +810,8 @@ pub fn build_session_options(binary: @str,
     return sopts;
 }
 
-pub fn build_session(sopts: @session::options,
-                     demitter: diagnostic::Emitter) -> Session {
+pub fn build_session(sopts: @session::options, demitter: @diagnostic::Emitter)
+                     -> Session {
     let codemap = @codemap::CodeMap::new();
     let diagnostic_handler =
         diagnostic::mk_handler(Some(demitter));
@@ -822,9 +822,9 @@ pub fn build_session(sopts: @session::options,
 
 pub fn build_session_(sopts: @session::options,
                       cm: @codemap::CodeMap,
-                      demitter: diagnostic::Emitter,
+                      demitter: @diagnostic::Emitter,
                       span_diagnostic_handler: @mut diagnostic::span_handler)
-                   -> Session {
+                      -> Session {
     let target_cfg = build_target_config(sopts, demitter);
     let p_s = parse::new_parse_sess_special_handler(span_diagnostic_handler,
                                                     cm);
@@ -1032,8 +1032,8 @@ pub fn build_output_filenames(input: &input,
     }
 }
 
-pub fn early_error(emitter: diagnostic::Emitter, msg: ~str) -> ! {
-    emitter(None, msg, diagnostic::fatal);
+pub fn early_error(emitter: @diagnostic::Emitter, msg: ~str) -> ! {
+    emitter.emit(None, msg, diagnostic::fatal);
     fail!();
 }
 

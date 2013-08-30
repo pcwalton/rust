@@ -33,6 +33,7 @@ use driver::driver::{compile_input};
 use driver::session;
 use middle::lint;
 
+use std::comm;
 use std::io;
 use std::num;
 use std::os;
@@ -43,6 +44,7 @@ use std::vec;
 use extra::getopts::{groups, opt_present};
 use extra::getopts;
 use syntax::codemap;
+use syntax::diagnostic::Emitter;
 use syntax::diagnostic;
 
 pub mod middle {
@@ -190,7 +192,7 @@ pub fn describe_debug_flags() {
     }
 }
 
-pub fn run_compiler(args: &[~str], demitter: diagnostic::Emitter) {
+pub fn run_compiler(args: &[~str], demitter: @diagnostic::Emitter) {
     // Don't display log spew by default. Can override with RUST_LOG.
     ::std::logging::console_off();
 
@@ -290,6 +292,23 @@ pub enum monitor_msg {
     done,
 }
 
+struct RustcEmitter {
+    ch_capture: comm::SharedChan<monitor_msg>
+}
+
+impl diagnostic::Emitter for RustcEmitter {
+    fn emit(&self,
+            cmsp: Option<(@codemap::CodeMap, codemap::span)>,
+            msg: &str,
+            lvl: diagnostic::level) {
+        if lvl == diagnostic::fatal {
+            self.ch_capture.send(fatal)
+        }
+
+        diagnostic::DefaultEmitter.emit(cmsp, msg, lvl)
+    }
+}
+
 /*
 This is a sanity check that any failure of the compiler is performed
 through the diagnostic module and reported properly - we shouldn't be calling
@@ -302,7 +321,7 @@ diagnostic emitter which records when we hit a fatal error. If the task
 fails without recording a fatal error then we've encountered a compiler
 bug and need to present an error.
 */
-pub fn monitor(f: ~fn(diagnostic::Emitter)) {
+pub fn monitor(f: ~fn(@diagnostic::Emitter)) {
     use std::comm::*;
 
     // XXX: This is a hack for newsched since it doesn't support split stacks.
@@ -323,18 +342,11 @@ pub fn monitor(f: ~fn(diagnostic::Emitter)) {
 
     match do task_builder.try {
         let ch = ch_capture.clone();
-        let ch_capture = ch.clone();
         // The 'diagnostics emitter'. Every error, warning, etc. should
         // go through this function.
-        let demitter: @fn(Option<(@codemap::CodeMap, codemap::Span)>,
-                          &str,
-                          diagnostic::level) =
-                          |cmsp, msg, lvl| {
-            if lvl == diagnostic::fatal {
-                ch_capture.send(fatal);
-            }
-            diagnostic::emit(cmsp, msg, lvl);
-        };
+        let demitter = @RustcEmitter {
+            ch_capture: ch.clone(),
+        } as @diagnostic::Emitter;
 
         struct finally {
             ch: SharedChan<monitor_msg>,
@@ -356,7 +368,7 @@ pub fn monitor(f: ~fn(diagnostic::Emitter)) {
         result::Err(_) => {
             // Task failed without emitting a fatal diagnostic
             if p.recv() == done {
-                diagnostic::emit(
+                diagnostic::DefaultEmitter.emit(
                     None,
                     diagnostic::ice_msg("unexpected failure"),
                     diagnostic::error);
@@ -369,7 +381,9 @@ pub fn monitor(f: ~fn(diagnostic::Emitter)) {
                      to github.com/mozilla/rust/issues"
                 ];
                 for note in xs.iter() {
-                    diagnostic::emit(None, *note, diagnostic::note)
+                    diagnostic::DefaultEmitter.emit(None,
+                                                    *note,
+                                                    diagnostic::note)
                 }
             }
             // Fail so the process returns a failure code
