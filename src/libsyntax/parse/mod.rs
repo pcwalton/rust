@@ -48,7 +48,7 @@ pub struct ParseSess {
     included_mod_stack: ~[Path],
 }
 
-pub fn new_parse_sess(demitter: Option<Emitter>) -> @mut ParseSess {
+pub fn new_parse_sess(demitter: Option<@Emitter>) -> @mut ParseSess {
     let cm = @CodeMap::new();
     @mut ParseSess {
         cm: cm,
