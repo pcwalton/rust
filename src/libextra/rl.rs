@@ -80,12 +80,16 @@ pub unsafe fn read(prompt: &str) -> Option<~str> {
     }
 }
 
-pub type CompletionCb = @fn(~str, @fn(~str));
+/// The callback used to perform completions.
+pub trait CompletionCb {
+    /// Performs a completion.
+    fn complete(&self, line: ~str, suggestion: &fn(~str));
+}
 
-static complete_key: local_data::Key<@CompletionCb> = &local_data::Key;
+static complete_key: local_data::Key<@@CompletionCb> = &local_data::Key;
 
 /// Bind to the main completion callback
-pub unsafe fn complete(cb: CompletionCb) {
+pub unsafe fn complete(cb: @CompletionCb) {
     local_data::set(complete_key, @cb);
 
     extern fn callback(line: *c_char, completions: *()) {
@@ -93,7 +97,7 @@ pub unsafe fn complete(cb: CompletionCb) {
             let cb = **cb.unwrap();
 
             unsafe {
-                do cb(str::raw::from_c_str(line)) |suggestion| {
+                do cb.complete(str::raw::from_c_str(line)) |suggestion| {
                     do suggestion.with_c_str |buf| {
                         rustrt::linenoiseAddCompletion(completions, buf);
                     }

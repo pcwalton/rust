@@ -347,7 +347,7 @@ struct ViewItemVisitor<'self> {
     ctxt: &'self Ctx,
     workspace: &'self Path,
     sess: session::Session,
-    save: @fn(Path),
+    save: &'self fn(Path),
 }
 
 impl<'self> Visitor<()> for ViewItemVisitor<'self> {
@@ -411,7 +411,7 @@ pub fn find_and_install_dependencies(ctxt: &Ctx,
                                      sess: session::Session,
                                      workspace: &Path,
                                      c: &ast::Crate,
-                                     save: @fn(Path)) {
+                                     save: &fn(Path)) {
     debug!("In find_and_install_dependencies...");
     let mut visitor = ViewItemVisitor {
         ctxt: ctxt,
