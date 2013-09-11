@@ -22,55 +22,57 @@ use pass::Pass;
 
 use std::util;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"prune_private",
-        f: run
+struct PrunePrivatePass;
+
+pub fn mk_pass() -> @Pass {
+    @PrunePrivatePass as @Pass
+}
+
+impl Pass for PrunePrivatePass {
+    fn name(&self) -> ~str {
+        ~"prune_private"
+    }
+
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        // First strip private methods out of impls
+        let fold = PrivateMethodPruner {
+            srv: srv.clone(),
+        };
+        let doc = fold.fold_doc(doc);
+
+        // Then strip private items and empty impls
+        let fold = PrivateItemPruner {
+            srv: srv,
+        };
+        fold.fold_doc(doc)
     }
 }
 
-pub fn run(srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
-    // First strip private methods out of impls
-    let fold = Fold {
-        ctxt: srv.clone(),
-        fold_impl: fold_impl,
-        .. fold::default_any_fold(srv.clone())
-    };
-    let doc = (fold.fold_doc)(&fold, doc);
-
-    // Then strip private items and empty impls
-    let fold = Fold {
-        ctxt: srv.clone(),
-        fold_mod: fold_mod,
-        .. fold::default_any_fold(srv)
-    };
-    let doc = (fold.fold_doc)(&fold, doc);
-
-    return doc;
+struct PrivateMethodPruner {
+    srv: astsrv::Srv,
 }
 
-fn fold_impl(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::ImplDoc
-) -> doc::ImplDoc {
-    let doc = fold::default_seq_fold_impl(fold, doc);
+impl Fold for PrivateMethodPruner {
+    fn fold_impl(&self, doc: doc::ImplDoc) -> doc::ImplDoc {
+        let doc = fold::default_fold_impl(self, doc);
 
-    do astsrv::exec(fold.ctxt.clone()) |ctxt| {
-        match ctxt.ast_map.get_copy(&doc.item.id) {
-            ast_map::node_item(item, _) => {
-                match item.node {
-                    ast::item_impl(_, None, _, ref methods) => {
-                        // Associated impls have complex rules for method visibility
-                        strip_priv_methods(doc.clone(), *methods, item.vis)
+        do astsrv::exec(self.srv.clone()) |ctxt| {
+            match ctxt.ast_map.get_copy(&doc.item.id) {
+                ast_map::node_item(item, _) => {
+                    match item.node {
+                        ast::item_impl(_, None, _, ref methods) => {
+                            // Associated impls have complex rules for method visibility
+                            strip_priv_methods(doc.clone(), *methods, item.vis)
+                        }
+                        ast::item_impl(_, Some(_), _ ,_) => {
+                            // Trait impls don't
+                            doc.clone()
+                        }
+                        _ => fail!()
                     }
-                    ast::item_impl(_, Some(_), _ ,_) => {
-                        // Trait impls don't
-                        doc.clone()
-                    }
-                    _ => fail!()
                 }
+                _ => fail!()
             }
-            _ => fail!()
         }
     }
 }
@@ -99,35 +101,38 @@ fn strip_priv_methods(
     }
 }
 
-fn fold_mod(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::ModDoc
-) -> doc::ModDoc {
-    let doc = fold::default_any_fold_mod(fold, doc);
+struct PrivateItemPruner {
+    srv: astsrv::Srv,
+}
 
-    doc::ModDoc {
-        items: doc.items.iter().filter(|item_tag| {
-            match item_tag {
-                & &doc::ImplTag(ref doc) => {
-                    if doc.trait_types.is_empty() {
-                        // This is an associated impl. We have already pruned the
-                        // non-visible methods. If there are any left then
-                        // retain the impl, otherwise throw it away
-                        !doc.methods.is_empty()
-                    } else {
-                        // This is a trait implementation, make it visible
-                        // NB: This is not quite right since this could be an impl
-                        // of a private trait. We can't know that without running
-                        // resolve though.
-                        true
+impl Fold for PrivateItemPruner {
+    fn fold_mod(&self, doc: doc::ModDoc) -> doc::ModDoc {
+        let doc = fold::default_fold_mod(self, doc);
+
+        doc::ModDoc {
+            items: doc.items.iter().filter(|item_tag| {
+                match item_tag {
+                    & &doc::ImplTag(ref doc) => {
+                        if doc.trait_types.is_empty() {
+                            // This is an associated impl. We have already pruned the
+                            // non-visible methods. If there are any left then
+                            // retain the impl, otherwise throw it away
+                            !doc.methods.is_empty()
+                        } else {
+                            // This is a trait implementation, make it visible
+                            // NB: This is not quite right since this could be an impl
+                            // of a private trait. We can't know that without running
+                            // resolve though.
+                            true
+                        }
+                    }
+                    _ => {
+                        is_visible(self.srv.clone(), item_tag.item())
                     }
                 }
-                _ => {
-                    is_visible(fold.ctxt.clone(), item_tag.item())
-                }
-            }
-        }).map(|x| (*x).clone()).collect(),
-        .. doc
+            }).map(|x| (*x).clone()).collect(),
+            .. doc
+        }
     }
 }
 

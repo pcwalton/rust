@@ -18,101 +18,97 @@ use fold::Fold;
 use fold;
 use pass::Pass;
 
-use std::cell::Cell;
-
-pub fn mk_pass(name: ~str, op: @fn(&str) -> ~str) -> Pass {
-    let op = Cell::new(op);
-    Pass {
-        name: name.clone(),
-        f: |srv: astsrv::Srv, doc: doc::Doc| -> doc::Doc {
-            run(srv, doc, op.take())
-        }
-    }
+pub fn mk_pass(name: ~str, op: @Op) -> @Pass {
+    @WrappedOp {
+        name: name,
+        op: op,
+    } as @Pass
 }
 
-type Op = @fn(&str) -> ~str;
+pub trait Op {
+    fn op(&self, s: &str) -> ~str;
+}
 
 struct WrappedOp {
-    op: Op,
+    name: ~str,
+    op: @Op,
 }
 
 impl Clone for WrappedOp {
     fn clone(&self) -> WrappedOp {
         WrappedOp {
+            name: self.name.clone(),
             op: self.op,
         }
     }
 }
 
-fn run(
-    _srv: astsrv::Srv,
-    doc: doc::Doc,
-    op: Op
-) -> doc::Doc {
-    let op = WrappedOp {
-        op: op
-    };
-    let fold = Fold {
-        fold_item: fold_item,
-        fold_enum: fold_enum,
-        fold_trait: fold_trait,
-        fold_impl: fold_impl,
-        .. fold::default_any_fold(op)
-    };
-    (fold.fold_doc)(&fold, doc)
-}
+impl Pass for WrappedOp {
+    fn name(&self) -> ~str {
+        self.name.clone()
+    }
 
-fn maybe_apply_op(op: WrappedOp, s: &Option<~str>) -> Option<~str> {
-    s.map(|s| (op.op)(*s) )
-}
-
-fn fold_item(fold: &fold::Fold<WrappedOp>, doc: doc::ItemDoc)
-             -> doc::ItemDoc {
-    let doc = fold::default_seq_fold_item(fold, doc);
-
-    doc::ItemDoc {
-        brief: maybe_apply_op(fold.ctxt, &doc.brief),
-        desc: maybe_apply_op(fold.ctxt, &doc.desc),
-        sections: apply_to_sections(fold.ctxt, doc.sections.clone()),
-        .. doc
+    fn run(&self, _: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        self.fold_doc(doc)
     }
 }
 
-fn apply_to_sections(op: WrappedOp, sections: ~[doc::Section])
+impl Fold for WrappedOp {
+    fn fold_enum(&self, doc: doc::EnumDoc) -> doc::EnumDoc {
+        let doc = fold::default_fold_enum(self, doc);
+
+        doc::EnumDoc {
+            variants: do doc.variants.map |variant| {
+                doc::VariantDoc {
+                    desc: maybe_apply_op(self, &variant.desc),
+                    .. (*variant).clone()
+                }
+            },
+            .. doc
+        }
+    }
+
+    fn fold_item(&self, doc: doc::ItemDoc) -> doc::ItemDoc {
+        doc::ItemDoc {
+            brief: maybe_apply_op(self, &doc.brief),
+            desc: maybe_apply_op(self, &doc.desc),
+            sections: apply_to_sections(self, doc.sections.clone()),
+            .. doc
+        }
+    }
+
+    fn fold_trait(&self, doc: doc::TraitDoc) -> doc::TraitDoc {
+        let doc = fold::default_fold_trait(self, doc);
+
+        doc::TraitDoc {
+            methods: apply_to_methods(self, doc.methods.clone()),
+            .. doc
+        }
+    }
+
+    fn fold_impl(&self, doc: doc::ImplDoc) -> doc::ImplDoc {
+        let doc = fold::default_fold_impl(self, doc);
+
+        doc::ImplDoc {
+            methods: apply_to_methods(self, doc.methods.clone()),
+            .. doc
+        }
+    }
+}
+
+fn maybe_apply_op(op: &WrappedOp, s: &Option<~str>) -> Option<~str> {
+    s.map(|s| op.op.op(*s) )
+}
+
+fn apply_to_sections(op: &WrappedOp, sections: ~[doc::Section])
                      -> ~[doc::Section] {
     sections.map(|section| doc::Section {
-        header: (op.op)(section.header.clone()),
-        body: (op.op)(section.body.clone())
+        header: op.op.op(section.header.clone()),
+        body: op.op.op(section.body.clone())
     })
 }
 
-fn fold_enum(fold: &fold::Fold<WrappedOp>, doc: doc::EnumDoc)
-             -> doc::EnumDoc {
-    let doc = fold::default_seq_fold_enum(fold, doc);
-    let fold_copy = *fold;
-
-    doc::EnumDoc {
-        variants: do doc.variants.map |variant| {
-            doc::VariantDoc {
-                desc: maybe_apply_op(fold_copy.ctxt, &variant.desc),
-                .. (*variant).clone()
-            }
-        },
-        .. doc
-    }
-}
-
-fn fold_trait(fold: &fold::Fold<WrappedOp>, doc: doc::TraitDoc)
-              -> doc::TraitDoc {
-    let doc = fold::default_seq_fold_trait(fold, doc);
-
-    doc::TraitDoc {
-        methods: apply_to_methods(fold.ctxt, doc.methods.clone()),
-        .. doc
-    }
-}
-
-fn apply_to_methods(op: WrappedOp, docs: ~[doc::MethodDoc])
+fn apply_to_methods(op: &WrappedOp, docs: ~[doc::MethodDoc])
                     -> ~[doc::MethodDoc] {
     do docs.map |doc| {
         doc::MethodDoc {
@@ -121,16 +117,6 @@ fn apply_to_methods(op: WrappedOp, docs: ~[doc::MethodDoc])
             sections: apply_to_sections(op, doc.sections.clone()),
             .. (*doc).clone()
         }
-    }
-}
-
-fn fold_impl(fold: &fold::Fold<WrappedOp>, doc: doc::ImplDoc)
-             -> doc::ImplDoc {
-    let doc = fold::default_seq_fold_impl(fold, doc);
-
-    doc::ImplDoc {
-        methods: apply_to_methods(fold.ctxt, doc.methods.clone()),
-        .. doc
     }
 }
 

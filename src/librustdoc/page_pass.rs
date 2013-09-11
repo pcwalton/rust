@@ -30,32 +30,36 @@ use syntax::ast;
 
 #[cfg(test)] use doc::PageUtils;
 
-pub fn mk_pass(output_style: config::OutputStyle) -> Pass {
-    Pass {
-        name: ~"page",
-        f: |srv, doc| run(srv, doc, output_style)
-    }
+struct PagePass {
+    output_style: config::OutputStyle,
 }
 
-pub fn run(
-    _srv: astsrv::Srv,
-    doc: doc::Doc,
-    output_style: config::OutputStyle
-) -> doc::Doc {
+pub fn mk_pass(output_style: config::OutputStyle) -> @Pass {
+    @PagePass {
+        output_style: output_style,
+    } as @Pass
+}
 
-    if output_style == config::DocPerCrate {
-        return doc;
+impl Pass for PagePass {
+    fn name(&self) -> ~str {
+        ~"page"
     }
 
-    let (result_port, result_chan) = stream();
-    let (page_port, page_chan) = stream();
-    let page_chan = SharedChan::new(page_chan);
-    do task::spawn {
-        result_chan.send(make_doc_from_pages(&page_port));
-    };
+    fn run(&self, _: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        if self.output_style == config::DocPerCrate {
+            return doc
+        }
 
-    find_pages(doc, page_chan);
-    result_port.recv()
+        let (result_port, result_chan) = stream();
+        let (page_port, page_chan) = stream();
+        let page_chan = SharedChan::new(page_chan);
+        do task::spawn {
+            result_chan.send(make_doc_from_pages(&page_port));
+        };
+
+        find_pages(doc, page_chan);
+        result_port.recv()
+    }
 }
 
 type PagePort = Port<Option<doc::Page>>;
@@ -77,43 +81,50 @@ fn make_doc_from_pages(page_port: &PagePort) -> doc::Doc {
 }
 
 fn find_pages(doc: doc::Doc, page_chan: PageChan) {
-    let fold = Fold {
-        ctxt: page_chan.clone(),
-        fold_crate: fold_crate,
-        fold_mod: fold_mod,
-        fold_nmod: fold_nmod,
-        .. fold::default_any_fold(page_chan.clone())
+    let fold = PageFold {
+        page_chan: page_chan.clone(),
     };
-    (fold.fold_doc)(&fold, doc.clone());
+    fold.fold_doc(doc.clone());
 
     page_chan.send(None);
 }
 
-fn fold_crate(fold: &fold::Fold<PageChan>, doc: doc::CrateDoc)
-              -> doc::CrateDoc {
-    let doc = fold::default_seq_fold_crate(fold, doc);
-
-    let page = doc::CratePage(doc::CrateDoc {
-        topmod: strip_mod(doc.topmod.clone()),
-        .. doc.clone()
-    });
-
-    fold.ctxt.send(Some(page));
-
-    doc
+struct PageFold {
+    page_chan: PageChan,
 }
 
-fn fold_mod(fold: &fold::Fold<PageChan>, doc: doc::ModDoc) -> doc::ModDoc {
-    let doc = fold::default_any_fold_mod(fold, doc);
+impl Fold for PageFold {
+    fn fold_crate(&self, doc: doc::CrateDoc) -> doc::CrateDoc {
+        let doc = fold::default_fold_crate(self, doc);
 
-    if doc.id() != ast::CRATE_NODE_ID {
+        let page = doc::CratePage(doc::CrateDoc {
+            topmod: strip_mod(doc.topmod.clone()),
+            .. doc.clone()
+        });
 
-        let doc = strip_mod(doc.clone());
-        let page = doc::ItemPage(doc::ModTag(doc));
-        fold.ctxt.send(Some(page));
+        self.page_chan.send(Some(page));
+
+        doc
     }
 
-    doc
+    fn fold_mod(&self, doc: doc::ModDoc) -> doc::ModDoc {
+        let doc = fold::default_fold_mod(self, doc);
+
+        if doc.id() != ast::CRATE_NODE_ID {
+            let doc = strip_mod(doc.clone());
+            let page = doc::ItemPage(doc::ModTag(doc));
+            self.page_chan.send(Some(page));
+        }
+
+        doc
+    }
+
+    fn fold_nmod(&self, doc: doc::NmodDoc) -> doc::NmodDoc {
+        let doc = fold::default_fold_nmod(self, doc);
+        let page = doc::ItemPage(doc::NmodTag(doc.clone()));
+        self.page_chan.send(Some(page));
+        return doc;
+    }
 }
 
 fn strip_mod(doc: doc::ModDoc) -> doc::ModDoc {
@@ -126,13 +137,6 @@ fn strip_mod(doc: doc::ModDoc) -> doc::ModDoc {
         }.map(|x| (*x).clone()).collect::<~[doc::ItemTag]>(),
         .. doc.clone()
     }
-}
-
-fn fold_nmod(fold: &fold::Fold<PageChan>, doc: doc::NmodDoc) -> doc::NmodDoc {
-    let doc = fold::default_seq_fold_nmod(fold, doc);
-    let page = doc::ItemPage(doc::NmodTag(doc.clone()));
-    fold.ctxt.send(Some(page));
-    return doc;
 }
 
 #[cfg(test)]

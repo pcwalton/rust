@@ -22,11 +22,10 @@ use pass::Pass;
 
 use syntax::ast;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"path",
-        f: run
-    }
+struct PathPass;
+
+pub fn mk_pass() -> @Pass {
+    @PathPass as @Pass
 }
 
 struct Ctxt {
@@ -43,49 +42,54 @@ impl Clone for Ctxt {
     }
 }
 
-fn run(srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
-    let ctxt = Ctxt {
-        srv: srv,
-        path: @mut ~[]
-    };
-    let fold = Fold {
-        ctxt: ctxt.clone(),
-        fold_item: fold_item,
-        fold_mod: fold_mod,
-        fold_nmod: fold_nmod,
-        .. fold::default_any_fold(ctxt)
-    };
-    (fold.fold_doc)(&fold, doc)
-}
+impl Pass for PathPass {
+    fn name(&self) -> ~str {
+        ~"path"
+    }
 
-fn fold_item(fold: &fold::Fold<Ctxt>, doc: doc::ItemDoc) -> doc::ItemDoc {
-    doc::ItemDoc {
-        path: (*fold.ctxt.path).clone(),
-        .. doc
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        let ctxt = Ctxt {
+            srv: srv,
+            path: @mut ~[]
+        };
+        ctxt.fold_doc(doc)
     }
 }
 
-fn fold_mod(fold: &fold::Fold<Ctxt>, doc: doc::ModDoc) -> doc::ModDoc {
-    let is_topmod = doc.id() == ast::CRATE_NODE_ID;
-
-    if !is_topmod { fold.ctxt.path.push(doc.name_()); }
-    let doc = fold::default_any_fold_mod(fold, doc);
-    if !is_topmod { fold.ctxt.path.pop(); }
-
-    doc::ModDoc {
-        item: (fold.fold_item)(fold, doc.item.clone()),
-        .. doc
+impl Fold for Ctxt {
+    fn fold_item(&self, doc: doc::ItemDoc) -> doc::ItemDoc {
+        doc::ItemDoc {
+            path: (*self.path).clone(),
+            .. doc
+        }
     }
-}
 
-fn fold_nmod(fold: &fold::Fold<Ctxt>, doc: doc::NmodDoc) -> doc::NmodDoc {
-    fold.ctxt.path.push(doc.name_());
-    let doc = fold::default_seq_fold_nmod(fold, doc);
-    fold.ctxt.path.pop();
+    fn fold_mod(&self, doc: doc::ModDoc) -> doc::ModDoc {
+        let is_topmod = doc.id() == ast::CRATE_NODE_ID;
 
-    doc::NmodDoc {
-        item: (fold.fold_item)(fold, doc.item.clone()),
-        .. doc
+        if !is_topmod {
+            self.path.push(doc.name_());
+        }
+        let doc = fold::default_fold_mod(self, doc);
+        if !is_topmod {
+            self.path.pop();
+        }
+
+        doc::ModDoc {
+            item: self.fold_item(doc.item.clone()),
+            .. doc
+        }
+    }
+
+    fn fold_nmod(&self, doc: doc::NmodDoc) -> doc::NmodDoc {
+        self.path.push(doc.name_());
+        let doc = fold::default_fold_nmod(self, doc);
+        self.path.pop();
+
+        doc::NmodDoc {
+            item: self.fold_item(doc.item.clone()),
+            .. doc
+        }
     }
 }
 

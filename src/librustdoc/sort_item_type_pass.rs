@@ -14,7 +14,7 @@ use doc;
 use pass::Pass;
 use sort_pass;
 
-pub fn mk_pass() -> Pass {
+pub fn mk_pass() -> @Pass {
     fn by_score(item1: &doc::ItemTag, item2: &doc::ItemTag) -> bool {
         fn score(item: &doc::ItemTag) -> int {
             match *item {

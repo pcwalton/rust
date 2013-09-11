@@ -18,34 +18,41 @@ use fold::Fold;
 use fold;
 use pass::Pass;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"prune_hidden",
-        f: run
+struct PruneHiddenPass;
+
+impl Pass for PruneHiddenPass {
+    fn name(&self) -> ~str {
+        ~"prune_hidden"
+    }
+
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        let fold = PruneHiddenFold {
+            srv: srv,
+        };
+        fold.fold_doc(doc)
     }
 }
 
-pub fn run(srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
-    let fold = Fold {
-        ctxt: srv.clone(),
-        fold_mod: fold_mod,
-        .. fold::default_any_fold(srv)
-    };
-    (fold.fold_doc)(&fold, doc)
+pub fn mk_pass() -> @Pass {
+    @PruneHiddenPass as @Pass
 }
 
-fn fold_mod(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::ModDoc
-) -> doc::ModDoc {
-    let doc = fold::default_any_fold_mod(fold, doc);
+struct PruneHiddenFold {
+    srv: astsrv::Srv,
+}
 
-    doc::ModDoc {
-        items: do doc.items.iter().filter |item_tag| {
-            !is_hidden(fold.ctxt.clone(), item_tag.item())
-        }.map(|x| (*x).clone()).collect(),
-        .. doc
+impl Fold for PruneHiddenFold {
+    fn fold_mod(&self, doc: doc::ModDoc) -> doc::ModDoc {
+        let doc = fold::default_fold_mod(self, doc);
+
+        doc::ModDoc {
+            items: do doc.items.iter().filter |item_tag| {
+                !is_hidden(self.srv.clone(), item_tag.item())
+            }.map(|x| (*x).clone()).collect(),
+            .. doc
+        }
     }
+
 }
 
 fn is_hidden(srv: astsrv::Srv, doc: doc::ItemDoc) -> bool {

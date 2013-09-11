@@ -11,14 +11,19 @@
 //! Escapes text sequences
 
 use pass::Pass;
+use text_pass::Op;
 use text_pass;
 
-pub fn mk_pass() -> Pass {
-    text_pass::mk_pass(~"escape", escape)
+pub fn mk_pass() -> @Pass {
+    text_pass::mk_pass(~"escape", @EscapeOp as @Op)
 }
 
-fn escape(s: &str) -> ~str {
-    s.replace("\\", "\\\\")
+struct EscapeOp;
+
+impl Op for EscapeOp {
+    fn op(&self, s: &str) -> ~str {
+        s.replace("\\", "\\\\")
+    }
 }
 
 #[test]

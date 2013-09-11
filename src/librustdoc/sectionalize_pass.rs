@@ -18,65 +18,65 @@ use fold::Fold;
 use fold;
 use pass::Pass;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"sectionalize",
-        f: run
+pub fn mk_pass() -> @Pass {
+    @SectionalizePass as @Pass
+}
+
+struct SectionalizePass;
+
+impl Pass for SectionalizePass {
+    fn name(&self) -> ~str {
+        ~"sectionalize"
+    }
+
+    fn run(&self, _: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        self.fold_doc(doc)
     }
 }
 
-pub fn run(_srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
-    let fold = Fold {
-        fold_item: fold_item,
-        fold_trait: fold_trait,
-        fold_impl: fold_impl,
-        .. fold::default_any_fold(())
-    };
-    (fold.fold_doc)(&fold, doc)
-}
+impl Fold for SectionalizePass {
+    fn fold_item(&self, doc: doc::ItemDoc) -> doc::ItemDoc {
+        let (desc, sections) = sectionalize(doc.desc.clone());
 
-fn fold_item(fold: &fold::Fold<()>, doc: doc::ItemDoc) -> doc::ItemDoc {
-    let doc = fold::default_seq_fold_item(fold, doc);
-    let (desc, sections) = sectionalize(doc.desc.clone());
-
-    doc::ItemDoc {
-        desc: desc,
-        sections: sections,
-        .. doc
+        doc::ItemDoc {
+            desc: desc,
+            sections: sections,
+            .. doc
+        }
     }
-}
 
-fn fold_trait(fold: &fold::Fold<()>, doc: doc::TraitDoc) -> doc::TraitDoc {
-    let doc = fold::default_seq_fold_trait(fold, doc);
+    fn fold_trait(&self, doc: doc::TraitDoc) -> doc::TraitDoc {
+        let doc = fold::default_fold_trait(self, doc);
 
-    doc::TraitDoc {
-        methods: do doc.methods.map |method| {
-            let (desc, sections) = sectionalize(method.desc.clone());
+        doc::TraitDoc {
+            methods: do doc.methods.map |method| {
+                let (desc, sections) = sectionalize(method.desc.clone());
 
-            doc::MethodDoc {
-                desc: desc,
-                sections: sections,
-                .. (*method).clone()
-            }
-        },
-        .. doc
+                doc::MethodDoc {
+                    desc: desc,
+                    sections: sections,
+                    .. (*method).clone()
+                }
+            },
+            .. doc
+        }
     }
-}
 
-fn fold_impl(fold: &fold::Fold<()>, doc: doc::ImplDoc) -> doc::ImplDoc {
-    let doc = fold::default_seq_fold_impl(fold, doc);
+    fn fold_impl(&self, doc: doc::ImplDoc) -> doc::ImplDoc {
+        let doc = fold::default_fold_impl(self, doc);
 
-    doc::ImplDoc {
-        methods: do doc.methods.map |method| {
-            let (desc, sections) = sectionalize(method.desc.clone());
+        doc::ImplDoc {
+            methods: do doc.methods.map |method| {
+                let (desc, sections) = sectionalize(method.desc.clone());
 
-            doc::MethodDoc {
-                desc: desc,
-                sections: sections,
-                .. (*method).clone()
-            }
-        },
-        .. doc
+                doc::MethodDoc {
+                    desc: desc,
+                    sections: sections,
+                    .. (*method).clone()
+                }
+            },
+            .. doc
+        }
     }
 }
 

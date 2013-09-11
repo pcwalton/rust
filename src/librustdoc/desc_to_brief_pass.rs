@@ -25,58 +25,55 @@ use pass::Pass;
 
 use std::util;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"desc_to_brief",
-        f: run
+pub fn mk_pass() -> @Pass {
+    @DescToBriefPass as @Pass
+}
+
+struct DescToBriefPass;
+
+impl Pass for DescToBriefPass {
+    fn name(&self) -> ~str {
+        ~"desc_to_brief"
+    }
+
+    fn run(&self, _: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        self.fold_doc(doc)
     }
 }
 
-pub fn run(
-    _srv: astsrv::Srv,
-    doc: doc::Doc
-) -> doc::Doc {
-    let fold = Fold {
-        fold_item: fold_item,
-        fold_trait: fold_trait,
-        fold_impl: fold_impl,
-        .. fold::default_any_fold(())
-    };
-    (fold.fold_doc)(&fold, doc)
-}
-
-fn fold_item(fold: &fold::Fold<()>, doc: doc::ItemDoc) -> doc::ItemDoc {
-    let doc = fold::default_seq_fold_item(fold, doc);
-
-    doc::ItemDoc {
-        brief: extract(doc.desc.clone()),
-        .. doc
-    }
-}
-
-fn fold_trait(fold: &fold::Fold<()>, doc: doc::TraitDoc) -> doc::TraitDoc {
-    let doc =fold::default_seq_fold_trait(fold, doc);
-
-    doc::TraitDoc {
-        methods: doc.methods.map(|doc| doc::MethodDoc {
+impl Fold for DescToBriefPass {
+    fn fold_item(&self, doc: doc::ItemDoc) -> doc::ItemDoc {
+        doc::ItemDoc {
             brief: extract(doc.desc.clone()),
-            .. (*doc).clone()
-        }),
-        .. doc
+            .. doc
+        }
+    }
+
+    fn fold_trait(&self, doc: doc::TraitDoc) -> doc::TraitDoc {
+        let doc = fold::default_fold_trait(self, doc);
+
+        doc::TraitDoc {
+            methods: doc.methods.map(|doc| doc::MethodDoc {
+                brief: extract(doc.desc.clone()),
+                .. (*doc).clone()
+            }),
+            .. doc
+        }
+    }
+
+    fn fold_impl(&self, doc: doc::ImplDoc) -> doc::ImplDoc {
+        let doc =fold::default_fold_impl(self, doc);
+
+        doc::ImplDoc {
+            methods: doc.methods.map(|doc| doc::MethodDoc {
+                brief: extract(doc.desc.clone()),
+                .. (*doc).clone()
+            }),
+            .. doc
+        }
     }
 }
 
-fn fold_impl(fold: &fold::Fold<()>, doc: doc::ImplDoc) -> doc::ImplDoc {
-    let doc =fold::default_seq_fold_impl(fold, doc);
-
-    doc::ImplDoc {
-        methods: doc.methods.map(|doc| doc::MethodDoc {
-            brief: extract(doc.desc.clone()),
-            .. (*doc).clone()
-        }),
-        .. doc
-    }
-}
 
 pub fn extract(desc: Option<~str>) -> Option<~str> {
     if desc.is_none() {

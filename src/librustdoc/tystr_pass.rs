@@ -17,7 +17,6 @@ use doc;
 use extract::to_str;
 use extract;
 use fold::Fold;
-use fold;
 use pass::Pass;
 
 use syntax::ast;
@@ -25,41 +24,175 @@ use syntax::print::pprust;
 use syntax::parse::token;
 use syntax::ast_map;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"tystr",
-        f: run
+struct TyStrPass;
+
+impl Pass for TyStrPass {
+    fn name(&self) -> ~str {
+        ~"tystr"
+    }
+
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        let fold = TyStrFold {
+            srv: srv.clone(),
+        };
+        fold.fold_doc(doc)
     }
 }
 
-pub fn run(
-    srv: astsrv::Srv,
-    doc: doc::Doc
-) -> doc::Doc {
-    let fold = Fold {
-        ctxt: srv.clone(),
-        fold_fn: fold_fn,
-        fold_static: fold_static,
-        fold_enum: fold_enum,
-        fold_trait: fold_trait,
-        fold_impl: fold_impl,
-        fold_type: fold_type,
-        fold_struct: fold_struct,
-        .. fold::default_any_fold(srv)
-    };
-    (fold.fold_doc)(&fold, doc)
+pub fn mk_pass() -> @Pass {
+    @TyStrPass as @Pass
 }
 
-fn fold_fn(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::FnDoc
-) -> doc::FnDoc {
+struct TyStrFold {
+    srv: astsrv::Srv,
+}
 
-    let srv = fold.ctxt.clone();
+impl Fold for TyStrFold {
+    fn fold_fn(&self, doc: doc::FnDoc) -> doc::FnDoc {
+        let srv = self.srv.clone();
 
-    doc::SimpleItemDoc {
-        sig: get_fn_sig(srv, doc.id()),
-        .. doc
+        doc::SimpleItemDoc {
+            sig: get_fn_sig(srv, doc.id()),
+            .. doc
+        }
+    }
+
+    fn fold_static(&self, doc: doc::StaticDoc) -> doc::StaticDoc {
+        let srv = self.srv.clone();
+
+        doc::SimpleItemDoc {
+            sig: Some({
+                let doc = doc.clone();
+                do astsrv::exec(srv) |ctxt| {
+                    match ctxt.ast_map.get_copy(&doc.id()) {
+                        ast_map::node_item(@ast::item {
+                            node: ast::item_static(ref ty, _, _), _
+                        }, _) => {
+                            pprust::ty_to_str(ty, extract::interner())
+                        }
+                        _ => fail!("fold_static: id not bound to a static item")
+                    }
+                }}),
+            .. doc
+        }
+    }
+
+    fn fold_enum(&self, doc: doc::EnumDoc) -> doc::EnumDoc {
+        let doc_id = doc.id();
+        let srv = self.srv.clone();
+
+        doc::EnumDoc {
+            variants: do doc.variants.iter().map |variant| {
+                let sig = {
+                    let variant = (*variant).clone();
+                    do astsrv::exec(srv.clone()) |ctxt| {
+                        match ctxt.ast_map.get_copy(&doc_id) {
+                            ast_map::node_item(@ast::item {
+                                node: ast::item_enum(ref enum_definition, _), _
+                            }, _) => {
+                                let ast_variant =
+                                    (*do enum_definition.variants.iter().find |v| {
+                                    to_str(v.node.name) == variant.name
+                                }.unwrap()).clone();
+
+                                pprust::variant_to_str(
+                                    &ast_variant, extract::interner())
+                            }
+                            _ => fail!("enum variant not bound to an enum item")
+                        }
+                    }
+                };
+
+                doc::VariantDoc {
+                    sig: Some(sig),
+                    .. (*variant).clone()
+                }
+            }.collect(),
+            .. doc
+        }
+    }
+
+    fn fold_impl(&self, doc: doc::ImplDoc) -> doc::ImplDoc {
+        let srv = self.srv.clone();
+
+        let (bounds, trait_types, self_ty) = {
+            let doc = doc.clone();
+            do astsrv::exec(srv) |ctxt| {
+                match ctxt.ast_map.get_copy(&doc.id()) {
+                    ast_map::node_item(@ast::item {
+                        node: ast::item_impl(ref generics, ref opt_trait_type, ref self_ty, _), _
+                    }, _) => {
+                        let bounds = pprust::generics_to_str(generics, extract::interner());
+                        let bounds = if bounds.is_empty() { None } else { Some(bounds) };
+                        let trait_types = do opt_trait_type.map_default(~[]) |p| {
+                            ~[pprust::path_to_str(&p.path, extract::interner())]
+                        };
+                        (bounds,
+                         trait_types,
+                         Some(pprust::ty_to_str(
+                             self_ty, extract::interner())))
+                    }
+                    _ => fail!("expected impl")
+                }
+            }
+        };
+
+        doc::ImplDoc {
+            bounds_str: bounds,
+            trait_types: trait_types,
+            self_ty: self_ty,
+            methods: merge_methods(self.srv.clone(), doc.id(), doc.methods.clone()),
+            .. doc
+        }
+    }
+
+    fn fold_type(&self, doc: doc::TyDoc) -> doc::TyDoc {
+        let srv = self.srv.clone();
+
+        doc::SimpleItemDoc {
+            sig: {
+                let doc = doc.clone();
+                do astsrv::exec(srv) |ctxt| {
+                    match ctxt.ast_map.get_copy(&doc.id()) {
+                        ast_map::node_item(@ast::item {
+                            ident: ident,
+                            node: ast::item_ty(ref ty, ref params), _
+                        }, _) => {
+                            Some(fmt!(
+                                "type %s%s = %s",
+                                to_str(ident),
+                                pprust::generics_to_str(params,
+                                                        extract::interner()),
+                                pprust::ty_to_str(ty, extract::interner())
+                            ))
+                        }
+                        _ => fail!("expected type")
+                    }
+                }
+            },
+            .. doc
+        }
+    }
+
+    fn fold_struct(&self, doc: doc::StructDoc) -> doc::StructDoc {
+        let srv = self.srv.clone();
+
+        doc::StructDoc {
+            sig: {
+                let doc = doc.clone();
+                do astsrv::exec(srv) |ctxt| {
+                    match ctxt.ast_map.get_copy(&doc.id()) {
+                        ast_map::node_item(item, _) => {
+                            let item = strip_struct_extra_stuff(item);
+                            Some(pprust::item_to_str(item,
+                                                     extract::interner()))
+                        }
+                        _ => fail!("not an item")
+                    }
+                }
+            },
+            .. doc
+        }
     }
 }
 
@@ -90,77 +223,6 @@ fn get_fn_sig(srv: astsrv::Srv, fn_id: doc::AstId) -> Option<~str> {
             }
             _ => fail!("get_fn_sig: fn_id not bound to a fn item")
         }
-    }
-}
-
-fn fold_static(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::StaticDoc
-) -> doc::StaticDoc {
-    let srv = fold.ctxt.clone();
-
-    doc::SimpleItemDoc {
-        sig: Some({
-            let doc = doc.clone();
-            do astsrv::exec(srv) |ctxt| {
-                match ctxt.ast_map.get_copy(&doc.id()) {
-                    ast_map::node_item(@ast::item {
-                        node: ast::item_static(ref ty, _, _), _
-                    }, _) => {
-                        pprust::ty_to_str(ty, extract::interner())
-                    }
-                    _ => fail!("fold_static: id not bound to a static item")
-                }
-            }}),
-        .. doc
-    }
-}
-
-fn fold_enum(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::EnumDoc
-) -> doc::EnumDoc {
-    let doc_id = doc.id();
-    let srv = fold.ctxt.clone();
-
-    doc::EnumDoc {
-        variants: do doc.variants.iter().map |variant| {
-            let sig = {
-                let variant = (*variant).clone();
-                do astsrv::exec(srv.clone()) |ctxt| {
-                    match ctxt.ast_map.get_copy(&doc_id) {
-                        ast_map::node_item(@ast::item {
-                            node: ast::item_enum(ref enum_definition, _), _
-                        }, _) => {
-                            let ast_variant =
-                                (*do enum_definition.variants.iter().find |v| {
-                                to_str(v.node.name) == variant.name
-                            }.unwrap()).clone();
-
-                            pprust::variant_to_str(
-                                &ast_variant, extract::interner())
-                        }
-                        _ => fail!("enum variant not bound to an enum item")
-                    }
-                }
-            };
-
-            doc::VariantDoc {
-                sig: Some(sig),
-                .. (*variant).clone()
-            }
-        }.collect(),
-        .. doc
-    }
-}
-
-fn fold_trait(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::TraitDoc
-) -> doc::TraitDoc {
-    doc::TraitDoc {
-        methods: merge_methods(fold.ctxt.clone(), doc.id(), doc.methods.clone()),
-        .. doc
     }
 }
 
@@ -244,99 +306,6 @@ fn get_method_sig(
     }
 }
 
-fn fold_impl(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::ImplDoc
-) -> doc::ImplDoc {
-
-    let srv = fold.ctxt.clone();
-
-    let (bounds, trait_types, self_ty) = {
-        let doc = doc.clone();
-        do astsrv::exec(srv) |ctxt| {
-            match ctxt.ast_map.get_copy(&doc.id()) {
-                ast_map::node_item(@ast::item {
-                    node: ast::item_impl(ref generics, ref opt_trait_type, ref self_ty, _), _
-                }, _) => {
-                    let bounds = pprust::generics_to_str(generics, extract::interner());
-                    let bounds = if bounds.is_empty() { None } else { Some(bounds) };
-                    let trait_types = do opt_trait_type.map_default(~[]) |p| {
-                        ~[pprust::path_to_str(&p.path, extract::interner())]
-                    };
-                    (bounds,
-                     trait_types,
-                     Some(pprust::ty_to_str(
-                         self_ty, extract::interner())))
-                }
-                _ => fail!("expected impl")
-            }
-        }
-    };
-
-    doc::ImplDoc {
-        bounds_str: bounds,
-        trait_types: trait_types,
-        self_ty: self_ty,
-        methods: merge_methods(fold.ctxt.clone(), doc.id(), doc.methods.clone()),
-        .. doc
-    }
-}
-
-fn fold_type(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::TyDoc
-) -> doc::TyDoc {
-
-    let srv = fold.ctxt.clone();
-
-    doc::SimpleItemDoc {
-        sig: {
-            let doc = doc.clone();
-            do astsrv::exec(srv) |ctxt| {
-                match ctxt.ast_map.get_copy(&doc.id()) {
-                    ast_map::node_item(@ast::item {
-                        ident: ident,
-                        node: ast::item_ty(ref ty, ref params), _
-                    }, _) => {
-                        Some(fmt!(
-                            "type %s%s = %s",
-                            to_str(ident),
-                            pprust::generics_to_str(params,
-                                                    extract::interner()),
-                            pprust::ty_to_str(ty, extract::interner())
-                        ))
-                    }
-                    _ => fail!("expected type")
-                }
-            }
-        },
-        .. doc
-    }
-}
-
-fn fold_struct(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::StructDoc
-) -> doc::StructDoc {
-    let srv = fold.ctxt.clone();
-
-    doc::StructDoc {
-        sig: {
-            let doc = doc.clone();
-            do astsrv::exec(srv) |ctxt| {
-                match ctxt.ast_map.get_copy(&doc.id()) {
-                    ast_map::node_item(item, _) => {
-                        let item = strip_struct_extra_stuff(item);
-                        Some(pprust::item_to_str(item,
-                                                 extract::interner()))
-                    }
-                    _ => fail!("not an item")
-                }
-            }
-        },
-        .. doc
-    }
-}
 
 /// Removes various things from the struct item definition that
 /// shouldn't be displayed in the struct signature. Probably there

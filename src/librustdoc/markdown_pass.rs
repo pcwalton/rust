@@ -21,48 +21,51 @@ use markdown_writer::WriterFactory;
 use pass::Pass;
 use sort_pass;
 
-use std::cell::Cell;
 use std::str;
 use std::vec;
 use syntax;
 
-pub fn mk_pass(writer_factory: WriterFactory) -> Pass {
-    let writer_factory = Cell::new(writer_factory);
-    Pass {
-        name: ~"markdown",
-        f: |srv, doc| run(srv, doc, writer_factory.take())
-    }
+pub fn mk_pass(writer_factory: WriterFactory) -> @Pass {
+    @MarkdownPass {
+        writer_factory: writer_factory,
+    } as @Pass
 }
 
-fn run(
-    srv: astsrv::Srv,
-    doc: doc::Doc,
-    writer_factory: WriterFactory
-) -> doc::Doc {
+struct MarkdownPass {
+    writer_factory: WriterFactory,
+}
 
-    fn mods_last(item1: &doc::ItemTag, item2: &doc::ItemTag) -> bool {
-        fn is_mod(item: &doc::ItemTag) -> bool {
-            match *item {
-                doc::ModTag(_) => true,
-                _ => false
+impl Pass for MarkdownPass {
+    fn name(&self) -> ~str {
+        ~"markdown"
+    }
+
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        fn mods_last(item1: &doc::ItemTag, item2: &doc::ItemTag) -> bool {
+            fn is_mod(item: &doc::ItemTag) -> bool {
+                match *item {
+                    doc::ModTag(_) => true,
+                    _ => false
+                }
             }
+
+            let lteq = !is_mod(item1) || is_mod(item2);
+            lteq
         }
 
-        let lteq = !is_mod(item1) || is_mod(item2);
-        lteq
+        // Sort the items so mods come last. All mods will be
+        // output at the same header level so sorting mods last
+        // makes the headers come out nested correctly.
+        let sorted_doc = sort_pass::mk_pass(
+            ~"mods last", mods_last
+        ).run(srv, doc.clone());
+
+        write_markdown(sorted_doc, &self.writer_factory);
+
+        return doc;
     }
-
-    // Sort the items so mods come last. All mods will be
-    // output at the same header level so sorting mods last
-    // makes the headers come out nested correctly.
-    let sorted_doc = (sort_pass::mk_pass(
-        ~"mods last", mods_last
-    ).f)(srv, doc.clone());
-
-    write_markdown(sorted_doc, writer_factory);
-
-    return doc;
 }
+
 
 struct Ctxt {
     w: Writer
@@ -70,14 +73,14 @@ struct Ctxt {
 
 pub fn write_markdown(
     doc: doc::Doc,
-    writer_factory: WriterFactory
+    writer_factory: &WriterFactory
 ) {
     // There is easy parallelism to be had here, but
     // we don't want to spawn too many pandoc processes.
     // (See #2484, which is closed.)
     do doc.pages.map |page| {
         let ctxt = Ctxt {
-            w: writer_factory((*page).clone())
+            w: (*writer_factory)((*page).clone())
         };
         write_page(&ctxt, page)
     };
@@ -399,7 +402,7 @@ fn write_sig(ctxt: &Ctxt, sig: Option<~str>) {
             ctxt.w.put_line(code_block(sig));
             ctxt.w.put_line(~"");
         }
-        None => fail!("unimplemented")
+        None => {}
     }
 }
 

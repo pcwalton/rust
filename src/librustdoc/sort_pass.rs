@@ -21,47 +21,47 @@ use pass::Pass;
 use extra::sort;
 use std::clone::Clone;
 
-pub type ItemLtEqOp = @fn(v1: &doc::ItemTag, v2:  &doc::ItemTag) -> bool;
+pub type ItemLtEqOp = extern "Rust" fn(v1: &doc::ItemTag, v2: &doc::ItemTag)
+                                       -> bool;
 
 struct ItemLtEq {
+    name: ~str,
     op: ItemLtEqOp,
 }
 
 impl Clone for ItemLtEq {
     fn clone(&self) -> ItemLtEq {
         ItemLtEq {
+            name: self.name.clone(),
             op: self.op,
         }
     }
 }
 
-pub fn mk_pass(name: ~str, lteq: ItemLtEqOp) -> Pass {
-    Pass {
-        name: name.clone(),
-        f: |srv, doc| run(srv, doc, ItemLtEq { op: lteq })
+pub fn mk_pass(name: ~str, lteq: ItemLtEqOp) -> @Pass {
+    @ItemLtEq {
+        name: name,
+        op: lteq,
+    } as @Pass
+}
+
+impl Pass for ItemLtEq {
+    fn name(&self) -> ~str {
+        self.name.clone()
+    }
+
+    fn run(&self, _: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        self.fold_doc(doc)
     }
 }
 
-fn run(
-    _srv: astsrv::Srv,
-    doc: doc::Doc,
-    lteq: ItemLtEq
-) -> doc::Doc {
-    let fold = Fold {
-        fold_mod: fold_mod,
-        .. fold::default_any_fold(lteq)
-    };
-    (fold.fold_doc)(&fold, doc)
-}
-
-fn fold_mod(
-    fold: &fold::Fold<ItemLtEq>,
-    doc: doc::ModDoc
-) -> doc::ModDoc {
-    let doc = fold::default_any_fold_mod(fold, doc);
-    doc::ModDoc {
-        items: sort::merge_sort(doc.items, fold.ctxt.op),
-        .. doc
+impl Fold for ItemLtEq {
+    fn fold_mod(&self, doc: doc::ModDoc) -> doc::ModDoc {
+        let doc = fold::default_fold_mod(self, doc);
+        doc::ModDoc {
+            items: sort::merge_sort(doc.items, self.op),
+            .. doc
+        }
     }
 }
 

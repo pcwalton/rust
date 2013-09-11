@@ -17,22 +17,22 @@ use time;
 #[cfg(test)] use extract;
 
 /// A single operation on the document model
-pub struct Pass {
-    name: ~str,
-    f: @fn(srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc
+pub trait Pass {
+    fn name(&self) -> ~str;
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc;
 }
 
 pub fn run_passes(
     srv: astsrv::Srv,
     doc: doc::Doc,
-    passes: ~[Pass]
+    passes: ~[@Pass]
 ) -> doc::Doc {
     let mut passno = 0;
     do passes.iter().fold(doc) |doc, pass| {
         debug!("pass #%d", passno);
         passno += 1;
-        do time(pass.name.clone()) {
-            (pass.f)(srv.clone(), doc.clone())
+        do time(pass.name()) {
+            pass.run(srv.clone(), doc.clone())
         }
     }
 }

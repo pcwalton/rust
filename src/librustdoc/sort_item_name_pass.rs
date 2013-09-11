@@ -15,7 +15,7 @@ use doc;
 use pass::Pass;
 use sort_pass;
 
-pub fn mk_pass() -> Pass {
+pub fn mk_pass() -> @Pass {
     fn by_item_name(item1: &doc::ItemTag, item2: &doc::ItemTag) -> bool {
         (*item1).name_() <= (*item2).name_()
     }

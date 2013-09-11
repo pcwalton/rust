@@ -10,7 +10,6 @@
 
 //! Build indexes as appropriate for the markdown pass
 
-
 use astsrv;
 use config;
 use doc::ItemUtils;
@@ -21,49 +20,43 @@ use markdown_pass;
 use markdown_writer;
 use pass::Pass;
 
-pub fn mk_pass(config: config::Config) -> Pass {
-    Pass {
-        name: ~"markdown_index",
-        f: |srv, doc| run(srv, doc, config.clone())
+pub fn mk_pass(config: config::Config) -> @Pass {
+    @MarkdownIndexPass {
+        config: config,
+    } as @Pass
+}
+
+struct MarkdownIndexPass {
+    config: config::Config,
+}
+
+impl Pass for MarkdownIndexPass {
+    fn name(&self) -> ~str {
+        ~"markdown_index"
+    }
+
+    fn run(&self, _: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        self.fold_doc(doc)
     }
 }
 
-pub fn run(
-    _srv: astsrv::Srv,
-    doc: doc::Doc,
-    config: config::Config
-) -> doc::Doc {
-    let fold = Fold {
-        fold_mod: fold_mod,
-        fold_nmod: fold_nmod,
-        .. fold::default_any_fold(config)
-    };
-    (fold.fold_doc)(&fold, doc)
-}
+impl Fold for MarkdownIndexPass {
+    fn fold_mod(&self, doc: doc::ModDoc) -> doc::ModDoc {
+        let doc = fold::default_fold_mod(self, doc);
 
-fn fold_mod(
-    fold: &fold::Fold<config::Config>,
-    doc: doc::ModDoc
-) -> doc::ModDoc {
-
-    let doc = fold::default_any_fold_mod(fold, doc);
-
-    doc::ModDoc {
-        index: Some(build_mod_index(doc.clone(), fold.ctxt.clone())),
-        .. doc
+        doc::ModDoc {
+            index: Some(build_mod_index(doc.clone(), self.config.clone())),
+            .. doc
+        }
     }
-}
 
-fn fold_nmod(
-    fold: &fold::Fold<config::Config>,
-    doc: doc::NmodDoc
-) -> doc::NmodDoc {
+    fn fold_nmod(&self, doc: doc::NmodDoc) -> doc::NmodDoc {
+        let doc = fold::default_fold_nmod(self, doc);
 
-    let doc = fold::default_any_fold_nmod(fold, doc);
-
-    doc::NmodDoc {
-        index: Some(build_nmod_index(doc.clone(), fold.ctxt.clone())),
-        .. doc
+        doc::NmodDoc {
+            index: Some(build_nmod_index(doc.clone(), self.config.clone())),
+            .. doc
+        }
     }
 }
 

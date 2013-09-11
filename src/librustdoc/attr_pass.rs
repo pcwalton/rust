@@ -29,73 +29,128 @@ use pass::Pass;
 use syntax::ast;
 use syntax::ast_map;
 
-pub fn mk_pass() -> Pass {
-    Pass {
-        name: ~"attr",
-        f: run
+struct AttrPass;
+
+impl Pass for AttrPass {
+    fn name(&self) -> ~str {
+        ~"attr"
+    }
+
+    fn run(&self, srv: astsrv::Srv, doc: doc::Doc) -> doc::Doc {
+        let fold = AttrFolder {
+            srv: srv.clone(),
+        };
+        fold.fold_doc(doc)
     }
 }
 
-pub fn run(
+pub fn mk_pass() -> @Pass {
+    @AttrPass as @Pass
+}
+
+struct AttrFolder {
     srv: astsrv::Srv,
-    doc: doc::Doc
-) -> doc::Doc {
-    let fold = Fold {
-        ctxt: srv.clone(),
-        fold_crate: fold_crate,
-        fold_item: fold_item,
-        fold_enum: fold_enum,
-        fold_trait: fold_trait,
-        fold_impl: fold_impl,
-        .. fold::default_any_fold(srv)
-    };
-    (fold.fold_doc)(&fold, doc)
 }
 
-fn fold_crate(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::CrateDoc
-) -> doc::CrateDoc {
+impl Fold for AttrFolder {
+    fn fold_crate(&self, doc: doc::CrateDoc) -> doc::CrateDoc {
+        let srv = self.srv.clone();
+        let doc = fold::default_fold_crate(self, doc);
 
-    let srv = fold.ctxt.clone();
-    let doc = fold::default_seq_fold_crate(fold, doc);
+        let attrs = do astsrv::exec(srv) |ctxt| {
+            let attrs = ctxt.ast.attrs.clone();
+            attr_parser::parse_crate(attrs)
+        };
 
-    let attrs = do astsrv::exec(srv) |ctxt| {
-        let attrs = ctxt.ast.attrs.clone();
-        attr_parser::parse_crate(attrs)
-    };
-
-    doc::CrateDoc {
-        topmod: doc::ModDoc {
-            item: doc::ItemDoc {
-                name: attrs.name.clone().unwrap_or_default(doc.topmod.name_()),
-                .. doc.topmod.item.clone()
-            },
-            .. doc.topmod.clone()
+        doc::CrateDoc {
+            topmod: doc::ModDoc {
+                item: doc::ItemDoc {
+                    name: attrs.name
+                               .clone()
+                               .unwrap_or_default(doc.topmod.name_()),
+                    .. doc.topmod.item.clone()
+                },
+                .. doc.topmod.clone()
+            }
         }
     }
-}
 
-fn fold_item(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::ItemDoc
-) -> doc::ItemDoc {
+    fn fold_item(&self, doc: doc::ItemDoc) -> doc::ItemDoc {
+        let srv = self.srv.clone();
 
-    let srv = fold.ctxt.clone();
-    let doc = fold::default_seq_fold_item(fold, doc);
+        let desc = if doc.id == ast::CRATE_NODE_ID {
+            // This is the top-level mod, use the crate attributes
+            do astsrv::exec(srv) |ctxt| {
+                attr_parser::parse_desc(ctxt.ast.attrs.clone())
+            }
+        } else {
+            parse_item_attrs(srv, doc.id, attr_parser::parse_desc)
+        };
 
-    let desc = if doc.id == ast::CRATE_NODE_ID {
-        // This is the top-level mod, use the crate attributes
-        do astsrv::exec(srv) |ctxt| {
-            attr_parser::parse_desc(ctxt.ast.attrs.clone())
+        doc::ItemDoc {
+            desc: desc,
+            .. doc
         }
-    } else {
-        parse_item_attrs(srv, doc.id, attr_parser::parse_desc)
-    };
+    }
 
-    doc::ItemDoc {
-        desc: desc,
-        .. doc
+    fn fold_enum(&self, doc: doc::EnumDoc) -> doc::EnumDoc {
+        let srv = self.srv.clone();
+        let doc_id = doc.id();
+        let doc = fold::default_fold_enum(self, doc);
+
+        doc::EnumDoc {
+            variants: do doc.variants.iter().map |variant| {
+                let variant = (*variant).clone();
+                let desc = {
+                    let variant = variant.clone();
+                    do astsrv::exec(srv.clone()) |ctxt| {
+                        match ctxt.ast_map.get_copy(&doc_id) {
+                            ast_map::node_item(@ast::item {
+                                node: ast::item_enum(ref enum_definition, _), _
+                            }, _) => {
+                                let ast_variant =
+                                    (*enum_definition.variants.iter().find(|v| {
+                                        to_str(v.node.name) == variant.name
+                                    }).unwrap()).clone();
+
+                                attr_parser::parse_desc(
+                                    ast_variant.node.attrs.clone())
+                            }
+                            _ => {
+                                fail!("Enum variant %s has id that's not bound to an enum item",
+                                      variant.name)
+                            }
+                        }
+                    }
+                };
+
+                doc::VariantDoc {
+                    desc: desc,
+                    .. variant
+                }
+            }.collect(),
+            .. doc
+        }
+    }
+
+    fn fold_trait(&self, doc: doc::TraitDoc) -> doc::TraitDoc {
+        let srv = self.srv.clone();
+        let doc = fold::default_fold_trait(self, doc);
+
+        doc::TraitDoc {
+            methods: merge_method_attrs(srv, doc.id(), doc.methods.clone()),
+            .. doc
+        }
+    }
+
+    fn fold_impl(&self, doc: doc::ImplDoc) -> doc::ImplDoc {
+        let srv = self.srv.clone();
+        let doc = fold::default_fold_impl(self, doc);
+
+        doc::ImplDoc {
+            methods: merge_method_attrs(srv, doc.id(), doc.methods.clone()),
+            .. doc
+        }
     }
 }
 
@@ -110,63 +165,6 @@ fn parse_item_attrs<T:Send>(
             _ => fail!("parse_item_attrs: not an item")
         };
         parse_attrs(attrs)
-    }
-}
-
-fn fold_enum(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::EnumDoc
-) -> doc::EnumDoc {
-
-    let srv = fold.ctxt.clone();
-    let doc_id = doc.id();
-    let doc = fold::default_seq_fold_enum(fold, doc);
-
-    doc::EnumDoc {
-        variants: do doc.variants.iter().map |variant| {
-            let variant = (*variant).clone();
-            let desc = {
-                let variant = variant.clone();
-                do astsrv::exec(srv.clone()) |ctxt| {
-                    match ctxt.ast_map.get_copy(&doc_id) {
-                        ast_map::node_item(@ast::item {
-                            node: ast::item_enum(ref enum_definition, _), _
-                        }, _) => {
-                            let ast_variant =
-                                (*enum_definition.variants.iter().find(|v| {
-                                    to_str(v.node.name) == variant.name
-                                }).unwrap()).clone();
-
-                            attr_parser::parse_desc(
-                                ast_variant.node.attrs.clone())
-                        }
-                        _ => {
-                            fail!("Enum variant %s has id that's not bound to an enum item",
-                                  variant.name)
-                        }
-                    }
-                }
-            };
-
-            doc::VariantDoc {
-                desc: desc,
-                .. variant
-            }
-        }.collect(),
-        .. doc
-    }
-}
-
-fn fold_trait(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::TraitDoc
-) -> doc::TraitDoc {
-    let srv = fold.ctxt.clone();
-    let doc = fold::default_seq_fold_trait(fold, doc);
-
-    doc::TraitDoc {
-        methods: merge_method_attrs(srv, doc.id(), doc.methods.clone()),
-        .. doc
     }
 }
 
@@ -215,20 +213,6 @@ fn merge_method_attrs(
             .. (*doc).clone()
         }
     }.collect()
-}
-
-
-fn fold_impl(
-    fold: &fold::Fold<astsrv::Srv>,
-    doc: doc::ImplDoc
-) -> doc::ImplDoc {
-    let srv = fold.ctxt.clone();
-    let doc = fold::default_seq_fold_impl(fold, doc);
-
-    doc::ImplDoc {
-        methods: merge_method_attrs(srv, doc.id(), doc.methods.clone()),
-        .. doc
-    }
 }
 
 #[cfg(test)]

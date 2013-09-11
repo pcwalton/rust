@@ -16,10 +16,19 @@ is interpreted as the brief description.
 */
 
 use pass::Pass;
+use text_pass::Op;
 use text_pass;
 
-pub fn mk_pass() -> Pass {
-    text_pass::mk_pass(~"trim", |s| s.trim().to_owned() )
+pub fn mk_pass() -> @Pass {
+    text_pass::mk_pass(~"trim", @TrimOp as @Op)
+}
+
+struct TrimOp;
+
+impl Op for TrimOp {
+    fn op(&self, s: &str) -> ~str {
+        s.trim().to_owned()
+    }
 }
 
 #[cfg(test)]
