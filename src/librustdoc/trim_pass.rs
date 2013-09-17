@@ -43,9 +43,9 @@ mod test {
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            let doc = (attr_pass::mk_pass().f)(srv.clone(), doc);
-            let doc = (prune_hidden_pass::mk_pass().f)(srv.clone(), doc);
-            (mk_pass().f)(srv.clone(), doc)
+            let doc = attr_pass::mk_pass().run(srv.clone(), doc);
+            let doc = prune_hidden_pass::mk_pass().run(srv.clone(), doc);
+            mk_pass().run(srv.clone(), doc)
         }
     }
 

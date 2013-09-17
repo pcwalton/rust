@@ -29,6 +29,6 @@ impl Op for EscapeOp {
 #[test]
 fn should_escape_backslashes() {
     let s = ~"\\n";
-    let r = escape(s);
+    let r = EscapeOp.op(s);
     assert_eq!(r, ~"\\\\n");
 }

@@ -22,7 +22,7 @@ use pass::Pass;
 
 use std::util;
 
-struct PrunePrivatePass;
+pub struct PrunePrivatePass;
 
 pub fn mk_pass() -> @Pass {
     @PrunePrivatePass as @Pass
@@ -164,14 +164,15 @@ mod test {
     use astsrv;
     use doc;
     use extract;
-    use tystr_pass;
-    use prune_private_pass::run;
+    use pass::Pass;
+    use tystr_pass::TyStrPass;
+    use prune_private_pass::PrunePrivatePass;
 
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            let doc = tystr_pass::run(srv.clone(), doc);
-            run(srv.clone(), doc)
+            let doc = TyStrPass.run(srv.clone(), doc);
+            PrunePrivatePass.run(srv.clone(), doc)
         }
     }
 

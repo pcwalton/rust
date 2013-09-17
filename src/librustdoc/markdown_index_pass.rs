@@ -26,7 +26,7 @@ pub fn mk_pass(config: config::Config) -> @Pass {
     } as @Pass
 }
 
-struct MarkdownIndexPass {
+pub struct MarkdownIndexPass {
     config: config::Config,
 }
 
@@ -163,7 +163,8 @@ mod test {
     use desc_to_brief_pass;
     use doc;
     use extract;
-    use markdown_index_pass::run;
+    use markdown_index_pass::MarkdownIndexPass;
+    use pass::Pass;
     use path_pass;
     use prune_hidden_pass;
     use super::pandoc_header_id;
@@ -176,12 +177,14 @@ mod test {
                 .. config::default_config(&Path("whatever"))
             };
             let doc = extract::from_srv(srv.clone(), ~"");
-            let doc = (attr_pass::mk_pass().f)(srv.clone(), doc);
-            let doc = (prune_hidden_pass::mk_pass().f)(srv.clone(), doc);
-            let doc = (desc_to_brief_pass::mk_pass().f)(srv.clone(), doc);
-            let doc = (path_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = attr_pass::mk_pass().run(srv.clone(), doc);
+            let doc = prune_hidden_pass::mk_pass().run(srv.clone(), doc);
+            let doc = desc_to_brief_pass::mk_pass().run(srv.clone(), doc);
+            let doc = path_pass::mk_pass().run(srv.clone(), doc);
 
-            run(srv.clone(), doc, config)
+            MarkdownIndexPass {
+                config: config,
+            }.run(srv.clone(), doc)
         }
     }
 

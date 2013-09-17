@@ -30,7 +30,7 @@ use syntax::ast;
 
 #[cfg(test)] use doc::PageUtils;
 
-struct PagePass {
+pub struct PagePass {
     output_style: config::OutputStyle,
 }
 
@@ -146,8 +146,9 @@ mod test {
     use attr_pass;
     use doc;
     use extract;
+    use pass::Pass;
     use prune_hidden_pass;
-    use page_pass::run;
+    use page_pass::PagePass;
 
     fn mk_doc_(
         output_style: config::OutputStyle,
@@ -155,9 +156,11 @@ mod test {
     ) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            let doc = (attr_pass::mk_pass().f)(srv.clone(), doc);
-            let doc = (prune_hidden_pass::mk_pass().f)(srv.clone(), doc);
-            run(srv.clone(), doc, output_style)
+            let doc = attr_pass::mk_pass().run(srv.clone(), doc);
+            let doc = prune_hidden_pass::mk_pass().run(srv.clone(), doc);
+            PagePass {
+                output_style: output_style,
+            }.run(srv.clone(), doc)
         }
     }
 

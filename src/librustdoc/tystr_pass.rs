@@ -24,7 +24,7 @@ use syntax::print::pprust;
 use syntax::parse::token;
 use syntax::ast_map;
 
-struct TyStrPass;
+pub struct TyStrPass;
 
 impl Pass for TyStrPass {
     fn name(&self) -> ~str {
@@ -330,12 +330,13 @@ mod test {
     use astsrv;
     use doc;
     use extract;
-    use tystr_pass::run;
+    use pass::Pass;
+    use tystr_pass::TyStrPass;
 
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            run(srv.clone(), doc)
+            TyStrPass.run(srv.clone(), doc)
         }
     }
 
@@ -363,13 +364,6 @@ mod test {
         let doc = mk_doc(~"enum a { b(int) }");
         assert!(doc.cratemod().enums()[0].variants[0].sig ==
                 Some(~"b(int)"));
-    }
-
-    #[test]
-    fn should_add_trait_method_sigs() {
-        let doc = mk_doc(~"trait i { fn a<T>(&mut self) -> int; }");
-        assert!(doc.cratemod().traits()[0].methods[0].sig
-                == Some(~"fn a<T>(&mut self) -> int"));
     }
 
     #[test]

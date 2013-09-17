@@ -545,24 +545,24 @@ mod test {
 
             let doc = extract::from_srv(srv.clone(), ~"");
             debug!("doc (extract): %?", doc);
-            let doc = (tystr_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = tystr_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (tystr): %?", doc);
-            let doc = (path_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = path_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (path): %?", doc);
-            let doc = (attr_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = attr_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (attr): %?", doc);
-            let doc = (prune_hidden_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = prune_hidden_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (prune_hidden): %?", doc);
-            let doc = (desc_to_brief_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = desc_to_brief_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (desc_to_brief): %?", doc);
-            let doc = (unindent_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = unindent_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (unindent): %?", doc);
-            let doc = (sectionalize_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = sectionalize_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (trim): %?", doc);
-            let doc = (trim_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = trim_pass::mk_pass().run(srv.clone(), doc);
             debug!("doc (sectionalize): %?", doc);
-            let doc = (markdown_index_pass::mk_pass(config).f)(
-                srv.clone(), doc);
+            let doc = markdown_index_pass::mk_pass(config).run(srv.clone(),
+                                                               doc);
             debug!("doc (index): %?", doc);
             (srv.clone(), doc)
         }
@@ -577,7 +577,7 @@ mod test {
         doc: doc::Doc
     ) -> ~str {
         let (writer_factory, po) = markdown_writer::future_writer_factory();
-        write_markdown(doc, writer_factory);
+        write_markdown(doc, &writer_factory);
         return po.recv().second();
     }
 
@@ -587,7 +587,7 @@ mod test {
     ) -> ~str {
         let (writer_factory, po) = markdown_writer::future_writer_factory();
         let pass = mk_pass(writer_factory);
-        (pass.f)(srv, doc);
+        pass.run(srv, doc);
         return po.recv().second();
     }
 
@@ -637,8 +637,8 @@ mod test {
         let (writer_factory, po) = markdown_writer::future_writer_factory();
         let (srv, doc) = create_doc_srv(~"mod a { }");
         // Split the document up into pages
-        let doc = (page_pass::mk_pass(config::DocPerMod).f)(srv, doc);
-        write_markdown(doc, writer_factory);
+        let doc = page_pass::mk_pass(config::DocPerMod).run(srv, doc);
+        write_markdown(doc, &writer_factory);
         // We expect two pages to have been written
         for _ in range(0, 2u) {
             po.recv();
@@ -650,8 +650,8 @@ mod test {
         let (writer_factory, po) = markdown_writer::future_writer_factory();
         let (srv, doc) = create_doc_srv(
             ~"#[link(name = \"core\")]; mod a { }");
-        let doc = (page_pass::mk_pass(config::DocPerMod).f)(srv, doc);
-        write_markdown(doc, writer_factory);
+        let doc = page_pass::mk_pass(config::DocPerMod).run(srv, doc);
+        write_markdown(doc, &writer_factory);
         for _ in range(0, 2u) {
             let (page, markdown) = po.recv();
             match page {
@@ -869,12 +869,6 @@ mod test {
     fn should_write_trait_method_header() {
         let markdown = render(~"trait i { fn a(); }");
         assert!(markdown.contains("### Method `a`"));
-    }
-
-    #[test]
-    fn should_write_trait_method_signature() {
-        let markdown = render(~"trait i { fn a(&self); }");
-        assert!(markdown.contains("\n~~~ {.rust}\nfn a(&self)"));
     }
 
     #[test]

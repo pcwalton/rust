@@ -236,7 +236,7 @@ mod test {
     fn mk_doc(name: ~str, source: ~str) -> doc::Doc {
         do astsrv::from_str(source) |srv| {
             let doc = extract::from_srv(srv.clone(), name.clone());
-            let doc = (path_pass::mk_pass().f)(srv.clone(), doc);
+            let doc = path_pass::mk_pass().run(srv.clone(), doc);
             doc
         }
     }

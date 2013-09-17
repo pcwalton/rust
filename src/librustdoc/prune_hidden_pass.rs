@@ -18,7 +18,7 @@ use fold::Fold;
 use fold;
 use pass::Pass;
 
-struct PruneHiddenPass;
+pub struct PruneHiddenPass;
 
 impl Pass for PruneHiddenPass {
     fn name(&self) -> ~str {
@@ -73,12 +73,13 @@ mod test {
     use astsrv;
     use doc;
     use extract;
-    use prune_hidden_pass::run;
+    use pass::Pass;
+    use prune_hidden_pass::PruneHiddenPass;
 
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            run(srv.clone(), doc)
+            PruneHiddenPass.run(srv.clone(), doc)
         }
     }
 

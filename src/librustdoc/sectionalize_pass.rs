@@ -22,7 +22,7 @@ pub fn mk_pass() -> @Pass {
     @SectionalizePass as @Pass
 }
 
-struct SectionalizePass;
+pub struct SectionalizePass;
 
 impl Pass for SectionalizePass {
     fn name(&self) -> ~str {
@@ -164,15 +164,16 @@ mod test {
     use attr_pass;
     use doc;
     use extract;
+    use pass::Pass;
     use prune_hidden_pass;
-    use sectionalize_pass::run;
+    use sectionalize_pass::SectionalizePass;
 
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            let doc = (attr_pass::mk_pass().f)(srv.clone(), doc);
-            let doc = (prune_hidden_pass::mk_pass().f)(srv.clone(), doc);
-            run(srv.clone(), doc)
+            let doc = attr_pass::mk_pass().run(srv.clone(), doc);
+            let doc = prune_hidden_pass::mk_pass().run(srv.clone(), doc);
+            SectionalizePass.run(srv.clone(), doc)
         }
     }
 

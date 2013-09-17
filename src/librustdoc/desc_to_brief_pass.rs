@@ -25,11 +25,11 @@ use pass::Pass;
 
 use std::util;
 
+pub struct DescToBriefPass;
+
 pub fn mk_pass() -> @Pass {
     @DescToBriefPass as @Pass
 }
-
-struct DescToBriefPass;
 
 impl Pass for DescToBriefPass {
     fn name(&self) -> ~str {
@@ -172,15 +172,16 @@ mod test {
 
     use astsrv;
     use attr_pass;
-    use super::{extract, paragraphs, run};
+    use super::{extract, paragraphs, DescToBriefPass};
     use doc;
     use extract;
+    use pass::Pass;
 
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            let doc = (attr_pass::mk_pass().f)(srv.clone(), doc);
-            run(srv.clone(), doc)
+            let doc = attr_pass::mk_pass().run(srv.clone(), doc);
+            DescToBriefPass.run(srv.clone(), doc)
         }
     }
 

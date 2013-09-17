@@ -99,14 +99,14 @@ impl Op for UnindentOp {
 #[test]
 fn should_unindent() {
     let s = ~"    line1\n    line2";
-    let r = unindent(s);
+    let r = UnindentOp.op(s);
     assert_eq!(r, ~"line1\nline2");
 }
 
 #[test]
 fn should_unindent_multiple_paragraphs() {
     let s = ~"    line1\n\n    line2";
-    let r = unindent(s);
+    let r = UnindentOp.op(s);
     assert_eq!(r, ~"line1\n\nline2");
 }
 
@@ -115,7 +115,7 @@ fn should_leave_multiple_indent_levels() {
     // Line 2 is indented another level beyond the
     // base indentation and should be preserved
     let s = ~"    line1\n\n        line2";
-    let r = unindent(s);
+    let r = UnindentOp.op(s);
     assert_eq!(r, ~"line1\n\n    line2");
 }
 
@@ -127,13 +127,13 @@ fn should_ignore_first_line_indent() {
     // #[doc = "Start way over here
     //          and continue here"]
     let s = ~"line1\n    line2";
-    let r = unindent(s);
+    let r = UnindentOp.op(s);
     assert_eq!(r, ~"line1\nline2");
 }
 
 #[test]
 fn should_not_ignore_first_line_indent_in_a_single_line_para() {
     let s = ~"line1\n\n    line2";
-    let r = unindent(s);
+    let r = UnindentOp.op(s);
     assert_eq!(r, ~"line1\n\n    line2");
 }

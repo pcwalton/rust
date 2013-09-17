@@ -29,7 +29,7 @@ use pass::Pass;
 use syntax::ast;
 use syntax::ast_map;
 
-struct AttrPass;
+pub struct AttrPass;
 
 impl Pass for AttrPass {
     fn name(&self) -> ~str {
@@ -219,14 +219,15 @@ fn merge_method_attrs(
 mod test {
 
     use astsrv;
-    use attr_pass::run;
+    use attr_pass::AttrPass;
     use doc;
     use extract;
+    use pass::Pass;
 
     fn mk_doc(source: ~str) -> doc::Doc {
         do astsrv::from_str(source.clone()) |srv| {
             let doc = extract::from_srv(srv.clone(), ~"");
-            run(srv.clone(), doc)
+            AttrPass.run(srv.clone(), doc)
         }
     }
 
