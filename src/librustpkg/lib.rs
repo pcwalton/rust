@@ -517,6 +517,8 @@ impl CtxMethods for BuildContext {
                     // We expect that p is relative to the package source's start directory,
                     // so check that assumption
                     debug!("JustOne: p = {}", p.display());
+                    // FIXME(pcwalton): This can come from user error. An assertion should NOT be
+                    // used here.
                     assert!(pkg_src.start_dir.join(p).exists());
                     if is_lib(p) {
                         PkgSrc::push_crate(&mut pkg_src.libs, 0, p);

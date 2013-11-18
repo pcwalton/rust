@@ -110,6 +110,7 @@ pub struct CrateContext {
      opaque_vec_type: Type,
      builder: BuilderRef_res,
      crate_map: ValueRef,
+     used_values: ~[ValueRef],
      // Set when at least one function uses GC. Needed so that
      // decl_gc_metadata knows whether to link to the module metadata, which
      // is not emitted by LLVM's GC pass when no functions use GC.
@@ -231,6 +232,7 @@ impl CrateContext {
                   opaque_vec_type: opaque_vec_type,
                   builder: BuilderRef_res(llvm::LLVMCreateBuilderInContext(llcx)),
                   crate_map: crate_map,
+                  used_values: ~[],
                   uses_gc: false,
                   dbg_cx: dbg_cx,
                   do_not_commit_warning_issued: false

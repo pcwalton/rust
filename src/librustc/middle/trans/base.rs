@@ -212,7 +212,7 @@ fn get_extern_rust_fn(ccx: &mut CrateContext, inputs: &[ty::t], output: ty::t,
     }
     let f = decl_rust_fn(ccx, inputs, output, name);
     do csearch::get_item_attrs(ccx.tcx.cstore, did) |meta_items| {
-        set_llvm_fn_attrs(meta_items.iter().map(|&x| attr::mk_attr(x)).to_owned_vec(), f)
+        set_llvm_fn_attrs(ccx, meta_items.iter().map(|&x| attr::mk_attr(x)).to_owned_vec(), f)
     }
     ccx.externs.insert(name.to_owned(), f);
     f
@@ -471,7 +471,7 @@ pub fn set_inline_hint(f: ValueRef) {
     lib::llvm::SetFunctionAttribute(f, lib::llvm::InlineHintAttribute)
 }
 
-pub fn set_llvm_fn_attrs(attrs: &[ast::Attribute], llfn: ValueRef) {
+pub fn set_llvm_fn_attrs(ccx: &mut CrateContext, attrs: &[ast::Attribute], llfn: ValueRef) {
     use syntax::attr::*;
     // Set the inline hint if there is one
     match find_inline_attr(attrs) {
@@ -488,6 +488,13 @@ pub fn set_llvm_fn_attrs(attrs: &[ast::Attribute], llfn: ValueRef) {
 
     if contains_name(attrs, "cold") {
         unsafe { llvm::LLVMAddColdAttribute(llfn) }
+    }
+
+    // If this function contains the attribute `#[used]`, then we mark it as
+    // used and mark it external.
+    if contains_name(attrs, "used") {
+        ccx.used_values.push(llfn);
+        lib::llvm::SetLinkage(llfn, lib::llvm::ExternalLinkage);
     }
 }
 
@@ -2553,7 +2560,7 @@ pub fn get_item_val(ccx: @mut CrateContext, id: ast::NodeId) -> ValueRef {
                                                                            sym,
                                                                            i.id)
                             };
-                            set_llvm_fn_attrs(i.attrs, llfn);
+                            set_llvm_fn_attrs(ccx, i.attrs, llfn);
                             llfn
                         }
 
@@ -2710,7 +2717,7 @@ pub fn register_method(ccx: @mut CrateContext,
     let sym = exported_name(ccx, path, mty, m.attrs);
 
     let llfn = register_fn(ccx, m.span, sym, id, mty);
-    set_llvm_fn_attrs(m.attrs, llfn);
+    set_llvm_fn_attrs(ccx, m.attrs, llfn);
     llfn
 }
 
@@ -3036,6 +3043,31 @@ pub fn fill_crate_map(ccx: &mut CrateContext, map: ValueRef) {
     }
 }
 
+/// Emits the `llvm.used` directive into the output file.
+fn emit_used_directive_if_necessary(ccx: &mut CrateContext) {
+    if ccx.used_values.len() == 0 {
+        return
+    }
+
+    let pointers = ccx.used_values.map(|&llval| {
+        unsafe {
+            llvm::LLVMConstBitCast(llval, Type::i8p().to_ref())
+        }
+    });
+
+    let used_value = C_array(Type::i8p(), pointers);
+
+    unsafe {
+        let global = "llvm.used".with_c_str(|buffer| {
+            llvm::LLVMAddGlobal(ccx.llmod,
+                                Type::array(&Type::i8p(), pointers.len() as u64).to_ref(),
+                                buffer)
+        });
+        llvm::LLVMSetInitializer(global, used_value);
+        lib::llvm::SetLinkage(global, lib::llvm::AppendingLinkage);
+    }
+}
+
 pub fn crate_ctxt_to_encode_parms<'r>(cx: &'r CrateContext, ie: encoder::encode_inlined_item<'r>)
     -> encoder::EncodeParams<'r> {
 
@@ -3139,6 +3171,7 @@ pub fn trans_crate(sess: session::Session,
 
     decl_gc_metadata(ccx, llmod_id);
     fill_crate_map(ccx, ccx.crate_map);
+    emit_used_directive_if_necessary(ccx);
 
     // NOTE win32: wart with exporting crate_map symbol
     // We set the crate map (_rust_crate_map_toplevel) to use dll_export

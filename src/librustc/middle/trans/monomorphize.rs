@@ -211,7 +211,7 @@ pub fn monomorphic_fn(ccx: @mut CrateContext,
                 _
             }, _) => {
         let d = mk_lldecl();
-        set_llvm_fn_attrs(i.attrs, d);
+        set_llvm_fn_attrs(ccx, i.attrs, d);
         trans_fn(ccx,
                  pt,
                  decl,
@@ -255,13 +255,13 @@ pub fn monomorphic_fn(ccx: @mut CrateContext,
       ast_map::node_method(mth, _, _) => {
         // XXX: What should the self type be here?
         let d = mk_lldecl();
-        set_llvm_fn_attrs(mth.attrs, d);
+        set_llvm_fn_attrs(ccx, mth.attrs, d);
         meth::trans_method(ccx, pt, mth, Some(psubsts), d);
         d
       }
       ast_map::node_trait_method(@ast::provided(mth), _, pt) => {
         let d = mk_lldecl();
-        set_llvm_fn_attrs(mth.attrs, d);
+        set_llvm_fn_attrs(ccx, mth.attrs, d);
         meth::trans_method(ccx, (*pt).clone(), mth, Some(psubsts), d);
         d
       }
