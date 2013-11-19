@@ -39,6 +39,7 @@ pub enum ObsoleteSyntax {
     ObsoleteConstPointer,
     ObsoleteEmptyImpl,
     ObsoleteLoopAsContinue,
+    ObsoleteBoxedClosure,
 }
 
 impl to_bytes::IterBytes for ObsoleteSyntax {
@@ -112,6 +113,11 @@ impl ParserObsoleteMethods for Parser {
                 "`loop` instead of `continue`",
                 "`loop` is now only used for loops and `continue` is used for \
                  skipping iterations"
+            ),
+            ObsoleteBoxedClosure => (
+                "managed or owned closure",
+                "managed closures have been removed and owned closures are \
+                 now written `proc()`"
             ),
         };
 
