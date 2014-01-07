@@ -274,6 +274,7 @@ impl CrateContext {
 #[unsafe_destructor]
 impl Drop for CrateContext {
     fn drop(&mut self) {
+        println("!!! destroying crate context!");
         unset_task_llcx();
     }
 }

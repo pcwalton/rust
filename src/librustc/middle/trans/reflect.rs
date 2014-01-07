@@ -34,15 +34,15 @@ use syntax::parse::token::special_idents;
 
 use middle::trans::type_::Type;
 
-pub struct Reflector {
+pub struct Reflector<'a> {
     visitor_val: ValueRef,
     visitor_methods: @~[@ty::Method],
-    final_bcx: @Block,
+    final_bcx: &'a Block<'a>,
     tydesc_ty: Type,
-    bcx: @Block
+    bcx: &'a Block<'a>
 }
 
-impl Reflector {
+impl<'a> Reflector<'a> {
     pub fn c_uint(&mut self, u: uint) -> ValueRef {
         C_uint(self.bcx.ccx(), u)
     }
@@ -317,7 +317,7 @@ impl Reflector {
                     Some(llreturn) => cleanup_and_Br(bcx, bcx, llreturn),
                     None => bcx = cleanup_block(bcx, Some(bcx.llbb))
                 };
-                finish_fn(fcx, bcx);
+                finish_fn(&fcx, bcx);
                 llfdecl
             };
 
@@ -385,11 +385,12 @@ impl Reflector {
 }
 
 // Emit a sequence of calls to visit_ty::visit_foo
-pub fn emit_calls_to_trait_visit_ty(bcx: @Block,
+pub fn emit_calls_to_trait_visit_ty<'a>(
+                                    bcx: &'a Block<'a>,
                                     t: ty::t,
                                     visitor_val: ValueRef,
                                     visitor_trait_id: DefId)
-                                 -> @Block {
+                                    -> &'a Block<'a> {
     let final = sub_block(bcx, "final");
     let tydesc_ty = ty::get_tydesc_ty(bcx.ccx().tcx).unwrap();
     let tydesc_ty = type_of(bcx.ccx(), tydesc_ty);

@@ -376,6 +376,13 @@ struct ctxt_ {
     extern_const_variants: RefCell<HashMap<ast::DefId, Option<@ast::Expr>>>,
 }
 
+#[unsafe_destructor]
+impl Drop for ctxt_ {
+    fn drop(&mut self) {
+        println("!!! destroying type context!");
+    }
+}
+
 pub enum tbox_flag {
     has_params = 1,
     has_self = 2,

@@ -353,6 +353,10 @@ impl TypedArenaChunk {
            -> ~TypedArenaChunk {
         unsafe {
             let mut size = mem::size_of::<TypedArenaChunk>();
+            println!("size {}, align {}, capacity {}",
+                     mem::size_of::<T>(),
+                     mem::min_align_of::<T>(),
+                     capacity);
             size = round_up(size, mem::min_align_of::<T>());
             let elem_size = mem::size_of::<T>();
             let elems_size = elem_size.checked_mul(&capacity).unwrap();
@@ -426,12 +430,14 @@ impl<T> TypedArena<T> {
         unsafe {
             let chunk = TypedArenaChunk::new::<T>(None, capacity);
             let tydesc = intrinsics::get_tydesc::<T>();
-            TypedArena {
+            let arena = TypedArena {
                 ptr: cast::transmute(chunk.start(tydesc)),
                 end: cast::transmute(chunk.end(tydesc)),
                 tydesc: tydesc,
                 first: chunk,
-            }
+            };
+            println!("created new arena, end={}", arena.end);
+            arena
         }
     }
 
@@ -443,6 +449,9 @@ impl<T> TypedArena<T> {
                 self.grow()
             }
 
+            println!("allocating object in arena ({}/{})...",
+                     self.ptr,
+                     self.end);
             let this = cast::transmute_mut(self);
             let ptr: &'a mut T = cast::transmute(this.ptr);
             intrinsics::move_val_init(ptr, object);
@@ -461,6 +470,7 @@ impl<T> TypedArena<T> {
         let chunk = TypedArenaChunk::new::<T>(Some(chunk), new_capacity);
         this.ptr = cast::transmute(chunk.start(this.tydesc));
         this.end = cast::transmute(chunk.end(this.tydesc));
+        println!("growing arena... new end={}", this.end);
         intrinsics::move_val_init(&mut this.first, chunk)
     }
 }
@@ -469,6 +479,8 @@ impl<T> TypedArena<T> {
 impl<T> Drop for TypedArena<T> {
     fn drop(&mut self) {
         unsafe {
+            println("destroying arena...");
+
             // Determine how much was filled.
             let start: uint = cast::transmute(self.first.start(self.tydesc));
             let end: uint = cast::transmute(self.ptr);
