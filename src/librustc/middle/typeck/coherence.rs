@@ -56,10 +56,10 @@ pub struct UniversalQuantificationResult {
     type_param_defs: @~[ty::TypeParameterDef]
 }
 
-pub fn get_base_type(inference_context: @InferCtxt,
+pub fn get_base_type(inference_context: &InferCtxt,
                      span: Span,
                      original_type: t)
-                  -> Option<t> {
+                     -> Option<t> {
     let resolved_type;
     match resolve_type(inference_context,
                        original_type,
@@ -119,10 +119,10 @@ pub fn type_is_defined_in_local_crate(original_type: t) -> bool {
 }
 
 // Returns the def ID of the base type, if there is one.
-pub fn get_base_type_def_id(inference_context: @InferCtxt,
+pub fn get_base_type_def_id(inference_context: &InferCtxt,
                             span: Span,
                             original_type: t)
-                         -> Option<DefId> {
+                            -> Option<DefId> {
     match get_base_type(inference_context, span, original_type) {
         None => {
             return None;

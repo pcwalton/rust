@@ -335,7 +335,7 @@ pub fn can_mk_subty(cx: @InferCtxt, a: ty::t, b: ty::t) -> ures {
     }).to_ures()
 }
 
-pub fn mk_subr(cx: @InferCtxt,
+pub fn mk_subr(cx: &InferCtxt,
                _a_is_expected: bool,
                origin: SubregionOrigin,
                a: ty::Region,
@@ -428,15 +428,12 @@ pub fn can_mk_coercety(cx: @InferCtxt, a: ty::t, b: ty::t) -> ures {
 }
 
 // See comment on the type `resolve_state` below
-pub fn resolve_type(cx: @InferCtxt,
-                    a: ty::t,
-                    modes: uint)
-                 -> fres<ty::t> {
+pub fn resolve_type(cx: &InferCtxt, a: ty::t, modes: uint) -> fres<ty::t> {
     let mut resolver = resolver(cx, modes);
     resolver.resolve_type_chk(a)
 }
 
-pub fn resolve_region(cx: @InferCtxt, r: ty::Region, modes: uint)
+pub fn resolve_region(cx: &InferCtxt, r: ty::Region, modes: uint)
                    -> fres<ty::Region> {
     let mut resolver = resolver(cx, modes);
     resolver.resolve_region_chk(r)
@@ -548,7 +545,7 @@ impl InferCtxt {
     }
 
     /// Execute `f` and commit the bindings if successful
-    pub fn commit<T,E>(@self, f: || -> Result<T,E>) -> Result<T,E> {
+    pub fn commit<T,E>(&self, f: || -> Result<T,E>) -> Result<T,E> {
         assert!(!self.in_snapshot());
 
         debug!("commit()");
@@ -565,7 +562,7 @@ impl InferCtxt {
     }
 
     /// Execute `f`, unroll bindings on failure
-    pub fn try<T,E>(@self, f: || -> Result<T,E>) -> Result<T,E> {
+    pub fn try<T,E>(&self, f: || -> Result<T,E>) -> Result<T,E> {
         debug!("try()");
         let snapshot = self.start_snapshot();
         let r = f();
@@ -580,7 +577,7 @@ impl InferCtxt {
     }
 
     /// Execute `f` then unroll any bindings it creates
-    pub fn probe<T,E>(@self, f: || -> Result<T,E>) -> Result<T,E> {
+    pub fn probe<T,E>(&self, f: || -> Result<T,E>) -> Result<T,E> {
         debug!("probe()");
         indent(|| {
             let snapshot = self.start_snapshot();
@@ -662,34 +659,34 @@ impl InferCtxt {
         self.region_vars.new_bound(binder_id)
     }
 
-    pub fn resolve_regions(@self) {
+    pub fn resolve_regions(&self) {
         let errors = self.region_vars.resolve_regions();
         self.report_region_errors(&errors); // see error_reporting.rs
     }
 
-    pub fn ty_to_str(@self, t: ty::t) -> ~str {
+    pub fn ty_to_str(&self, t: ty::t) -> ~str {
         ty_to_str(self.tcx,
                   self.resolve_type_vars_if_possible(t))
     }
 
-    pub fn tys_to_str(@self, ts: &[ty::t]) -> ~str {
+    pub fn tys_to_str(&self, ts: &[ty::t]) -> ~str {
         let tstrs = ts.map(|t| self.ty_to_str(*t));
         format!("({})", tstrs.connect(", "))
     }
 
-    pub fn trait_ref_to_str(@self, t: &ty::TraitRef) -> ~str {
+    pub fn trait_ref_to_str(&self, t: &ty::TraitRef) -> ~str {
         let t = self.resolve_type_vars_in_trait_ref_if_possible(t);
         trait_ref_to_str(self.tcx, &t)
     }
 
-    pub fn resolve_type_vars_if_possible(@self, typ: ty::t) -> ty::t {
+    pub fn resolve_type_vars_if_possible(&self, typ: ty::t) -> ty::t {
         match resolve_type(self, typ, resolve_nested_tvar | resolve_ivar) {
           result::Ok(new_type) => new_type,
           result::Err(_) => typ
         }
     }
 
-    pub fn resolve_type_vars_in_trait_ref_if_possible(@self,
+    pub fn resolve_type_vars_in_trait_ref_if_possible(&self,
                                                       trait_ref:
                                                       &ty::TraitRef)
                                                       -> ty::TraitRef {
@@ -729,7 +726,7 @@ impl InferCtxt {
     // in this case. The typechecker should only ever report type errors involving mismatched
     // types using one of these four methods, and should not call span_err directly for such
     // errors.
-    pub fn type_error_message_str(@self,
+    pub fn type_error_message_str(&self,
                                   sp: Span,
                                   mk_msg: |Option<~str>, ~str| -> ~str,
                                   actual_ty: ~str,
@@ -737,7 +734,7 @@ impl InferCtxt {
         self.type_error_message_str_with_expected(sp, mk_msg, None, actual_ty, err)
     }
 
-    pub fn type_error_message_str_with_expected(@self,
+    pub fn type_error_message_str_with_expected(&self,
                                                 sp: Span,
                                                 mk_msg: |Option<~str>,
                                                          ~str|
@@ -768,7 +765,7 @@ impl InferCtxt {
         }
     }
 
-    pub fn type_error_message(@self,
+    pub fn type_error_message(&self,
                               sp: Span,
                               mk_msg: |~str| -> ~str,
                               actual_ty: ty::t,
@@ -783,7 +780,7 @@ impl InferCtxt {
         self.type_error_message_str(sp, |_e, a| { mk_msg(a) }, self.ty_to_str(actual_ty), err);
     }
 
-    pub fn report_mismatched_types(@self,
+    pub fn report_mismatched_types(&self,
                                    sp: Span,
                                    e: ty::t,
                                    a: ty::t,
