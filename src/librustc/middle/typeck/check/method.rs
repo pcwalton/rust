@@ -358,8 +358,7 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
                 let impls = self.tcx().impls.borrow();
                 let opt_impl_dids = trait_impls.get().find(trait_did);
                 for impl_dids in opt_impl_dids.iter() {
-                    let impl_dids = impl_dids.borrow();
-                    for impl_did in impl_dids.get().iter() {
+                    for impl_did in impl_dids.iter() {
                         let mut extension_candidates =
                             self.extension_candidates.borrow_mut();
                         let impl_info = impls.get().get(impl_did);
@@ -540,8 +539,7 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
         let impls = self.tcx().impls.borrow();
         let opt_impl_def_ids = inherent_impls.get().find(&did);
         for impl_def_ids in opt_impl_def_ids.iter() {
-            let impl_def_ids = impl_def_ids.borrow();
-            for &impl_def_id in impl_def_ids.get().iter() {
+            for &impl_def_id in impl_def_ids.iter() {
                 let impl_info = impls.get().get(&impl_def_id);
                 let mut inherent_candidates = self.inherent_candidates
                                                   .borrow_mut();

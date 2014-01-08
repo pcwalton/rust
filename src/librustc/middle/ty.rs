@@ -337,12 +337,12 @@ struct ctxt_ {
     destructors: RefCell<HashSet<ast::DefId>>,
 
     // Maps a trait onto a list of impls of that trait.
-    trait_impls: RefCell<HashMap<ast::DefId, @RefCell<~[ast::DefId]>>>,
+    trait_impls: RefCell<HashMap<ast::DefId, ~[ast::DefId]>>,
 
     // Maps a def_id of a type to a list of its inherent impls.
     // Contains implementations of methods that are inherent to a type.
     // Methods in these implementations don't need to be exported.
-    inherent_impls: RefCell<HashMap<ast::DefId, @RefCell<~[ast::DefId]>>>,
+    inherent_impls: RefCell<HashMap<ast::DefId, ~[ast::DefId]>>,
 
     // Maps a def_id of an impl to an Impl structure.
     // Note that this contains all of the impls that we know about,
@@ -4538,20 +4538,10 @@ pub fn item_variances(tcx: ctxt, item_id: ast::DefId) -> @ItemVariances {
 fn record_trait_implementation(tcx: ctxt,
                                trait_def_id: DefId,
                                implementation: &Impl) {
-    let implementation_list;
     let mut trait_impls = tcx.trait_impls.borrow_mut();
-    match trait_impls.get().find(&trait_def_id) {
-        None => {
-            implementation_list = @RefCell::new(~[]);
-            trait_impls.get().insert(trait_def_id, implementation_list);
-        }
-        Some(&existing_implementation_list) => {
-            implementation_list = existing_implementation_list
-        }
-    }
-
-    let mut implementation_list = implementation_list.borrow_mut();
-    implementation_list.get().push(implementation.did);
+    let implementation_list =
+        trait_impls.get().find_or_insert_with(trait_def_id, |_| ~[]);
+    implementation_list.push(implementation.did);
 }
 
 /// Populates the type context with all the implementations for the given type
@@ -4593,22 +4583,10 @@ pub fn populate_implementations_for_type_if_necessary(tcx: ctxt,
 
         // If this is an inherent implementation, record it.
         if associated_traits.is_none() {
-            let implementation_list;
             let mut inherent_impls = tcx.inherent_impls.borrow_mut();
-            match inherent_impls.get().find(&type_id) {
-                None => {
-                    implementation_list = @RefCell::new(~[]);
-                    inherent_impls.get().insert(type_id, implementation_list);
-                }
-                Some(&existing_implementation_list) => {
-                    implementation_list = existing_implementation_list;
-                }
-            }
-            {
-                let mut implementation_list =
-                    implementation_list.borrow_mut();
-                implementation_list.get().push(implementation.did);
-            }
+            let implementation_list =
+                inherent_impls.get().find_or_insert_with(type_id, |_| ~[]);
+            implementation_list.push(implementation.did);
         }
 
         // Store the implementation info.

@@ -456,8 +456,7 @@ fn encode_reexported_static_base_methods(ecx: &EncodeContext,
     let impls = ecx.tcx.impls.borrow();
     match inherent_impls.get().find(&exp.def_id) {
         Some(implementation_def_ids) => {
-            let implementation_def_ids = implementation_def_ids.borrow();
-            for &base_impl_def_id in implementation_def_ids.get().iter() {
+            for &base_impl_def_id in implementation_def_ids.iter() {
                 let base_impl = impls.get().get(&base_impl_def_id);
                 for &m in base_impl.methods.iter() {
                     if m.explicit_self == ast::sty_static {
@@ -896,9 +895,8 @@ fn encode_inherent_implementations(ecx: &EncodeContext,
     let inherent_impls = ecx.tcx.inherent_impls.borrow();
     match inherent_impls.get().find(&def_id) {
         None => {}
-        Some(&implementations) => {
-            let implementations = implementations.borrow();
-            for &implementation_def_id in implementations.get().iter() {
+        Some(implementations) => {
+            for &implementation_def_id in implementations.iter() {
                 ebml_w.start_tag(tag_items_data_item_inherent_impl);
                 encode_def_id(ebml_w, implementation_def_id);
                 ebml_w.end_tag();
@@ -914,9 +912,8 @@ fn encode_extension_implementations(ecx: &EncodeContext,
     let trait_impls = ecx.tcx.trait_impls.borrow();
     match trait_impls.get().find(&trait_def_id) {
         None => {}
-        Some(&implementations) => {
-            let implementations = implementations.borrow();
-            for &implementation_def_id in implementations.get().iter() {
+        Some(implementations) => {
+            for &implementation_def_id in implementations.iter() {
                 ebml_w.start_tag(tag_items_data_item_extension_impl);
                 encode_def_id(ebml_w, implementation_def_id);
                 ebml_w.end_tag();

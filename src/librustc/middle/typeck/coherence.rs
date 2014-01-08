@@ -45,7 +45,6 @@ use syntax::codemap::Span;
 use syntax::opt_vec;
 use syntax::visit;
 
-use std::cell::RefCell;
 use std::hashmap::HashSet;
 use std::result::Ok;
 use std::vec;
@@ -394,40 +393,20 @@ impl<'c> CoherenceChecker<'c> {
                              base_def_id: DefId,
                              implementation: &Impl) {
         let tcx = self.crate_context.tcx;
-        let implementation_list;
         let mut inherent_impls = tcx.inherent_impls.borrow_mut();
-        match inherent_impls.get().find(&base_def_id) {
-            None => {
-                implementation_list = @RefCell::new(~[]);
-                inherent_impls.get().insert(base_def_id, implementation_list);
-            }
-            Some(&existing_implementation_list) => {
-                implementation_list = existing_implementation_list;
-            }
-        }
-
-        let mut implementation_list = implementation_list.borrow_mut();
-        implementation_list.get().push(implementation.did);
+        let implementation_list = 
+            inherent_impls.get().find_or_insert_with(base_def_id, |_| ~[]);
+        implementation_list.push(implementation.did);
     }
 
     pub fn add_trait_impl(&self,
                           base_def_id: DefId,
                           implementation: &Impl) {
         let tcx = self.crate_context.tcx;
-        let implementation_list;
         let mut trait_impls = tcx.trait_impls.borrow_mut();
-        match trait_impls.get().find(&base_def_id) {
-            None => {
-                implementation_list = @RefCell::new(~[]);
-                trait_impls.get().insert(base_def_id, implementation_list);
-            }
-            Some(&existing_implementation_list) => {
-                implementation_list = existing_implementation_list;
-            }
-        }
-
-        let mut implementation_list = implementation_list.borrow_mut();
-        implementation_list.get().push(implementation.did);
+        let implementation_list =
+            trait_impls.get().find_or_insert_with(base_def_id, |_| ~[]);
+        implementation_list.push(implementation.did);
     }
 
     pub fn check_implementation_coherence(&self) {
@@ -474,8 +453,7 @@ impl<'c> CoherenceChecker<'c> {
         let impls = self.crate_context.tcx.impls.borrow();
         match trait_impls.get().find(&trait_def_id) {
             Some(impl_def_ids) => {
-                let impl_def_ids = impl_def_ids.borrow();
-                for &impl_def_id in impl_def_ids.get().iter() {
+                for &impl_def_id in impl_def_ids.iter() {
                     let implementation = impls.get().get(&impl_def_id);
                     f(implementation);
                 }
@@ -721,8 +699,7 @@ impl<'c> CoherenceChecker<'c> {
             }
         }
 
-        let drop_impl_dids = drop_impl_dids.borrow();
-        for &impl_did in drop_impl_dids.get().iter() {
+        for &impl_did in drop_impl_dids.iter() {
             let impl_info = impls.get().get(&impl_did);
             if impl_info.methods.len() < 1 {
                 // We'll error out later. For now, just don't ICE.
