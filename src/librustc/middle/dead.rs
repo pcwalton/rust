@@ -310,12 +310,14 @@ impl DeadVisitor {
         // called directly.
         let def_id = local_def(id);
         let inherent_impls = self.tcx.inherent_impls.borrow();
+        let impls = self.tcx.impls.borrow();
         match inherent_impls.get().find(&def_id) {
             None => (),
-            Some(ref impl_list) => {
-                let impl_list = impl_list.borrow();
-                for impl_ in impl_list.get().iter() {
-                    for method in impl_.methods.iter() {
+            Some(ref impl_def_id_list) => {
+                let impl_def_id_list = impl_def_id_list.borrow();
+                for &impl_def_id in impl_def_id_list.get().iter() {
+                    let implementation = impls.get().get(&impl_def_id);
+                    for method in implementation.methods.iter() {
                         if self.live_symbols.contains(&method.def_id.node) {
                             return true;
                         }

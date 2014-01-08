@@ -355,12 +355,14 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
 
                 // Look for explicit implementations.
                 let trait_impls = self.tcx().trait_impls.borrow();
-                let opt_impl_infos = trait_impls.get().find(trait_did);
-                for impl_infos in opt_impl_infos.iter() {
-                    let impl_infos = impl_infos.borrow();
-                    for impl_info in impl_infos.get().iter() {
+                let impls = self.tcx().impls.borrow();
+                let opt_impl_dids = trait_impls.get().find(trait_did);
+                for impl_dids in opt_impl_dids.iter() {
+                    let impl_dids = impl_dids.borrow();
+                    for impl_did in impl_dids.get().iter() {
                         let mut extension_candidates =
                             self.extension_candidates.borrow_mut();
+                        let impl_info = impls.get().get(impl_did);
                         self.push_candidates_from_impl(
                             extension_candidates.get(), *impl_info);
 
@@ -535,10 +537,12 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
         ty::populate_implementations_for_type_if_necessary(self.tcx(), did);
 
         let inherent_impls = self.tcx().inherent_impls.borrow();
-        let opt_impl_infos = inherent_impls.get().find(&did);
-        for impl_infos in opt_impl_infos.iter() {
-            let impl_infos = impl_infos.borrow();
-            for impl_info in impl_infos.get().iter() {
+        let impls = self.tcx().impls.borrow();
+        let opt_impl_def_ids = inherent_impls.get().find(&did);
+        for impl_def_ids in opt_impl_def_ids.iter() {
+            let impl_def_ids = impl_def_ids.borrow();
+            for &impl_def_id in impl_def_ids.get().iter() {
+                let impl_info = impls.get().get(&impl_def_id);
                 let mut inherent_candidates = self.inherent_candidates
                                                   .borrow_mut();
                 self.push_candidates_from_impl(inherent_candidates.get(),
@@ -548,8 +552,8 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
     }
 
     fn push_candidates_from_impl(&self,
-                                     candidates: &mut ~[Candidate],
-                                     impl_info: &ty::Impl) {
+                                 candidates: &mut ~[Candidate],
+                                 impl_info: &ty::Impl) {
         {
             let mut impl_dups = self.impl_dups.borrow_mut();
             if !impl_dups.get().insert(impl_info.did) {

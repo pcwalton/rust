@@ -453,14 +453,19 @@ fn encode_reexported_static_base_methods(ecx: &EncodeContext,
                                          exp: &middle::resolve::Export2)
                                          -> bool {
     let inherent_impls = ecx.tcx.inherent_impls.borrow();
+    let impls = ecx.tcx.impls.borrow();
     match inherent_impls.get().find(&exp.def_id) {
-        Some(implementations) => {
-            let implementations = implementations.borrow();
-            for &base_impl in implementations.get().iter() {
+        Some(implementation_def_ids) => {
+            let implementation_def_ids = implementation_def_ids.borrow();
+            for &base_impl_def_id in implementation_def_ids.get().iter() {
+                let base_impl = impls.get().get(&base_impl_def_id);
                 for &m in base_impl.methods.iter() {
                     if m.explicit_self == ast::sty_static {
-                        encode_reexported_static_method(ecx, ebml_w, exp,
-                                                        m.def_id, m.ident);
+                        encode_reexported_static_method(ecx,
+                                                        ebml_w,
+                                                        exp,
+                                                        m.def_id,
+                                                        m.ident);
                     }
                 }
             }
@@ -893,9 +898,9 @@ fn encode_inherent_implementations(ecx: &EncodeContext,
         None => {}
         Some(&implementations) => {
             let implementations = implementations.borrow();
-            for implementation in implementations.get().iter() {
+            for &implementation_def_id in implementations.get().iter() {
                 ebml_w.start_tag(tag_items_data_item_inherent_impl);
-                encode_def_id(ebml_w, implementation.did);
+                encode_def_id(ebml_w, implementation_def_id);
                 ebml_w.end_tag();
             }
         }
@@ -911,9 +916,9 @@ fn encode_extension_implementations(ecx: &EncodeContext,
         None => {}
         Some(&implementations) => {
             let implementations = implementations.borrow();
-            for implementation in implementations.get().iter() {
+            for &implementation_def_id in implementations.get().iter() {
                 ebml_w.start_tag(tag_items_data_item_extension_impl);
-                encode_def_id(ebml_w, implementation.did);
+                encode_def_id(ebml_w, implementation_def_id);
                 ebml_w.end_tag();
             }
         }

@@ -337,12 +337,12 @@ struct ctxt_ {
     destructors: RefCell<HashSet<ast::DefId>>,
 
     // Maps a trait onto a list of impls of that trait.
-    trait_impls: RefCell<HashMap<ast::DefId, @RefCell<~[@Impl]>>>,
+    trait_impls: RefCell<HashMap<ast::DefId, @RefCell<~[ast::DefId]>>>,
 
     // Maps a def_id of a type to a list of its inherent impls.
     // Contains implementations of methods that are inherent to a type.
     // Methods in these implementations don't need to be exported.
-    inherent_impls: RefCell<HashMap<ast::DefId, @RefCell<~[@Impl]>>>,
+    inherent_impls: RefCell<HashMap<ast::DefId, @RefCell<~[ast::DefId]>>>,
 
     // Maps a def_id of an impl to an Impl structure.
     // Note that this contains all of the impls that we know about,
@@ -4551,7 +4551,7 @@ fn record_trait_implementation(tcx: ctxt,
     }
 
     let mut implementation_list = implementation_list.borrow_mut();
-    implementation_list.get().push(implementation);
+    implementation_list.get().push(implementation.did);
 }
 
 /// Populates the type context with all the implementations for the given type
@@ -4607,7 +4607,7 @@ pub fn populate_implementations_for_type_if_necessary(tcx: ctxt,
             {
                 let mut implementation_list =
                     implementation_list.borrow_mut();
-                implementation_list.get().push(implementation);
+                implementation_list.get().push(implementation.did);
             }
         }
 

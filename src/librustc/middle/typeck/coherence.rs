@@ -407,7 +407,7 @@ impl<'c> CoherenceChecker<'c> {
         }
 
         let mut implementation_list = implementation_list.borrow_mut();
-        implementation_list.get().push(implementation);
+        implementation_list.get().push(implementation.did);
     }
 
     pub fn add_trait_impl(&self,
@@ -427,7 +427,7 @@ impl<'c> CoherenceChecker<'c> {
         }
 
         let mut implementation_list = implementation_list.borrow_mut();
-        implementation_list.get().push(implementation);
+        implementation_list.get().push(implementation.did);
     }
 
     pub fn check_implementation_coherence(&self) {
@@ -471,11 +471,13 @@ impl<'c> CoherenceChecker<'c> {
 
     pub fn iter_impls_of_trait(&self, trait_def_id: DefId, f: |@Impl|) {
         let trait_impls = self.crate_context.tcx.trait_impls.borrow();
+        let impls = self.crate_context.tcx.impls.borrow();
         match trait_impls.get().find(&trait_def_id) {
-            Some(impls) => {
-                let impls = impls.borrow();
-                for &im in impls.get().iter() {
-                    f(im);
+            Some(impl_def_ids) => {
+                let impl_def_ids = impl_def_ids.borrow();
+                for &impl_def_id in impl_def_ids.get().iter() {
+                    let implementation = impls.get().get(&impl_def_id);
+                    f(*implementation);
                 }
             }
             None => { /* no impls? */ }
@@ -709,15 +711,19 @@ impl<'c> CoherenceChecker<'c> {
         };
 
         let trait_impls = tcx.trait_impls.borrow();
-        let impls_opt = trait_impls.get().find(&drop_trait);
-        let impls;
-        match impls_opt {
+        let impls = tcx.impls.borrow();
+        let drop_impl_dids_opt = trait_impls.get().find(&drop_trait);
+        let drop_impl_dids;
+        match drop_impl_dids_opt {
             None => return, // No types with (new-style) dtors present.
-            Some(found_impls) => impls = found_impls
+            Some(found_drop_impl_dids) => {
+                drop_impl_dids = found_drop_impl_dids
+            }
         }
 
-        let impls = impls.borrow();
-        for impl_info in impls.get().iter() {
+        let drop_impl_dids = drop_impl_dids.borrow();
+        for &impl_did in drop_impl_dids.get().iter() {
+            let impl_info = impls.get().get(&impl_did);
             if impl_info.methods.len() < 1 {
                 // We'll error out later. For now, just don't ICE.
                 continue;
