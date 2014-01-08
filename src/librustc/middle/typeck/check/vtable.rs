@@ -535,7 +535,7 @@ fn connect_trait_tps(vcx: &VtableContext,
     relate_trait_refs(vcx, location_info, impl_trait_ref, trait_ref);
 }
 
-fn insert_vtables(fcx: @FnCtxt,
+fn insert_vtables(fcx: &FnCtxt,
                   callee_id: ast::NodeId,
                   vtables: vtable_res) {
     debug!("insert_vtables(callee_id={}, vtables={:?})",
@@ -557,7 +557,7 @@ pub fn location_info_for_item(item: &ast::item) -> LocationInfo {
     }
 }
 
-pub fn early_resolve_expr(ex: &ast::Expr, fcx: @FnCtxt, is_early: bool) {
+pub fn early_resolve_expr(ex: &ast::Expr, fcx: &FnCtxt, is_early: bool) {
     debug!("vtable: early_resolve_expr() ex with id {:?} (early: {}): {}",
            ex.id, is_early, expr_to_str(ex, fcx.tcx().sess.intr()));
     let _indent = indenter();
@@ -751,7 +751,7 @@ pub fn early_resolve_expr(ex: &ast::Expr, fcx: @FnCtxt, is_early: bool) {
     }
 }
 
-fn resolve_expr(fcx: @FnCtxt, ex: &ast::Expr) {
+fn resolve_expr(fcx: &FnCtxt, ex: &ast::Expr) {
     let mut fcx = fcx;
     early_resolve_expr(ex, fcx, false);
     visit::walk_expr(&mut fcx, ex, ());
@@ -813,7 +813,7 @@ pub fn resolve_impl(ccx: @CrateCtxt,
     impl_vtables.get().insert(impl_def_id, res);
 }
 
-impl visit::Visitor<()> for @FnCtxt {
+impl<'a> visit::Visitor<()> for &'a FnCtxt {
     fn visit_expr(&mut self, ex: &ast::Expr, _: ()) {
         resolve_expr(*self, ex);
     }
@@ -824,6 +824,6 @@ impl visit::Visitor<()> for @FnCtxt {
 
 // Detect points where a trait-bounded type parameter is
 // instantiated, resolve the impls for the parameters.
-pub fn resolve_in_block(mut fcx: @FnCtxt, bl: &ast::Block) {
+pub fn resolve_in_block(mut fcx: &FnCtxt, bl: &ast::Block) {
     visit::walk_block(&mut fcx, bl, ());
 }

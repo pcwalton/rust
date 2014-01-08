@@ -32,8 +32,8 @@ use syntax::print::pprust::pat_to_str;
 use syntax::visit;
 use syntax::visit::Visitor;
 
-fn resolve_type_vars_in_type(fcx: @FnCtxt, sp: Span, typ: ty::t)
-                          -> Option<ty::t> {
+fn resolve_type_vars_in_type(fcx: &FnCtxt, sp: Span, typ: ty::t)
+                             -> Option<ty::t> {
     if !ty::type_needs_infer(typ) { return Some(typ); }
     match resolve_type(fcx.infcx(), typ, resolve_all | force_all) {
         Ok(new_type) => return Some(new_type),
@@ -50,8 +50,8 @@ fn resolve_type_vars_in_type(fcx: @FnCtxt, sp: Span, typ: ty::t)
     }
 }
 
-fn resolve_type_vars_in_types(fcx: @FnCtxt, sp: Span, tys: &[ty::t])
-                          -> ~[ty::t] {
+fn resolve_type_vars_in_types(fcx: &FnCtxt, sp: Span, tys: &[ty::t])
+                              -> ~[ty::t] {
     tys.map(|t| {
         match resolve_type_vars_in_type(fcx, sp, *t) {
             Some(t1) => t1,
@@ -60,7 +60,7 @@ fn resolve_type_vars_in_types(fcx: @FnCtxt, sp: Span, tys: &[ty::t])
     })
 }
 
-fn resolve_method_map_entry(fcx: @FnCtxt, sp: Span, id: ast::NodeId) {
+fn resolve_method_map_entry(fcx: &FnCtxt, sp: Span, id: ast::NodeId) {
     // Resolve any method map entry
     let method_map_entry_opt = {
         let method_map = fcx.inh.method_map.borrow();
@@ -85,7 +85,7 @@ fn resolve_method_map_entry(fcx: @FnCtxt, sp: Span, id: ast::NodeId) {
     }
 }
 
-fn resolve_vtable_map_entry(fcx: @FnCtxt, sp: Span, id: ast::NodeId) {
+fn resolve_vtable_map_entry(fcx: &FnCtxt, sp: Span, id: ast::NodeId) {
     // Resolve any method map entry
     {
         let origins_opt = {
@@ -104,14 +104,13 @@ fn resolve_vtable_map_entry(fcx: @FnCtxt, sp: Span, id: ast::NodeId) {
         }
     }
 
-    fn resolve_origins(fcx: @FnCtxt, sp: Span,
-                       vtbls: vtable_res) -> vtable_res {
+    fn resolve_origins(fcx: &FnCtxt, sp: Span, vtbls: vtable_res)
+                       -> vtable_res {
         @vtbls.map(|os| @os.map(|o| resolve_origin(fcx, sp, o)))
     }
 
-    fn resolve_origin(fcx: @FnCtxt,
-                      sp: Span,
-                      origin: &vtable_origin) -> vtable_origin {
+    fn resolve_origin(fcx: &FnCtxt, sp: Span, origin: &vtable_origin)
+                      -> vtable_origin {
         match origin {
             &vtable_static(def_id, ref tys, origins) => {
                 let r_tys = resolve_type_vars_in_types(fcx, sp, *tys);
@@ -234,8 +233,8 @@ fn maybe_resolve_type_vars_for_node(wbcx: &mut WbCtxt,
     }
 }
 
-struct WbCtxt {
-    fcx: @FnCtxt,
+struct WbCtxt<'a> {
+    fcx: &'a FnCtxt,
 
     // As soon as we hit an error we have to stop resolving
     // the entire function.
@@ -345,7 +344,7 @@ fn visit_item(_item: &ast::item, _wbcx: &mut WbCtxt) {
     // Ignore items
 }
 
-impl Visitor<()> for WbCtxt {
+impl<'a> Visitor<()> for WbCtxt<'a> {
     fn visit_item(&mut self, i: &ast::item, _: ()) { visit_item(i, self); }
     fn visit_stmt(&mut self, s: &ast::Stmt, _: ()) { visit_stmt(s, self); }
     fn visit_expr(&mut self, ex:&ast::Expr, _: ()) { visit_expr(ex, self); }
@@ -356,17 +355,18 @@ impl Visitor<()> for WbCtxt {
     fn visit_ty(&mut self, _t: &ast::Ty, _: ()) {}
 }
 
-pub fn resolve_type_vars_in_expr(fcx: @FnCtxt, e: &ast::Expr) -> bool {
+pub fn resolve_type_vars_in_expr(fcx: &FnCtxt, e: &ast::Expr) -> bool {
     let mut wbcx = WbCtxt { fcx: fcx, success: true };
     let wbcx = &mut wbcx;
     wbcx.visit_expr(e, ());
     return wbcx.success;
 }
 
-pub fn resolve_type_vars_in_fn(fcx: @FnCtxt,
+pub fn resolve_type_vars_in_fn(fcx: &FnCtxt,
                                decl: &ast::fn_decl,
                                blk: &ast::Block,
-                               self_info: Option<SelfInfo>) -> bool {
+                               self_info: Option<SelfInfo>)
+                               -> bool {
     let mut wbcx = WbCtxt { fcx: fcx, success: true };
     let wbcx = &mut wbcx;
     wbcx.visit_block(blk, ());

@@ -119,7 +119,7 @@ pub enum AutoderefReceiverFlag {
 }
 
 pub fn lookup(
-        fcx: @FnCtxt,
+        fcx: &FnCtxt,
 
         // In a call `a.b::<X, Y, ...>(...)`:
         expr: &ast::Expr,                   // The expression `a.b(...)`.
@@ -168,8 +168,8 @@ pub fn lookup(
     return lcx.search(self_ty);
 }
 
-pub struct LookupContext<'a> {
-    fcx: @FnCtxt,
+pub struct LookupContext<'a,'f> {
+    fcx: &'f FnCtxt,
     expr: &'a ast::Expr,
     self_expr: &'a ast::Expr,
     callee_id: NodeId,
@@ -209,7 +209,7 @@ enum RcvrMatchCondition {
     RcvrMatchesIfSubtype(ty::t)
 }
 
-impl<'a> LookupContext<'a> {
+impl<'a,'f> LookupContext<'a,'f> {
     fn search(&self, self_ty: ty::t) -> Option<method_map_entry> {
         let mut self_ty = self_ty;
         let mut autoderefs = 0;
@@ -1265,9 +1265,10 @@ impl<'a> LookupContext<'a> {
             }
         }
 
-        fn rcvr_matches_ty(fcx: @FnCtxt,
+        fn rcvr_matches_ty(fcx: &FnCtxt,
                            rcvr_ty: ty::t,
-                           candidate: &Candidate) -> bool {
+                           candidate: &Candidate)
+                           -> bool {
             match candidate.rcvr_match_condition {
                 RcvrMatchesIfObject(_) => {
                     false

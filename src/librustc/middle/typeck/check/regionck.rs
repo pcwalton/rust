@@ -46,15 +46,15 @@ use syntax::codemap::Span;
 use syntax::visit;
 use syntax::visit::Visitor;
 
-pub struct Rcx {
-    fcx: @FnCtxt,
+pub struct Rcx<'a> {
+    fcx: &'a FnCtxt,
     errors_reported: uint,
 
     // id of innermost fn or loop
     repeating_scope: ast::NodeId,
 }
 
-fn encl_region_of_def(fcx: @FnCtxt, def: ast::Def) -> ty::Region {
+fn encl_region_of_def(fcx: &FnCtxt, def: ast::Def) -> ty::Region {
     let tcx = fcx.tcx();
     match def {
         DefLocal(node_id, _) | DefArg(node_id, _) |
@@ -74,7 +74,7 @@ fn encl_region_of_def(fcx: @FnCtxt, def: ast::Def) -> ty::Region {
     }
 }
 
-impl Rcx {
+impl<'a> Rcx<'a> {
     pub fn tcx(&self) -> ty::ctxt {
         self.fcx.ccx.tcx
     }
@@ -143,7 +143,7 @@ impl Rcx {
     }
 }
 
-pub fn regionck_expr(fcx: @FnCtxt, e: &ast::Expr) {
+pub fn regionck_expr(fcx: &FnCtxt, e: &ast::Expr) {
     let mut rcx = Rcx { fcx: fcx, errors_reported: 0,
                          repeating_scope: e.id };
     let rcx = &mut rcx;
@@ -154,9 +154,12 @@ pub fn regionck_expr(fcx: @FnCtxt, e: &ast::Expr) {
     fcx.infcx().resolve_regions();
 }
 
-pub fn regionck_fn(fcx: @FnCtxt, blk: &ast::Block) {
-    let mut rcx = Rcx { fcx: fcx, errors_reported: 0,
-                         repeating_scope: blk.id };
+pub fn regionck_fn(fcx: &FnCtxt, blk: &ast::Block) {
+    let mut rcx = Rcx {
+        fcx: fcx,
+        errors_reported: 0,
+        repeating_scope: blk.id,
+    };
     let rcx = &mut rcx;
     if fcx.err_count_since_creation() == 0 {
         // regionck assumes typeck succeeded
@@ -165,7 +168,7 @@ pub fn regionck_fn(fcx: @FnCtxt, blk: &ast::Block) {
     fcx.infcx().resolve_regions();
 }
 
-impl Visitor<()> for Rcx {
+impl<'a> Visitor<()> for Rcx<'a> {
     // (..) FIXME(#3238) should use visit_pat, not visit_arm/visit_local,
     // However, right now we run into an issue whereby some free
     // regions are not properly related if they appear within the
