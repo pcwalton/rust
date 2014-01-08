@@ -364,7 +364,7 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
                             self.extension_candidates.borrow_mut();
                         let impl_info = impls.get().get(impl_did);
                         self.push_candidates_from_impl(
-                            extension_candidates.get(), *impl_info);
+                            extension_candidates.get(), impl_info);
 
                     }
                 }
@@ -546,7 +546,7 @@ impl<'a,'f,'c> LookupContext<'a,'f,'c> {
                 let mut inherent_candidates = self.inherent_candidates
                                                   .borrow_mut();
                 self.push_candidates_from_impl(inherent_candidates.get(),
-                                               *impl_info);
+                                               impl_info);
             }
         }
     }

@@ -348,7 +348,7 @@ struct ctxt_ {
     // Note that this contains all of the impls that we know about,
     // including ones in other crates. It's not clear that this is the best
     // way to do it.
-    impls: RefCell<HashMap<ast::DefId, @Impl>>,
+    impls: RefCell<HashMap<ast::DefId, Impl>>,
 
     // Set of used unsafe nodes (functions or blocks). Unsafe nodes not
     // present in this set can be warned about.
@@ -4537,7 +4537,7 @@ pub fn item_variances(tcx: ctxt, item_id: ast::DefId) -> @ItemVariances {
 /// Records a trait-to-implementation mapping.
 fn record_trait_implementation(tcx: ctxt,
                                trait_def_id: DefId,
-                               implementation: @Impl) {
+                               implementation: &Impl) {
     let implementation_list;
     let mut trait_impls = tcx.trait_impls.borrow_mut();
     match trait_impls.get().find(&trait_def_id) {
@@ -4570,7 +4570,7 @@ pub fn populate_implementations_for_type_if_necessary(tcx: ctxt,
 
     csearch::each_implementation_for_type(tcx.sess.cstore, type_id,
             |implementation_def_id| {
-        let implementation = @csearch::get_impl(tcx, implementation_def_id);
+        let implementation = csearch::get_impl(tcx, implementation_def_id);
 
         // Record the trait->implementation mappings, if applicable.
         let associated_traits = csearch::get_impl_trait(tcx,
@@ -4578,7 +4578,7 @@ pub fn populate_implementations_for_type_if_necessary(tcx: ctxt,
         for trait_ref in associated_traits.iter() {
             record_trait_implementation(tcx,
                                         trait_ref.def_id,
-                                        implementation);
+                                        &implementation);
         }
 
         // For any methods that use a default implementation, add them to
@@ -4639,10 +4639,10 @@ pub fn populate_implementations_for_trait_if_necessary(
 
     csearch::each_implementation_for_trait(tcx.sess.cstore, trait_id,
             |implementation_def_id| {
-        let implementation = @csearch::get_impl(tcx, implementation_def_id);
+        let implementation = csearch::get_impl(tcx, implementation_def_id);
 
         // Record the trait->implementation mapping.
-        record_trait_implementation(tcx, trait_id, implementation);
+        record_trait_implementation(tcx, trait_id, &implementation);
 
         // For any methods that use a default implementation, add them to
         // the map. This is a bit unfortunate.
