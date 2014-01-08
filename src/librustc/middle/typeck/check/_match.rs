@@ -102,7 +102,7 @@ pub fn check_match(fcx: &FnCtxt,
 }
 
 pub struct pat_ctxt<'a> {
-    fcx: &'a FnCtxt,
+    fcx: &'a FnCtxt<'a>,
     map: PatIdMap,
 }
 

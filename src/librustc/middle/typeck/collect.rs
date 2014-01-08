@@ -56,11 +56,11 @@ use syntax::visit;
 use syntax::opt_vec::OptVec;
 use syntax::parse::token::special_idents;
 
-struct CollectItemTypesVisitor {
-    ccx: @CrateCtxt
+struct CollectItemTypesVisitor<'a> {
+    ccx: &'a CrateCtxt
 }
 
-impl visit::Visitor<()> for CollectItemTypesVisitor {
+impl<'a> visit::Visitor<()> for CollectItemTypesVisitor<'a> {
     fn visit_item(&mut self, i: &ast::item, _: ()) {
         convert(self.ccx, i);
         visit::walk_item(self, i, ());
@@ -71,9 +71,8 @@ impl visit::Visitor<()> for CollectItemTypesVisitor {
     }
 }
 
-pub fn collect_item_types(ccx: @CrateCtxt, crate: &ast::Crate) {
-    fn collect_intrinsic_type(ccx: &CrateCtxt,
-                              lang_item: ast::DefId) {
+pub fn collect_item_types(ccx: &CrateCtxt, crate: &ast::Crate) {
+    fn collect_intrinsic_type(ccx: &CrateCtxt, lang_item: ast::DefId) {
         let ty::ty_param_bounds_and_ty { ty: ty, .. } =
             ccx.get_item_ty(lang_item);
         let mut intrinsic_defs = ccx.tcx.intrinsic_defs.borrow_mut();

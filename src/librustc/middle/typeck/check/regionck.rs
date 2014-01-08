@@ -46,8 +46,8 @@ use syntax::codemap::Span;
 use syntax::visit;
 use syntax::visit::Visitor;
 
-pub struct Rcx<'a> {
-    fcx: &'a FnCtxt,
+pub struct Rcx<'a,'c> {
+    fcx: &'a FnCtxt<'c>,
     errors_reported: uint,
 
     // id of innermost fn or loop
@@ -74,7 +74,7 @@ fn encl_region_of_def(fcx: &FnCtxt, def: ast::Def) -> ty::Region {
     }
 }
 
-impl<'a> Rcx<'a> {
+impl<'a,'c> Rcx<'a,'c> {
     pub fn tcx(&self) -> ty::ctxt {
         self.fcx.ccx.tcx
     }
@@ -168,7 +168,7 @@ pub fn regionck_fn(fcx: &FnCtxt, blk: &ast::Block) {
     fcx.infcx().resolve_regions();
 }
 
-impl<'a> Visitor<()> for Rcx<'a> {
+impl<'a,'c> Visitor<()> for Rcx<'a,'c> {
     // (..) FIXME(#3238) should use visit_pat, not visit_arm/visit_local,
     // However, right now we run into an issue whereby some free
     // regions are not properly related if they appear within the

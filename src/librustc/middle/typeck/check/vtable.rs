@@ -757,7 +757,7 @@ fn resolve_expr(fcx: &FnCtxt, ex: &ast::Expr) {
     visit::walk_expr(&mut fcx, ex, ());
 }
 
-pub fn resolve_impl(ccx: @CrateCtxt,
+pub fn resolve_impl(ccx: &CrateCtxt,
                     impl_item: &ast::item,
                     impl_generics: &ty::Generics,
                     impl_trait_ref: &ty::TraitRef) {
@@ -813,7 +813,7 @@ pub fn resolve_impl(ccx: @CrateCtxt,
     impl_vtables.get().insert(impl_def_id, res);
 }
 
-impl<'a> visit::Visitor<()> for &'a FnCtxt {
+impl<'a,'c> visit::Visitor<()> for &'a FnCtxt<'c> {
     fn visit_expr(&mut self, ex: &ast::Expr, _: ()) {
         resolve_expr(*self, ex);
     }

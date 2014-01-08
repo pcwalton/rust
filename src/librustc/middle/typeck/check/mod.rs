@@ -219,7 +219,7 @@ enum AllowOverloadedOperatorsFlag {
 }
 
 #[deriving(Clone)]
-pub struct FnCtxt {
+pub struct FnCtxt<'c> {
     // Number of errors that had been reported when we started
     // checking this function. On exit, if we find that *more* errors
     // have been reported, we will skip regionck and other work that
@@ -251,13 +251,11 @@ pub struct FnCtxt {
 
     inh: @Inherited,
 
-    ccx: @CrateCtxt,
+    ccx: &'c CrateCtxt,
 }
 
 impl Inherited {
-    fn new(tcx: ty::ctxt,
-           param_env: ty::ParameterEnvironment)
-           -> Inherited {
+    fn new(tcx: ty::ctxt, param_env: ty::ParameterEnvironment) -> Inherited {
         Inherited {
             infcx: infer::new_infer_ctxt(tcx),
             locals: @RefCell::new(HashMap::new()),
@@ -272,10 +270,11 @@ impl Inherited {
 }
 
 // Used by check_const and check_enum_variants
-pub fn blank_fn_ctxt(ccx: @CrateCtxt,
+pub fn blank_fn_ctxt<'c>(
+                     ccx: &'c CrateCtxt,
                      rty: ty::t,
                      region_bnd: ast::NodeId)
-                     -> FnCtxt {
+                     -> FnCtxt<'c> {
     // It's kind of a kludge to manufacture a fake function context
     // and statement context, but we might as well do write the code only once
     let param_env = ty::ParameterEnvironment {
@@ -294,7 +293,7 @@ pub fn blank_fn_ctxt(ccx: @CrateCtxt,
     }
 }
 
-impl ExprTyProvider for FnCtxt {
+impl<'c> ExprTyProvider for FnCtxt<'c> {
     fn expr_ty(&self, ex: &ast::Expr) -> ty::t {
         self.expr_ty(ex)
     }
@@ -304,21 +303,25 @@ impl ExprTyProvider for FnCtxt {
     }
 }
 
-struct CheckItemTypesVisitor { ccx: @CrateCtxt }
+struct CheckItemTypesVisitor<'c> {
+    ccx: &'c CrateCtxt,
+}
 
-impl Visitor<()> for CheckItemTypesVisitor {
+impl<'c> Visitor<()> for CheckItemTypesVisitor<'c> {
     fn visit_item(&mut self, i: &ast::item, _: ()) {
         check_item(self.ccx, i);
         visit::walk_item(self, i, ());
     }
 }
 
-pub fn check_item_types(ccx: @CrateCtxt, crate: &ast::Crate) {
-    let mut visit = CheckItemTypesVisitor { ccx: ccx };
+pub fn check_item_types(ccx: &CrateCtxt, crate: &ast::Crate) {
+    let mut visit = CheckItemTypesVisitor {
+        ccx: ccx,
+    };
     visit::walk_crate(&mut visit, crate, ());
 }
 
-pub fn check_bare_fn(ccx: @CrateCtxt,
+pub fn check_bare_fn(ccx: &CrateCtxt,
                      decl: &ast::fn_decl,
                      body: &ast::Block,
                      id: ast::NodeId,
@@ -341,12 +344,12 @@ pub fn check_bare_fn(ccx: @CrateCtxt,
     }
 }
 
-struct GatherLocalsVisitor<'a> {
-    fcx: &'a FnCtxt,
+struct GatherLocalsVisitor<'a,'c> {
+    fcx: &'a FnCtxt<'c>,
     tcx: ty::ctxt,
 }
 
-impl<'a> GatherLocalsVisitor<'a> {
+impl<'a,'c> GatherLocalsVisitor<'a,'c> {
     fn assign(&mut self, nid: ast::NodeId, ty_opt: Option<ty::t>) {
             match ty_opt {
                 None => {
@@ -365,7 +368,7 @@ impl<'a> GatherLocalsVisitor<'a> {
     }
 }
 
-impl<'a> Visitor<()> for GatherLocalsVisitor<'a> {
+impl<'a,'c> Visitor<()> for GatherLocalsVisitor<'a,'c> {
         // Add explicitly-declared locals.
     fn visit_local(&mut self, local: &ast::Local, _: ()) {
             let o_ty = match local.ty.node {
@@ -417,7 +420,8 @@ impl<'a> Visitor<()> for GatherLocalsVisitor<'a> {
 
 }
 
-pub fn check_fn(ccx: @CrateCtxt,
+pub fn check_fn<'a>(
+                ccx: &'a CrateCtxt,
                 opt_self_info: Option<SelfInfo>,
                 purity: ast::purity,
                 fn_sig: &ty::FnSig,
@@ -426,7 +430,7 @@ pub fn check_fn(ccx: @CrateCtxt,
                 body: &ast::Block,
                 fn_kind: FnKind,
                 inherited: @Inherited)
-                -> FnCtxt {
+                -> FnCtxt<'a> {
     /*!
      * Helper used by check_bare_fn and check_expr_fn.  Does the
      * grungy work of checking a function body and returns the
@@ -468,16 +472,14 @@ pub fn check_fn(ccx: @CrateCtxt,
 
     // Create the function context.  This is either derived from scratch or,
     // in the case of function expressions, based on the outer context.
-    let fcx: FnCtxt = {
-        FnCtxt {
-            err_count_on_creation: err_count_on_creation,
-            ret_ty: ret_ty,
-            ps: RefCell::new(PurityState::function(purity, id)),
-            region_lb: Cell::new(body.id),
-            fn_kind: fn_kind,
-            inh: inherited,
-            ccx: ccx
-        }
+    let fcx = FnCtxt {
+        err_count_on_creation: err_count_on_creation,
+        ret_ty: ret_ty,
+        ps: RefCell::new(PurityState::function(purity, id)),
+        region_lb: Cell::new(body.id),
+        fn_kind: fn_kind,
+        inh: inherited,
+        ccx: ccx
     };
 
     gather_locals(&fcx, decl, body, arg_tys, opt_self_info);
@@ -567,7 +569,7 @@ pub fn check_no_duplicate_fields(tcx: ty::ctxt,
     }
 }
 
-pub fn check_struct(ccx: @CrateCtxt, id: ast::NodeId, span: Span) {
+pub fn check_struct(ccx: &CrateCtxt, id: ast::NodeId, span: Span) {
     let tcx = ccx.tcx;
 
     // Check that the class is instantiable
@@ -578,7 +580,7 @@ pub fn check_struct(ccx: @CrateCtxt, id: ast::NodeId, span: Span) {
     }
 }
 
-pub fn check_item(ccx: @CrateCtxt, it: &ast::item) {
+pub fn check_item(ccx: &CrateCtxt, it: &ast::item) {
     debug!("check_item(it.id={}, it.ident={})",
            it.id,
            ty::item_path_str(ccx.tcx, local_def(it.id)));
@@ -681,7 +683,7 @@ pub fn check_item(ccx: @CrateCtxt, it: &ast::item) {
     }
 }
 
-fn check_method_body(ccx: @CrateCtxt,
+fn check_method_body(ccx: &CrateCtxt,
                      item_generics: &ty::Generics,
                      self_bound: Option<@ty::TraitRef>,
                      method: &ast::method) {
@@ -733,7 +735,7 @@ fn check_method_body(ccx: @CrateCtxt,
         param_env);
 }
 
-fn check_impl_methods_against_trait(ccx: @CrateCtxt,
+fn check_impl_methods_against_trait(ccx: &CrateCtxt,
                                     impl_span: Span,
                                     impl_generics: &ty::Generics,
                                     ast_trait_ref: &ast::trait_ref,
@@ -1039,7 +1041,7 @@ pub fn compare_impl_method(tcx: ty::ctxt,
     }
 }
 
-impl AstConv for FnCtxt {
+impl<'c> AstConv for FnCtxt<'c> {
     fn tcx(&self) -> ty::ctxt { self.ccx.tcx }
 
     fn get_item_ty(&self, id: ast::DefId) -> ty::ty_param_bounds_and_ty {
@@ -1055,7 +1057,7 @@ impl AstConv for FnCtxt {
     }
 }
 
-impl FnCtxt {
+impl<'c> FnCtxt<'c> {
     pub fn infcx(&self) -> @infer::InferCtxt {
         self.inh.infcx
     }
@@ -1082,7 +1084,7 @@ impl RegionScope for @infer::InferCtxt {
     }
 }
 
-impl FnCtxt {
+impl<'c> FnCtxt<'c> {
     pub fn tag(&self) -> ~str {
         unsafe {
             format!("{}", self as *FnCtxt)
@@ -1408,10 +1410,8 @@ pub fn check_lit(fcx: &FnCtxt, lit: &ast::lit) -> ty::t {
     }
 }
 
-pub fn valid_range_bounds(ccx: @CrateCtxt,
-                          from: &ast::Expr,
-                          to: &ast::Expr)
-                       -> Option<bool> {
+pub fn valid_range_bounds(ccx: &CrateCtxt, from: &ast::Expr, to: &ast::Expr)
+                          -> Option<bool> {
     match const_eval::compare_lit_exprs(ccx.tcx, from, to) {
         Some(val) => Some(val <= 0),
         None => None
@@ -3461,7 +3461,7 @@ pub fn check_block_with_expected(fcx: &FnCtxt,
     fcx.ps.set(prev);
 }
 
-pub fn check_const(ccx: @CrateCtxt,
+pub fn check_const(ccx: &CrateCtxt,
                    sp: Span,
                    e: &ast::Expr,
                    id: ast::NodeId) {
@@ -3537,15 +3537,15 @@ pub fn check_simd(tcx: ty::ctxt, sp: Span, id: ast::NodeId) {
     }
 }
 
-pub fn check_enum_variants(ccx: @CrateCtxt,
+pub fn check_enum_variants(ccx: &CrateCtxt,
                            sp: Span,
                            vs: &[ast::P<ast::variant>],
                            id: ast::NodeId) {
 
-    fn disr_in_range(ccx: @CrateCtxt,
-                     ty: attr::IntType,
-                     disr: ty::Disr) -> bool {
-        fn uint_in_range(ccx: @CrateCtxt, ty: ast::uint_ty, disr: ty::Disr) -> bool {
+    fn disr_in_range(ccx: &CrateCtxt, ty: attr::IntType, disr: ty::Disr)
+                     -> bool {
+        fn uint_in_range(ccx: &CrateCtxt, ty: ast::uint_ty, disr: ty::Disr)
+                         -> bool {
             match ty {
                 ast::ty_u8 => disr as u8 as Disr == disr,
                 ast::ty_u16 => disr as u16 as Disr == disr,
@@ -3554,7 +3554,8 @@ pub fn check_enum_variants(ccx: @CrateCtxt,
                 ast::ty_u => uint_in_range(ccx, ccx.tcx.sess.targ_cfg.uint_type, disr)
             }
         }
-        fn int_in_range(ccx: @CrateCtxt, ty: ast::int_ty, disr: ty::Disr) -> bool {
+        fn int_in_range(ccx: &CrateCtxt, ty: ast::int_ty, disr: ty::Disr)
+                        -> bool {
             match ty {
                 ast::ty_i8 => disr as i8 as Disr == disr,
                 ast::ty_i16 => disr as i16 as Disr == disr,
@@ -3569,7 +3570,7 @@ pub fn check_enum_variants(ccx: @CrateCtxt,
         }
     }
 
-    fn do_check(ccx: @CrateCtxt,
+    fn do_check(ccx: &CrateCtxt,
                 vs: &[ast::P<ast::variant>],
                 id: ast::NodeId,
                 hint: attr::ReprAttr)
@@ -3943,7 +3944,7 @@ pub fn may_break(cx: ty::ctxt, id: ast::NodeId, b: ast::P<ast::Block>) -> bool {
         }}))
 }
 
-pub fn check_bounds_are_used(ccx: @CrateCtxt,
+pub fn check_bounds_are_used(ccx: &CrateCtxt,
                              span: Span,
                              tps: &OptVec<ast::TyParam>,
                              ty: ty::t) {
@@ -3973,8 +3974,8 @@ pub fn check_bounds_are_used(ccx: @CrateCtxt,
     }
 }
 
-pub fn check_intrinsic_type(ccx: @CrateCtxt, it: &ast::foreign_item) {
-    fn param(ccx: @CrateCtxt, n: uint) -> ty::t {
+pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &ast::foreign_item) {
+    fn param(ccx: &CrateCtxt, n: uint) -> ty::t {
         ty::mk_param(ccx.tcx, n, local_def(0))
     }
 

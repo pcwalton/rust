@@ -40,9 +40,7 @@ pub fn suptype_with_fn(fcx: &FnCtxt,
     match infer::mk_subty(fcx.infcx(), b_is_expected, infer::Misc(sp),
                           ty_b, ty_a) {
       result::Ok(()) => { /* ok */ }
-      result::Err(ref err) => {
-          handle_err(sp, ty_a, ty_b, err);
-      }
+      result::Err(ref err) => handle_err(sp, ty_a, ty_b, err),
     }
 }
 

@@ -234,7 +234,7 @@ fn maybe_resolve_type_vars_for_node(wbcx: &mut WbCtxt,
 }
 
 struct WbCtxt<'a> {
-    fcx: &'a FnCtxt,
+    fcx: &'a FnCtxt<'a>,
 
     // As soon as we hit an error we have to stop resolving
     // the entire function.

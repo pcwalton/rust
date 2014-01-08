@@ -168,8 +168,8 @@ pub fn lookup(
     return lcx.search(self_ty);
 }
 
-pub struct LookupContext<'a,'f> {
-    fcx: &'f FnCtxt,
+pub struct LookupContext<'a,'f,'c> {
+    fcx: &'f FnCtxt<'c>,
     expr: &'a ast::Expr,
     self_expr: &'a ast::Expr,
     callee_id: NodeId,
@@ -209,7 +209,7 @@ enum RcvrMatchCondition {
     RcvrMatchesIfSubtype(ty::t)
 }
 
-impl<'a,'f> LookupContext<'a,'f> {
+impl<'a,'f,'c> LookupContext<'a,'f,'c> {
     fn search(&self, self_ty: ty::t) -> Option<method_map_entry> {
         let mut self_ty = self_ty;
         let mut autoderefs = 0;
