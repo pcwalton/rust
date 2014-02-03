@@ -29,7 +29,7 @@ use back::{link, abi};
 use driver::session;
 use driver::session::Session;
 use driver::driver::{CrateAnalysis, CrateTranslation};
-use lib::llvm::{ModuleRef, ValueRef, BasicBlockRef};
+use lib::llvm::{MD_tbaa_struct, ModuleRef, ValueRef, BasicBlockRef};
 use lib::llvm::{llvm, True, Vector};
 use lib;
 use metadata::common::LinkMeta;
@@ -1082,7 +1082,12 @@ pub fn with_cond<'a>(
     next_cx
 }
 
-pub fn call_memcpy(cx: &Block, dst: ValueRef, src: ValueRef, n_bytes: ValueRef, align: u32) {
+pub fn call_memcpy(cx: &Block,
+                   dst: ValueRef,
+                   src: ValueRef,
+                   n_bytes: ValueRef,
+                   align: u32,
+                   metadata: Option<ValueRef>) {
     let _icx = push_ctxt("call_memcpy");
     let ccx = cx.ccx();
     let key = match ccx.sess.targ_cfg.arch {
@@ -1095,7 +1100,18 @@ pub fn call_memcpy(cx: &Block, dst: ValueRef, src: ValueRef, n_bytes: ValueRef, 
     let size = IntCast(cx, n_bytes, ccx.int_type);
     let align = C_i32(align as i32);
     let volatile = C_i1(false);
-    Call(cx, memcpy, [dst_ptr, src_ptr, size, align, volatile], []);
+    let call = Call(cx,
+                    memcpy,
+                    [dst_ptr, src_ptr, size, align, volatile],
+                    []);
+    match metadata {
+        None => {}
+        Some(metadata) => {
+            unsafe {
+                llvm::LLVMSetMetadata(call, MD_tbaa_struct as u32, metadata)
+            }
+        }
+    }
 }
 
 pub fn memcpy_ty(bcx: &Block, dst: ValueRef, src: ValueRef, t: ty::t) {
@@ -1105,7 +1121,12 @@ pub fn memcpy_ty(bcx: &Block, dst: ValueRef, src: ValueRef, t: ty::t) {
         let llty = type_of::type_of(ccx, t);
         let llsz = llsize_of(ccx, llty);
         let llalign = llalign_of_min(ccx, llty);
-        call_memcpy(bcx, dst, src, llsz, llalign as u32);
+        let metadata = if ty::type_is_adt(t) {
+            Some(adt::get_tbaa_struct_metadata(ccx, t))
+        } else {
+            None
+        };
+        call_memcpy(bcx, dst, src, llsz, llalign as u32, metadata);
     } else {
         Store(bcx, Load(bcx, src), dst);
     }
@@ -2696,6 +2717,12 @@ pub fn trans_crate(sess: session::Session,
     }
 
     decl_gc_metadata(ccx, llmod_id);
+
+    {
+        let mut tbaa = ccx.tbaa.borrow_mut();
+        tbaa.get().init(ccx.llcx);
+    }
+
     fill_crate_map(ccx, ccx.crate_map);
 
     // win32: wart with exporting crate_map symbol

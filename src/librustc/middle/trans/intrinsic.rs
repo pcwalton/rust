@@ -429,7 +429,7 @@ pub fn trans_intrinsic(ccx: @CrateContext,
                     let llsrcptr = PointerCast(bcx, llsrcval, Type::i8p());
 
                     let llsize = llsize_of(ccx, llintype);
-                    call_memcpy(bcx, lldestptr, llsrcptr, llsize, 1);
+                    call_memcpy(bcx, lldestptr, llsrcptr, llsize, 1, None);
                     RetVoid(bcx);
                 };
             } else {

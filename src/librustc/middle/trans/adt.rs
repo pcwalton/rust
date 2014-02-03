@@ -43,25 +43,24 @@
  *   taken to it, implementing them for Rust seems difficult.
  */
 
+use extra::bitv::Bitv;
 use std::container::Map;
 use std::libc::c_ulonglong;
-use std::option::{Option, Some, None};
 
 use lib::llvm::{ValueRef, True, IntEQ, IntNE};
 use middle::trans::_match;
 use middle::trans::build::*;
 use middle::trans::common::*;
 use middle::trans::machine;
+use middle::trans::type_::Type;
 use middle::trans::type_of;
-use middle::ty;
 use middle::ty::Disr;
+use middle::ty;
 use syntax::abi::{X86, X86_64, Arm, Mips};
 use syntax::ast;
-use syntax::attr;
 use syntax::attr::IntType;
+use syntax::attr;
 use util::ppaux::ty_to_str;
-
-use middle::trans::type_::Type;
 
 type Hint = attr::ReprAttr;
 
@@ -455,6 +454,73 @@ fn struct_llfields(cx: &CrateContext, st: &Struct, sizing: bool) -> ~[Type] {
     } else {
         st.fields.map(|&ty| type_of::type_of(cx, ty))
     }
+}
+
+fn add_padding_for_struct<I:Iterator<ty::t>>(
+                          crate_context: &CrateContext,
+                          bitvector: &mut Bitv,
+                          mut iterator: I) {
+    let mut offset: u64 = 0;
+    for field_type in iterator {
+        let llfieldtype = type_of::sizing_type_of(crate_context,
+                                                  field_type);
+        let align = machine::llalign_of_min(crate_context, llfieldtype) as
+            u64;
+        let real_size = machine::llsize_of_real(crate_context, llfieldtype) as
+            u64;
+        let alloc_size = machine::llsize_of_alloc(crate_context, llfieldtype)
+            as u64;
+
+        offset = roundup(offset, align);
+        for i in range(offset, offset + real_size) {
+            bitvector.set(i as uint, true)
+        }
+
+        offset += alloc_size as u64;
+    }
+}
+
+/// Returns a bitvector with one bit for each byte of the given type. Each
+/// bit is true if the byte is used in some variant of the ADT or false if the
+/// bit is padding in all variants of the ADT.
+fn compute_padding(crate_context: &CrateContext, repr: &Repr) -> Bitv {
+    let sizing_type = sizing_type_of(crate_context, repr);
+    let bit_count = machine::llbitsize_of_real(crate_context, sizing_type);
+    let mut bitvector = Bitv::new(bit_count as uint, false);
+
+    match *repr {
+        CEnum(int_type, _, _) => {
+            let vector = [ ty_of_inttype(int_type) ];
+            add_padding_for_struct(crate_context,
+                                   &mut bitvector,
+                                   vector.iter().map(|&x| x))
+        }
+        Univariant(ref structure, _) |
+        NullablePointer {
+            nonnull: ref structure,
+            ..
+        } => {
+            let iter = structure.fields.iter().map(|&ty| ty);
+            add_padding_for_struct(crate_context, &mut bitvector, iter)
+        }
+        General(_, ref structs) => {
+            for structure in structs.iter() {
+                let iter = structure.fields.iter().map(|&ty| ty);
+                add_padding_for_struct(crate_context, &mut bitvector, iter)
+            }
+        }
+    }
+
+    bitvector
+}
+
+/// Returns the TBAA-struct metadata node for the given type.
+pub fn get_tbaa_struct_metadata(crate_context: &CrateContext, ty: ty::t)
+                                -> ValueRef {
+    let repr = represent_type(crate_context, ty);
+    let bitv = compute_padding(crate_context, repr);
+    let mut tbaa = crate_context.tbaa.borrow_mut();
+    tbaa.get().create_struct_node(crate_context.llcx, &bitv)
 }
 
 /**

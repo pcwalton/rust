@@ -1617,6 +1617,13 @@ pub fn type_needs_drop(cx: ctxt, ty: t) -> bool {
     type_contents(cx, ty).needs_drop(cx)
 }
 
+pub fn type_is_adt(ty: t) -> bool {
+    match get(ty).sty {
+        ty::ty_tup(_) | ty::ty_struct(..) | ty::ty_enum(..) => true,
+        _ => false,
+    }
+}
+
 // Some things don't need cleanups during unwinding because the
 // task can free them all at once later. Currently only things
 // that only contain scalars and shared boxes can avoid unwind

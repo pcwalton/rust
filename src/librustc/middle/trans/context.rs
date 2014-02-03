@@ -8,25 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
-use driver::session;
-use lib::llvm::{ContextRef, ModuleRef, ValueRef};
-use lib::llvm::{llvm, TargetData, TypeNames};
-use lib::llvm::mk_target_data;
-use metadata::common::LinkMeta;
-use middle::astencode;
-use middle::resolve;
-use middle::trans::adt;
-use middle::trans::base;
-use middle::trans::builder::Builder;
-use middle::trans::debuginfo;
-use middle::trans::common::{C_i32, C_null};
-use middle::ty;
-
-use middle::trans::type_::Type;
-
-use util::sha2::Sha256;
-
 use std::cell::{Cell, RefCell};
 use std::c_str::ToCStr;
 use std::hashmap::{HashMap, HashSet};
@@ -34,9 +15,24 @@ use std::local_data;
 use std::libc::c_uint;
 use syntax::ast;
 
-use middle::trans::common::{mono_id,ExternMap,tydesc_info,BuilderRef_res,Stats};
-
+use driver::session;
+use lib::llvm::mk_target_data;
+use lib::llvm::{ContextRef, ModuleRef, ValueRef};
+use lib::llvm::{llvm, TargetData, TypeNames};
+use metadata::common::LinkMeta;
+use middle::astencode;
+use middle::resolve;
+use middle::trans::adt;
 use middle::trans::base::{decl_crate_map};
+use middle::trans::base;
+use middle::trans::builder::Builder;
+use middle::trans::common::{C_i32, C_null};
+use middle::trans::common::{mono_id,ExternMap,tydesc_info,BuilderRef_res,Stats};
+use middle::trans::debuginfo;
+use middle::trans::tbaa::TbaaInfo;
+use middle::trans::type_::Type;
+use middle::ty;
+use util::sha2::Sha256;
 
 pub struct CrateContext {
      sess: session::Session,
@@ -115,6 +111,7 @@ pub struct CrateContext {
      // is not emitted by LLVM's GC pass when no functions use GC.
      uses_gc: bool,
      dbg_cx: Option<debuginfo::CrateDebugContext>,
+     tbaa: RefCell<TbaaInfo>,
      do_not_commit_warning_issued: Cell<bool>,
 }
 
@@ -235,6 +232,7 @@ impl CrateContext {
                   crate_map_name: crate_map_name,
                   uses_gc: false,
                   dbg_cx: dbg_cx,
+                  tbaa: RefCell::new(TbaaInfo::new()),
                   do_not_commit_warning_issued: Cell::new(false),
             }
         }

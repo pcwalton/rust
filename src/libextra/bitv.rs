@@ -265,6 +265,10 @@ impl Bitv {
         }
     }
 
+    #[inline]
+    pub fn len(&self) -> uint {
+        self.nbits
+    }
 }
 
 impl Bitv {

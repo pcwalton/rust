@@ -418,7 +418,8 @@ pub fn write_content<'a>(
                                               lldest,
                                               llcstr,
                                               llbytes,
-                                              1);
+                                              1,
+                                              None);
                             return bcx;
                         }
                     }
