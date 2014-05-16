@@ -399,12 +399,16 @@ pub fn run(mut krate: clean::Crate, dst: Path) -> io::IoResult<()> {
         // Update the search index
         let dst = cx.dst.join("search-index.js");
         let mut all_indexes = Vec::new();
-        all_indexes.push(index);
+        all_indexes.push(index.to_strbuf());
         if dst.exists() {
             for line in BufferedReader::new(File::open(&dst)).lines() {
                 let line = try!(line);
-                if !line.starts_with("searchIndex") { continue }
-                if line.starts_with(format!("searchIndex['{}']", krate.name)) {
+                if !line.as_slice().starts_with("searchIndex") {
+                    continue
+                }
+                if line.as_slice()
+                       .starts_with(format_strbuf!("searchIndex['{}']",
+                                                   krate.name).as_slice()) {
                     continue
                 }
                 all_indexes.push(line);
@@ -582,7 +586,7 @@ impl<'a> SourceCollector<'a> {
 
         let title = format!("{} -- source", cur.filename_display());
         let page = layout::Page {
-            title: title,
+            title: title.as_slice(),
             ty: "source",
             root_path: root_path.as_slice(),
         };
@@ -1280,7 +1284,7 @@ fn item_trait(w: &mut fmt::Formatter, it: &clean::Item,
         parents.push_str(": ");
         for (i, p) in t.parents.iter().enumerate() {
             if i > 0 { parents.push_str(" + "); }
-            parents.push_str(format!("{}", *p));
+            parents.push_str(format!("{}", *p).as_slice());
         }
     }
 
