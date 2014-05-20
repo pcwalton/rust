@@ -396,7 +396,7 @@ fn zeroed_process_information() -> libc::types::os::arch::extra::PROCESS_INFORMA
 }
 
 #[cfg(windows)]
-fn make_command_line(prog: &CString, args: &[CString]) -> ~str {
+fn make_command_line(prog: &CString, args: &[CString]) -> StrBuf {
     let mut cmd = StrBuf::new();
     append_arg(&mut cmd, prog.as_str()
                              .expect("expected program name to be utf-8 encoded"));
@@ -405,7 +405,7 @@ fn make_command_line(prog: &CString, args: &[CString]) -> ~str {
         append_arg(&mut cmd, arg.as_str()
                                 .expect("expected argument to be utf-8 encoded"));
     }
-    return cmd.into_owned();
+    return cmd;
 
     fn append_arg(cmd: &mut StrBuf, arg: &str) {
         let quote = arg.chars().any(|c| c == ' ' || c == '\t');
@@ -1093,7 +1093,7 @@ mod tests {
         use std::c_str::CString;
         use super::make_command_line;
 
-        fn test_wrapper(prog: &str, args: &[&str]) -> ~str {
+        fn test_wrapper(prog: &str, args: &[&str]) -> StrBuf {
             make_command_line(&prog.to_c_str(),
                               args.iter()
                                   .map(|a| a.to_c_str())
