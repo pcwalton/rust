@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_vectors() {
-        let x: ~[int] = box [];
+        let x: Vec<int> = Vec::new();
         assert_eq!(x.to_str(), "[]".to_strbuf());
         assert_eq!((box [1]).to_str(), "[1]".to_strbuf());
         assert_eq!((box [1, 2, 3]).to_str(), "[1, 2, 3]".to_strbuf());

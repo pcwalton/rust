@@ -566,7 +566,7 @@ impl<A> ExactSize<A> for Item<A> {}
 ///     }
 ///     let v = [1u, 2, 3];
 ///     let res = collect(v.iter().map(|&x| inc_conditionally(x)));
-///     assert!(res == Some(~[2u, 3, 4]));
+///     assert!(res == Some(vec![2u, 3, 4]));
 #[inline]
 pub fn collect<T, Iter: Iterator<Option<T>>, V: FromIterator<T>>(iter: Iter) -> Option<V> {
     // FIXME(#11084): This should be twice as fast once this bug is closed.

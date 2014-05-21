@@ -13,8 +13,8 @@ use std::hash::Hash;
 use std::{mem, raw, ptr, slice};
 use serialize::{Encodable, Decodable, Encoder, Decoder};
 
-/// A non-growable owned slice. This would preferably become `~[T]`
-/// under DST.
+/// A non-growable owned slice. This would preferably become `Box<[T]>` under
+/// a DST regime.
 #[unsafe_no_drop_flag] // data is set to null on destruction
 pub struct OwnedSlice<T> {
     /// null iff len == 0

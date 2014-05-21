@@ -196,9 +196,6 @@ impl<V:TyVisitor + MovePtr> TyVisitor for MovePtrAdaptor<V> {
     }
 
     fn visit_estr_uniq(&mut self) -> bool {
-        self.align_to::<~str>();
-        if ! self.inner.visit_estr_uniq() { return false; }
-        self.bump_past::<~str>();
         true
     }
 
@@ -250,10 +247,7 @@ impl<V:TyVisitor + MovePtr> TyVisitor for MovePtrAdaptor<V> {
         true
     }
 
-    fn visit_evec_uniq(&mut self, mtbl: uint, inner: *TyDesc) -> bool {
-        self.align_to::<~[u8]>();
-        if ! self.inner.visit_evec_uniq(mtbl, inner) { return false; }
-        self.bump_past::<~[u8]>();
+    fn visit_evec_uniq(&mut self, _mtbl: uint, _inner: *TyDesc) -> bool {
         true
     }
 

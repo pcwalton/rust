@@ -93,7 +93,7 @@ And I want to call `convertAll` on an array of strings. Suppose
 further that for whatever reason I specifically supply the value of
 `String` for the type parameter `T`:
 
-    let mut vector = ~["string", ...];
+    let mut vector = vec!["string", ...];
     convertAll::<int, String>(v);
 
 Is this legal? To put another way, can we apply the `impl` for

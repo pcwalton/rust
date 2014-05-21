@@ -236,18 +236,6 @@ pub trait OwnedAsciiCast {
     unsafe fn into_ascii_nocheck(self) -> Vec<Ascii>;
 }
 
-impl OwnedAsciiCast for ~[u8] {
-    #[inline]
-    fn is_ascii(&self) -> bool {
-        self.as_slice().is_ascii()
-    }
-
-    #[inline]
-    unsafe fn into_ascii_nocheck(self) -> Vec<Ascii> {
-        mem::transmute(Vec::from_slice(self.as_slice()))
-    }
-}
-
 impl OwnedAsciiCast for StrBuf {
     #[inline]
     fn is_ascii(&self) -> bool {
@@ -308,14 +296,6 @@ impl<'a> AsciiStr for &'a [Ascii] {
     #[inline]
     fn eq_ignore_case(self, other: &[Ascii]) -> bool {
         self.iter().zip(other.iter()).all(|(&a, &b)| a.eq_ignore_case(b))
-    }
-}
-
-impl IntoStr for ~[Ascii] {
-    #[inline]
-    fn into_str(self) -> StrBuf {
-        let vector: Vec<Ascii> = self.as_slice().iter().map(|x| *x).collect();
-        vector.into_str()
     }
 }
 

@@ -10,7 +10,6 @@
 
 //! An owned, growable vector.
 
-use RawVec = raw::Vec;
 use clone::Clone;
 use cmp::{Ord, Eq, Ordering, TotalEq, TotalOrd, max};
 use container::{Container, Mutable};
@@ -27,7 +26,7 @@ use ptr;
 use raw::Slice;
 use rt::heap::{allocate, reallocate, deallocate};
 use slice::{ImmutableEqVector, ImmutableVector, Items, MutItems, MutableVector};
-use slice::{MutableTotalOrdVector, OwnedVector, Vector};
+use slice::{MutableTotalOrdVector, Vector};
 use slice::{MutableVectorAllocating};
 
 /// An owned, growable vector.
@@ -1525,37 +1524,9 @@ pub trait FromVec<T> {
     fn from_vec(v: Vec<T>) -> Self;
 }
 
-impl<T> FromVec<T> for ~[T] {
-    fn from_vec(mut v: Vec<T>) -> ~[T] {
-        let len = v.len();
-        let data_size = len.checked_mul(&mem::size_of::<T>());
-        let data_size = data_size.expect("overflow in from_vec()");
-        let size = mem::size_of::<RawVec<()>>().checked_add(&data_size);
-        let size = size.expect("overflow in from_vec()");
-
-        // In a post-DST world, we can attempt to reuse the Vec allocation by calling
-        // shrink_to_fit() on it. That may involve a reallocation+memcpy, but that's no
-        // diffrent than what we're doing manually here.
-
-        let vp = v.as_mut_ptr();
-
-        unsafe {
-            let ret = allocate(size, 8) as *mut RawVec<()>;
-
-            let a_size = mem::size_of::<T>();
-            let a_size = if a_size == 0 {1} else {a_size};
-            (*ret).fill = len * a_size;
-            (*ret).alloc = len * a_size;
-
-            ptr::copy_nonoverlapping_memory(&mut (*ret).data as *mut _ as *mut u8,
-                                            vp as *u8, data_size);
-
-            // we've transferred ownership of the contents from v, but we can't drop it
-            // as it still needs to free its own allocation.
-            v.set_len(0);
-
-            mem::transmute(ret)
-        }
+impl<T> FromVec<T> for Vec<T> {
+    fn from_vec(v: Vec<T>) -> Vec<T> {
+        v
     }
 }
 
@@ -1842,15 +1813,15 @@ mod tests {
     #[test]
     fn test_from_vec() {
         let a = vec![1u, 2, 3];
-        let b: ~[uint] = FromVec::from_vec(a);
+        let b: Vec<uint> = FromVec::from_vec(a);
         assert_eq!(b.as_slice(), &[1u, 2, 3]);
 
         let a = vec![];
-        let b: ~[u8] = FromVec::from_vec(a);
+        let b: Vec<u8> = FromVec::from_vec(a);
         assert_eq!(b.as_slice(), &[]);
 
         let a = vec!["one".to_strbuf(), "two".to_strbuf()];
-        let b: ~[StrBuf] = FromVec::from_vec(a);
+        let b: Vec<StrBuf> = FromVec::from_vec(a);
         assert_eq!(b.as_slice(), &["one".to_strbuf(), "two".to_strbuf()]);
 
         struct Foo {
@@ -1859,7 +1830,7 @@ mod tests {
         }
 
         let a = vec![Foo{x: 42, nocopy: marker::NoCopy}, Foo{x: 84, nocopy: marker::NoCopy}];
-        let b: ~[Foo] = FromVec::from_vec(a);
+        let b: Vec<Foo> = FromVec::from_vec(a);
         assert_eq!(b.len(), 2);
         assert_eq!(b[0].x, 42);
         assert_eq!(b[1].x, 84);

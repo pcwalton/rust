@@ -11,6 +11,5 @@
 #![deny(deprecated_owned_vector)]
 
 fn main() {
-    ~[1]; //~ ERROR use of deprecated `~[]`
-    //~^ ERROR use of deprecated `~[]`
+    ~[1]; //~ ERROR obsolete syntax
 }

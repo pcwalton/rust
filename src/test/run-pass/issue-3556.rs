@@ -32,8 +32,8 @@ fn check_strs(actual: &str, expected: &str) -> bool
 pub fn main()
 {
 // assert!(check_strs(fmt!("%?", Text(@"foo".to_owned())), "Text(@~\"foo\")"));
-// assert!(check_strs(fmt!("%?", ETag(@~["foo".to_owned()], @"bar".to_owned())),
-//                    "ETag(@~[ ~\"foo\" ], @~\"bar\")"));
+// assert!(check_strs(fmt!("%?", ETag(@vec!["foo".to_owned()], @"bar".to_owned())),
+//                    "ETag(@vec![ ~\"foo\" ], @~\"bar\")"));
 
     let t = Text(@"foo".to_strbuf());
     let u = Section(@vec!("alpha".to_strbuf()),

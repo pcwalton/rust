@@ -2338,9 +2338,7 @@ impl<'a> Parser<'a> {
 
             let e = self.parse_prefix_expr();
             hi = e.span.hi;
-            // HACK: turn ~[...] into a ~-vec
             ex = match e.node {
-              ExprVec(..) | ExprRepeat(..) => ExprVstore(e, ExprVstoreUniq),
               ExprLit(lit) if lit_is_str(lit) => {
                   self.obsolete(self.last_span, ObsoleteOwnedExpr);
                   ExprVstore(e, ExprVstoreUniq)
@@ -3440,7 +3438,7 @@ impl<'a> Parser<'a> {
     // Note that the `allow_any_lifetime` argument is a hack for now while the
     // AST doesn't support arbitrary lifetimes in bounds on type parameters. In
     // the future, this flag should be removed, and the return value of this
-    // function should be Option<~[TyParamBound]>
+    // function should be Option<Vec<TyParamBound>>
     fn parse_optional_ty_param_bounds(&mut self, allow_any_lifetime: bool)
         -> (Option<ast::Lifetime>, Option<OwnedSlice<TyParamBound>>)
     {
@@ -3916,7 +3914,7 @@ impl<'a> Parser<'a> {
 
     // Parses two variants (with the region/type params always optional):
     //    impl<T> Foo { ... }
-    //    impl<T> ToStr for ~[T] { ... }
+    //    impl<T> ToStr for Vec<T> { ... }
     fn parse_item_impl(&mut self) -> ItemInfo {
         // First, parse type parameters if necessary.
         let generics = self.parse_generics();

@@ -127,7 +127,7 @@ impl<'a> ParserObsoleteMethods for Parser<'a> {
             ),
             ObsoleteManagedVec => (
                 "managed vector",
-                "use `Rc<~[T]>` instead of a managed vector"
+                "use `Rc<Vec<T>>` instead of a managed vector"
             ),
             ObsoleteOwnedType => (
                 "`~` notation for owned pointers",

@@ -264,23 +264,9 @@ pub mod traits {
         }
     }
 
-    impl<T:Eq> Eq for ~[T] {
-        #[inline]
-        fn eq(&self, other: &~[T]) -> bool { self.as_slice() == *other }
-        #[inline]
-        fn ne(&self, other: &~[T]) -> bool { !self.eq(other) }
-    }
-
     impl<'a,T:TotalEq> TotalEq for &'a [T] {}
 
-    impl<T:TotalEq> TotalEq for ~[T] {}
-
     impl<'a,T:Eq, V: Vector<T>> Equiv<V> for &'a [T] {
-        #[inline]
-        fn equiv(&self, other: &V) -> bool { self.as_slice() == other.as_slice() }
-    }
-
-    impl<'a,T:Eq, V: Vector<T>> Equiv<V> for ~[T] {
         #[inline]
         fn equiv(&self, other: &V) -> bool { self.as_slice() == other.as_slice() }
     }
@@ -289,11 +275,6 @@ pub mod traits {
         fn cmp(&self, other: & &'a [T]) -> Ordering {
             order::cmp(self.iter(), other.iter())
         }
-    }
-
-    impl<T: TotalOrd> TotalOrd for ~[T] {
-        #[inline]
-        fn cmp(&self, other: &~[T]) -> Ordering { self.as_slice().cmp(&other.as_slice()) }
     }
 
     impl<'a, T: Ord> Ord for &'a [T] {
@@ -313,17 +294,6 @@ pub mod traits {
             order::gt(self.iter(), other.iter())
         }
     }
-
-    impl<T: Ord> Ord for ~[T] {
-        #[inline]
-        fn lt(&self, other: &~[T]) -> bool { self.as_slice() < other.as_slice() }
-        #[inline]
-        fn le(&self, other: &~[T]) -> bool { self.as_slice() <= other.as_slice() }
-        #[inline]
-        fn ge(&self, other: &~[T]) -> bool { self.as_slice() >= other.as_slice() }
-        #[inline]
-        fn gt(&self, other: &~[T]) -> bool { self.as_slice() > other.as_slice() }
-    }
 }
 
 #[cfg(test)]
@@ -340,24 +310,11 @@ impl<'a,T> Vector<T> for &'a [T] {
     fn as_slice<'a>(&'a self) -> &'a [T] { *self }
 }
 
-impl<T> Vector<T> for ~[T] {
-    #[inline(always)]
-    fn as_slice<'a>(&'a self) -> &'a [T] { let v: &'a [T] = *self; v }
-}
-
 impl<'a, T> Container for &'a [T] {
     /// Returns the length of a vector
     #[inline]
     fn len(&self) -> uint {
         self.repr().len
-    }
-}
-
-impl<T> Container for ~[T] {
-    /// Returns the length of a vector
-    #[inline]
-    fn len(&self) -> uint {
-        self.as_slice().len()
     }
 }
 
@@ -950,7 +907,11 @@ pub trait MutableVector<'a, T> {
     /// # Example
     ///
     /// ```rust
-    /// let mut v = ~["foo".to_owned(), "bar".to_owned(), "baz".to_owned()];
+    /// let mut v = vec![
+    ///     "foo".to_owned(),
+    ///     "bar".to_owned(),
+    ///     "baz".to_owned()
+    /// ];
     ///
     /// unsafe {
     ///     // `"baz".to_owned()` is deallocated.
@@ -1489,6 +1450,3 @@ impl<'a, T> Default for &'a [T] {
     fn default() -> &'a [T] { &[] }
 }
 
-impl<T> Default for ~[T] {
-    fn default() -> ~[T] { ~[] }
-}

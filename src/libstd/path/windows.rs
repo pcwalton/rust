@@ -20,7 +20,7 @@ use io::Writer;
 use iter::{AdditiveIterator, DoubleEndedIterator, Extendable, Rev, Iterator, Map};
 use mem;
 use option::{Option, Some, None};
-use slice::{Vector, OwnedVector, ImmutableVector};
+use slice::{Vector, ImmutableVector};
 use str::{CharSplits, Str, StrAllocating, StrVector, StrSlice};
 use strbuf::StrBuf;
 use vec::Vec;

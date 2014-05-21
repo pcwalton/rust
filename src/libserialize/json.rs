@@ -81,7 +81,8 @@ fn main() {
 ```
 
 Two wrapper functions are provided to encode a Encodable object
-into a string (StrBuf) or buffer (~[u8]): `str_encode(&m)` and `buffer_encode(&m)`.
+into a string (StrBuf) or buffer (Vec<u8>): `str_encode(&m)` and
+`buffer_encode(&m)`.
 
 ```rust
 use serialize::json;
@@ -2257,10 +2258,6 @@ impl<A:ToJson,B:ToJson,C:ToJson> ToJson for (A, B, C) {
     }
 }
 
-impl<A:ToJson> ToJson for ~[A] {
-    fn to_json(&self) -> Json { List(self.iter().map(|elt| elt.to_json()).collect()) }
-}
-
 impl<A:ToJson> ToJson for Vec<A> {
     fn to_json(&self) -> Json { List(self.iter().map(|elt| elt.to_json()).collect()) }
 }
@@ -3080,7 +3077,8 @@ mod tests {
         let _hm: HashMap<uint, bool> = Decodable::decode(&mut decoder).unwrap();
     }
 
-    fn assert_stream_equal(src: &str, expected: ~[(JsonEvent, ~[StackElement])]) {
+    fn assert_stream_equal(src: &str,
+                           expected: Vec<(JsonEvent, Vec<StackElement>)>) {
         let mut parser = Parser::new(src.chars());
         let mut i = 0;
         loop {
@@ -3100,23 +3098,23 @@ mod tests {
     fn test_streaming_parser() {
         assert_stream_equal(
             r#"{ "foo":"bar", "array" : [0, 1, 2,3 ,4,5], "idents":[null,true,false]}"#,
-            ~[
-                (ObjectStart,             ~[]),
-                  (StringValue("bar".to_strbuf()),   ~[Key("foo")]),
-                  (ListStart,             ~[Key("array")]),
-                    (NumberValue(0.0),    ~[Key("array"), Index(0)]),
-                    (NumberValue(1.0),    ~[Key("array"), Index(1)]),
-                    (NumberValue(2.0),    ~[Key("array"), Index(2)]),
-                    (NumberValue(3.0),    ~[Key("array"), Index(3)]),
-                    (NumberValue(4.0),    ~[Key("array"), Index(4)]),
-                    (NumberValue(5.0),    ~[Key("array"), Index(5)]),
-                  (ListEnd,               ~[Key("array")]),
-                  (ListStart,             ~[Key("idents")]),
-                    (NullValue,           ~[Key("idents"), Index(0)]),
-                    (BooleanValue(true),  ~[Key("idents"), Index(1)]),
-                    (BooleanValue(false), ~[Key("idents"), Index(2)]),
-                  (ListEnd,               ~[Key("idents")]),
-                (ObjectEnd,               ~[]),
+            vec![
+                (ObjectStart,                       vec![]),
+                  (StringValue("bar".to_strbuf()),  vec![Key("foo")]),
+                  (ListStart,                       vec![Key("array")]),
+                    (NumberValue(0.0),              vec![Key("array"), Index(0)]),
+                    (NumberValue(1.0),              vec![Key("array"), Index(1)]),
+                    (NumberValue(2.0),              vec![Key("array"), Index(2)]),
+                    (NumberValue(3.0),              vec![Key("array"), Index(3)]),
+                    (NumberValue(4.0),              vec![Key("array"), Index(4)]),
+                    (NumberValue(5.0),              vec![Key("array"), Index(5)]),
+                  (ListEnd,                         vec![Key("array")]),
+                  (ListStart,                       vec![Key("idents")]),
+                    (NullValue,                     vec![Key("idents"), Index(0)]),
+                    (BooleanValue(true),            vec![Key("idents"), Index(1)]),
+                    (BooleanValue(false),           vec![Key("idents"), Index(2)]),
+                  (ListEnd,                         vec![Key("idents")]),
+                (ObjectEnd,                         vec![]),
             ]
         );
     }
@@ -3186,19 +3184,19 @@ mod tests {
                     { "c": {"d": null} }
                 ]
             }"#,
-            ~[
-                (ObjectStart,                   ~[]),
-                  (NumberValue(1.0),            ~[Key("a")]),
-                  (ListStart,                   ~[Key("b")]),
-                    (BooleanValue(true),        ~[Key("b"), Index(0)]),
-                    (StringValue("foo\nbar".to_strbuf()),  ~[Key("b"), Index(1)]),
-                    (ObjectStart,               ~[Key("b"), Index(2)]),
-                      (ObjectStart,             ~[Key("b"), Index(2), Key("c")]),
-                        (NullValue,             ~[Key("b"), Index(2), Key("c"), Key("d")]),
-                      (ObjectEnd,               ~[Key("b"), Index(2), Key("c")]),
-                    (ObjectEnd,                 ~[Key("b"), Index(2)]),
-                  (ListEnd,                     ~[Key("b")]),
-                (ObjectEnd,                     ~[]),
+            vec![
+                (ObjectStart,                               vec![]),
+                  (NumberValue(1.0),                        vec![Key("a")]),
+                  (ListStart,                               vec![Key("b")]),
+                    (BooleanValue(true),                    vec![Key("b"), Index(0)]),
+                    (StringValue("foo\nbar".to_strbuf()),   vec![Key("b"), Index(1)]),
+                    (ObjectStart,                           vec![Key("b"), Index(2)]),
+                      (ObjectStart,                         vec![Key("b"), Index(2), Key("c")]),
+                        (NullValue,               vec![Key("b"), Index(2), Key("c"), Key("d")]),
+                      (ObjectEnd,                           vec![Key("b"), Index(2), Key("c")]),
+                    (ObjectEnd,                             vec![Key("b"), Index(2)]),
+                  (ListEnd,                                 vec![Key("b")]),
+                (ObjectEnd,                                 vec![]),
             ]
         );
     }

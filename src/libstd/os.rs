@@ -41,7 +41,7 @@ use path::{Path, GenericPath};
 use ptr::RawPtr;
 use ptr;
 use result::{Err, Ok, Result};
-use slice::{Vector, ImmutableVector, MutableVector, OwnedVector};
+use slice::{Vector, ImmutableVector, MutableVector};
 use str::{Str, StrSlice, StrAllocating};
 use str;
 use strbuf::StrBuf;

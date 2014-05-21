@@ -1186,7 +1186,7 @@ fn link_args(cmd: &mut Command,
         // won't get much benefit from dylibs because LLVM will have already
         // stripped away as much as it could. This has not been seen to impact
         // link times negatively.
-        cmd.arg("-Wl,-dead_strip");
+        // cmd.arg("-Wl,-dead_strip");
     }
 
     if sess.targ_cfg.os == abi::OsWin32 {

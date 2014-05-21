@@ -22,8 +22,8 @@ use std::io::{ReaderUtil,WriterUtil};
 enum Result {
   Nil,
   Int(int),
-  Data(~[u8]),
-  List(~[Result]),
+  Data(Vec<u8>),
+  List(Vec<Result>),
   Error(StrBuf),
   Status(StrBuf)
 }
@@ -35,7 +35,7 @@ priv fn parse_data(len: uint, io: @io::Reader) -> Result {
       assert_eq!(bytes.len(), len);
       Data(bytes)
   } else {
-      Data(~[])
+      Data(Vec::new())
   };
   assert_eq!(io.read_char(), '\r');
   assert_eq!(io.read_char(), '\n');
@@ -43,7 +43,7 @@ priv fn parse_data(len: uint, io: @io::Reader) -> Result {
 }
 
 priv fn parse_list(len: uint, io: @io::Reader) -> Result {
-    let mut list: ~[Result] = ~[];
+    let mut list: Vec<Result> = Vec::new();
     for _ in range(0, len) {
         let v = match io.read_char() {
             '$' => parse_bulk(io),
@@ -72,7 +72,7 @@ priv fn parse_multi(io: @io::Reader) -> Result {
     match from_str::<int>(chop(io.read_line())) {
     None => fail!(),
     Some(-1) => Nil,
-    Some(0) => List(~[]),
+    Some(0) => List(Vec::new()),
     Some(len) if len >= 0 => parse_list(len as uint, io),
     Some(_) => fail!()
     }
@@ -96,7 +96,7 @@ priv fn parse_response(io: @io::Reader) -> Result {
     }
 }
 
-priv fn cmd_to_str(cmd: ~[StrBuf]) -> StrBuf {
+priv fn cmd_to_str(cmd: Vec<StrBuf>) -> StrBuf {
   let mut res = "*".to_owned();
   res.push_str(cmd.len().to_str());
   res.push_str("\r\n");
@@ -107,7 +107,7 @@ priv fn cmd_to_str(cmd: ~[StrBuf]) -> StrBuf {
   res
 }
 
-fn query(cmd: ~[StrBuf], sb: TcpSocketBuf) -> Result {
+fn query(cmd: Vec<StrBuf>, sb: TcpSocketBuf) -> Result {
   let cmd = cmd_to_str(cmd);
   //println!("{}", cmd);
   sb.write_str(cmd);
@@ -115,7 +115,7 @@ fn query(cmd: ~[StrBuf], sb: TcpSocketBuf) -> Result {
   res
 }
 
-fn query2(cmd: ~[StrBuf]) -> Result {
+fn query2(cmd: Vec<StrBuf>) -> Result {
   let _cmd = cmd_to_str(cmd);
     io::with_str_reader("$3\r\nXXX\r\n".to_owned())(|sb| {
     let res = parse_response(@sb as @io::Reader);

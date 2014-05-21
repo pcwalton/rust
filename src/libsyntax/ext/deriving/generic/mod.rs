@@ -103,22 +103,22 @@ above `Eq`, `A`, `B` and `C`.
 When generating the `expr` for the `A` impl, the `SubstructureFields` is
 
 ~~~notrust
-Struct(~[FieldInfo {
+Struct(vec![FieldInfo {
            span: <span of x>
            name: Some(<ident of x>),
            self_: <expr for &self.x>,
-           other: ~[<expr for &other.x]
+           other: vec![<expr for &other.x]
          }])
 ~~~
 
 For the `B` impl, called with `B(a)` and `B(b)`,
 
 ~~~notrust
-Struct(~[FieldInfo {
+Struct(vec![FieldInfo {
           span: <span of `int`>,
           name: None,
           <expr for &a>
-          ~[<expr for &b>]
+          vec![<expr for &b>]
          }])
 ~~~
 
@@ -129,11 +129,11 @@ When generating the `expr` for a call with `self == C0(a)` and `other
 
 ~~~notrust
 EnumMatching(0, <ast::Variant for C0>,
-             ~[FieldInfo {
+             vec![FieldInfo {
                 span: <span of int>
                 name: None,
                 self_: <expr for &a>,
-                other: ~[<expr for &b>]
+                other: vec![<expr for &b>]
               }])
 ~~~
 
@@ -141,21 +141,21 @@ For `C1 {x}` and `C1 {x}`,
 
 ~~~notrust
 EnumMatching(1, <ast::Variant for C1>,
-             ~[FieldInfo {
+             vec![FieldInfo {
                 span: <span of x>
                 name: Some(<ident of x>),
                 self_: <expr for &self.x>,
-                other: ~[<expr for &other.x>]
+                other: vec![<expr for &other.x>]
                }])
 ~~~
 
 For `C0(a)` and `C1 {x}` ,
 
 ~~~notrust
-EnumNonMatching(~[(0, <ast::Variant for B0>,
-                   ~[(<span of int>, None, <expr for &a>)]),
+EnumNonMatching(vec![(0, <ast::Variant for B0>,
+                   vec![(<span of int>, None, <expr for &a>)]),
                   (1, <ast::Variant for B1>,
-                   ~[(<span of x>, Some(<ident of x>),
+                   vec![(<span of x>, Some(<ident of x>),
                       <expr for &other.x>)])])
 ~~~
 
@@ -166,13 +166,14 @@ EnumNonMatching(~[(0, <ast::Variant for B0>,
 A static method on the above would result in,
 
 ~~~~notrust
-StaticStruct(<ast::StructDef of A>, Named(~[(<ident of x>, <span of x>)]))
+StaticStruct(<ast::StructDef of A>, Named(vec![(<ident of x>, <span of x>)]))
 
-StaticStruct(<ast::StructDef of B>, Unnamed(~[<span of x>]))
+StaticStruct(<ast::StructDef of B>, Unnamed(vec![<span of x>]))
 
-StaticEnum(<ast::EnumDef of C>, ~[(<ident of C0>, <span of C0>, Unnamed(~[<span of int>])),
+StaticEnum(<ast::EnumDef of C>,
+           vec![(<ident of C0>, <span of C0>, Unnamed(vec![<span of int>])),
                                   (<ident of C1>, <span of C1>,
-                                   Named(~[(<ident of x>, <span of x>)]))])
+                                   Named(vec![(<ident of x>, <span of x>)]))])
 ~~~
 
 */
@@ -670,7 +671,7 @@ impl<'a> MethodDef<'a> {
                                  nonself_args: &[@Expr])
         -> @Expr {
 
-        let mut raw_fields = Vec::new(); // ~[[fields of self],
+        let mut raw_fields = Vec::new(); // vec![[fields of self],
                                  // [fields of next Self arg], [etc]]
         let mut patterns = Vec::new();
         for i in range(0u, self_args.len()) {
@@ -1212,8 +1213,8 @@ Call the method that is being derived on all the fields, and then
 process the collected results. i.e.
 
 ~~~
-f(cx, span, ~[self_1.method(__arg_1_1, __arg_2_1),
-              self_2.method(__arg_1_2, __arg_2_2)])
+f(cx, span, vec![self_1.method(__arg_1_1, __arg_2_1),
+                 self_2.method(__arg_1_2, __arg_2_2)])
 ~~~
 */
 #[inline]

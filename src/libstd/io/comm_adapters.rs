@@ -18,6 +18,7 @@ use result::{Ok, Err};
 use super::{Reader, Writer, IoResult};
 use str::StrSlice;
 use slice::{bytes, CloneableVector, MutableVector, ImmutableVector};
+use vec::Vec;
 
 /// Allows reading from a rx.
 ///
@@ -30,22 +31,22 @@ use slice::{bytes, CloneableVector, MutableVector, ImmutableVector};
 /// # drop(tx);
 /// let mut reader = ChanReader::new(rx);
 ///
-/// let mut buf = ~[0u8, ..100];
+/// let mut buf = vec![0u8, ..100];
 /// match reader.read(buf) {
 ///     Ok(nread) => println!("Read {} bytes", nread),
 ///     Err(e) => println!("read error: {}", e),
 /// }
 /// ```
 pub struct ChanReader {
-    buf: Option<~[u8]>,  // A buffer of bytes received but not consumed.
-    pos: uint,           // How many of the buffered bytes have already be consumed.
-    rx: Receiver<~[u8]>,   // The rx to pull data from.
-    closed: bool,        // Whether the pipe this rx connects to has been closed.
+    buf: Option<Vec<u8>>,   // A buffer of bytes received but not consumed.
+    pos: uint,              // How many of the buffered bytes have already be consumed.
+    rx: Receiver<Vec<u8>>,  // The rx to pull data from.
+    closed: bool,           // Whether the pipe this rx connects to has been closed.
 }
 
 impl ChanReader {
     /// Wraps a `Port` in a `ChanReader` structure
-    pub fn new(rx: Receiver<~[u8]>) -> ChanReader {
+    pub fn new(rx: Receiver<Vec<u8>>) -> ChanReader {
         ChanReader {
             buf: None,
             pos: 0,
@@ -99,12 +100,12 @@ impl Reader for ChanReader {
 /// writer.write("hello, world".as_bytes());
 /// ```
 pub struct ChanWriter {
-    tx: Sender<~[u8]>,
+    tx: Sender<Vec<u8>>,
 }
 
 impl ChanWriter {
     /// Wraps a channel in a `ChanWriter` structure
-    pub fn new(tx: Sender<~[u8]>) -> ChanWriter {
+    pub fn new(tx: Sender<Vec<u8>>) -> ChanWriter {
         ChanWriter { tx: tx }
     }
 }

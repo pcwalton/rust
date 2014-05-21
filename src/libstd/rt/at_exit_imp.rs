@@ -18,7 +18,6 @@ use mem;
 use option::{Some, None};
 use owned::Box;
 use ptr::RawPtr;
-use slice::OwnedVector;
 use unstable::sync::Exclusive;
 use vec::Vec;
 

@@ -66,8 +66,9 @@ impl<'a> FileSearch<'a> {
             for path in rustpath.iter() {
                 let tlib_path = make_rustpkg_lib_path(
                     self.sysroot, path, self.triple);
-                debug!("is {} in visited_dirs? {:?}", tlib_path.display(),
-                        visited_dirs.contains_equiv(&tlib_path.as_vec().to_owned()));
+                debug!("is {} in visited_dirs? {:?}",
+                       tlib_path.display(),
+                       visited_dirs.contains(&tlib_path.as_vec().to_owned()));
 
                 if !visited_dirs.contains_equiv(&tlib_path.as_vec()) {
                     visited_dirs.insert(tlib_path.as_vec().to_owned());

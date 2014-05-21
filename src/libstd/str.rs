@@ -707,8 +707,8 @@ pub mod raw {
         use str::StrAllocating;
 
         unsafe {
-            let a = ~[65u8, 65u8, 65u8, 65u8, 65u8, 65u8, 65u8, 0u8];
-            let b = a.as_ptr();
+            let a = vec![65u8, 65u8, 65u8, 65u8, 65u8, 65u8, 65u8, 0u8];
+            let b = a.as_slice().as_ptr();
             let c = from_buf_len(b, 3u);
             assert_eq!(c, "AAA".to_owned());
         }

@@ -553,20 +553,20 @@ impl<'a> CheckLoanCtxt<'a> {
             // location. Here is one example of the kind of error caught
             // by this check:
             //
-            //    let mut v = ~[1, 2, 3];
+            //    let mut v = vec![1, 2, 3];
             //    let p = &v;
-            //    v = ~[4];
+            //    v = vec![4];
             //
             // In this case, creating `p` triggers a RESTR_MUTATE
             // restriction on the path `v`.
             //
             // Here is a second, more subtle example:
             //
-            //    let mut v = ~[1, 2, 3];
+            //    let mut v = vec![1, 2, 3];
             //    let p = &const v[0];
             //    v[0] = 4;                   // OK
             //    v[1] = 5;                   // OK
-            //    v = ~[4, 5, 3];             // Error
+            //    v = vec![4, 5, 3];          // Error
             //
             // In this case, `p` is pointing to `v[0]`, and it is a
             // `const` pointer in any case. So the first two
@@ -599,14 +599,14 @@ impl<'a> CheckLoanCtxt<'a> {
             // the following program is not declared illegal by the
             // previous check:
             //
-            //    let mut v = ~[1, 2, 3];
+            //    let mut v = vec![1, 2, 3];
             //    let p = &v;
             //    v[0] = 4; // declared error by loop below, not code above
             //
             // The reason that this passes the previous check whereas
-            // an assignment like `v = ~[4]` fails is because the assignment
-            // here is to `v[*]`, and the existing restrictions were issued
-            // for `v`, not `v[*]`.
+            // an assignment like `v = vec![4]` fails is because the
+            // assignment here is to `v[*]`, and the existing restrictions
+            // were issued for `v`, not `v[*]`.
             //
             // So in this loop, we walk back up the loan path so long
             // as the mutability of the path is dependent on a super
@@ -626,7 +626,7 @@ impl<'a> CheckLoanCtxt<'a> {
             // for all restrictions, and not just loans, then the following
             // valid program would be considered illegal:
             //
-            //    let mut v = ~[1, 2, 3];
+            //    let mut v = vec![1, 2, 3];
             //    let p = &const v[0];
             //    v[1] = 5; // ok
             //

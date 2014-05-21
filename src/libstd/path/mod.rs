@@ -539,13 +539,6 @@ impl<'a> BytesContainer for &'a [u8] {
     }
 }
 
-impl BytesContainer for ~[u8] {
-    #[inline]
-    fn container_as_bytes<'a>(&'a self) -> &'a [u8] {
-        self.as_slice()
-    }
-}
-
 impl BytesContainer for Vec<u8> {
     #[inline]
     fn container_as_bytes<'a>(&'a self) -> &'a [u8] {

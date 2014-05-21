@@ -576,7 +576,7 @@ impl<T: Show, E> Result<T, E> {
 ///     }
 ///     let v = [1u, 2, 3];
 ///     let res = collect(v.iter().map(|&x| inc_conditionally(x)));
-///     assert!(res == Ok(~[2u, 3, 4]));
+///     assert!(res == Ok(vec![2u, 3, 4]));
 #[inline]
 pub fn collect<T, E, Iter: Iterator<Result<T, E>>, V: FromIterator<T>>(iter: Iter) -> Result<V, E> {
     // FIXME(#11084): This should be twice as fast once this bug is closed.

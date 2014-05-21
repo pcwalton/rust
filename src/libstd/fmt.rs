@@ -37,7 +37,6 @@ Some examples of the `format!` extension are:
 format!("Hello");                 // => "Hello".to_owned()
 format!("Hello, {:s}!", "world"); // => "Hello, world!".to_owned()
 format!("The number is {:d}", 1); // => "The number is 1".to_owned()
-format!("{:?}", ~[3, 4]);         // => "~[3, 4]".to_owned()
 format!("{value}", value=4);      // => "4".to_owned()
 format!("{} {}", 1, 2);           // => "1 2".to_owned()
 ```

@@ -64,7 +64,7 @@ use owned::Box;
 use result::{Ok, Err};
 use path;
 use path::{Path, GenericPath};
-use slice::{OwnedVector, ImmutableVector};
+use slice::ImmutableVector;
 use vec::Vec;
 
 /// Unconstrained file access type that exposes read and write operations

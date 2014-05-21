@@ -35,7 +35,7 @@ into a `loop`, for example, the `for` loop in this example is essentially
 translated to the `loop` below.
 
 ```rust
-let values = ~[1, 2, 3];
+let values = vec![1, 2, 3];
 
 // "Syntactical sugar" taking advantage of an iterator
 for &x in values.iter() {
@@ -378,7 +378,7 @@ pub trait Iterator<A> {
     ///     }
     ///     sum
     /// }
-    /// let x = ~[1,2,3,7,8,9];
+    /// let x = vec![1,2,3,7,8,9];
     /// assert_eq!(process(x.move_iter()), 1006);
     /// ```
     #[inline]

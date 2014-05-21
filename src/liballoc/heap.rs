@@ -124,16 +124,16 @@ pub unsafe fn exchange_malloc_(size: uint, align: uint) -> *mut u8 {
     exchange_malloc(size, align)
 }
 
+// The compiler never calls `exchange_free` on ~ZeroSizeType, so zero-size
+// allocations can point to this `static`. It would be incorrect to use a null
+// pointer, due to enums assuming types like unique pointers are never null.
+pub static EMPTY: uint = 0;
+
 /// The allocator for unique pointers.
 #[inline]
 pub unsafe fn exchange_malloc(size: uint, align: uint) -> *mut u8 {
-    // The compiler never calls `exchange_free` on ~ZeroSizeType, so zero-size
-    // allocations can point to this `static`. It would be incorrect to use a null
-    // pointer, due to enums assuming types like unique pointers are never null.
-    static EMPTY: () = ();
-
     if size == 0 {
-        &EMPTY as *() as *mut u8
+        &EMPTY as *uint as *mut u8
     } else {
         allocate(size, align)
     }

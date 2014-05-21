@@ -19,7 +19,6 @@ struct F { field: int }
 pub fn main() {
     /*foo(1);
     foo("hi".to_owned());
-    foo(~[1, 2, 3]);
     foo(F{field: 42});
     foo((1, 2u));
     foo(@1);*/

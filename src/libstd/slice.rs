@@ -32,10 +32,8 @@ represents iteration over a vector.
 
 A number of traits add methods that allow you to accomplish tasks with vectors.
 
-Traits defined for the `&[T]` type (a vector slice), have methods that can be
-called on either owned vectors, denoted `~[T]`, or on vector slices themselves.
-These traits include `ImmutableVector`, and `MutableVector` for the `&mut [T]`
-case.
+Traits defined for the `&[T]` type (a vector slice) include `ImmutableVector`,
+and `MutableVector` for the `&mut [T]` case.
 
 An example is the method `.slice(a, b)` that returns an immutable "view" into
 a vector or a vector slice from the index interval `[a, b)`:
@@ -44,19 +42,6 @@ a vector or a vector slice from the index interval `[a, b)`:
 let numbers = [0, 1, 2];
 let last_numbers = numbers.slice(1, 3);
 // last_numbers is now &[1, 2]
-```
-
-Traits defined for the `~[T]` type, like `OwnedVector`, can only be called
-on such vectors. These methods deal with adding elements or otherwise changing
-the allocation of the vector.
-
-An example is the method `.push(element)` that will add an element at the end
-of the vector:
-
-```rust
-let mut numbers = vec![0, 1, 2];
-numbers.push(7);
-// numbers is now vec![0, 1, 2, 7];
 ```
 
 ## Implementations of other traits
@@ -97,7 +82,6 @@ There are a number of free functions that create or take vectors, for example:
 
 */
 
-use mem::transmute;
 use clone::Clone;
 use cmp::{TotalOrd, Ordering, Less, Greater};
 use cmp;
@@ -109,8 +93,7 @@ use ops::Drop;
 use option::{None, Option, Some};
 use ptr::RawPtr;
 use ptr;
-use rt::heap::{exchange_malloc, deallocate};
-use unstable::finally::try_finally;
+use rt::heap::deallocate;
 use vec::Vec;
 
 pub use core::slice::{ref_slice, mut_ref_slice, Splits, Windows};
@@ -255,18 +238,18 @@ impl Iterator<(uint, uint)> for ElementSwaps {
 /// Generates even and odd permutations alternately.
 pub struct Permutations<T> {
     swaps: ElementSwaps,
-    v: ~[T],
+    v: Vec<T>,
 }
 
-impl<T: Clone> Iterator<~[T]> for Permutations<T> {
+impl<T: Clone> Iterator<Vec<T>> for Permutations<T> {
     #[inline]
-    fn next(&mut self) -> Option<~[T]> {
+    fn next(&mut self) -> Option<Vec<T>> {
         match self.swaps.next() {
             None => None,
             Some((0,0)) => Some(self.v.clone()),
             Some((a, b)) => {
                 let elt = self.v.clone();
-                self.v.swap(a, b);
+                self.v.as_mut_slice().swap(a, b);
                 Some(elt)
             }
         }
@@ -281,73 +264,33 @@ impl<T: Clone> Iterator<~[T]> for Permutations<T> {
 /// Extension methods for vector slices with cloneable elements
 pub trait CloneableVector<T> {
     /// Copy `self` into a new owned vector
-    fn to_owned(&self) -> ~[T];
+    fn to_owned(&self) -> Vec<T>;
 
     /// Convert `self` into an owned vector, not making a copy if possible.
-    fn into_owned(self) -> ~[T];
+    fn into_owned(self) -> Vec<T>;
 }
 
 /// Extension methods for vector slices
 impl<'a, T: Clone> CloneableVector<T> for &'a [T] {
     /// Returns a copy of `v`.
     #[inline]
-    fn to_owned(&self) -> ~[T] {
-        use RawVec = core::raw::Vec;
-        use num::{CheckedAdd, CheckedMul};
-        use option::Expect;
-
-        let len = self.len();
-        let data_size = len.checked_mul(&mem::size_of::<T>());
-        let data_size = data_size.expect("overflow in to_owned()");
-        let size = mem::size_of::<RawVec<()>>().checked_add(&data_size);
-        let size = size.expect("overflow in to_owned()");
-
-        unsafe {
-            // this should pass the real required alignment
-            let ret = exchange_malloc(size, 8) as *mut RawVec<()>;
-
-            let a_size = mem::size_of::<T>();
-            let a_size = if a_size == 0 {1} else {a_size};
-            (*ret).fill = len * a_size;
-            (*ret).alloc = len * a_size;
-
-            // Be careful with the following loop. We want it to be optimized
-            // to a memcpy (or something similarly fast) when T is Copy. LLVM
-            // is easily confused, so any extra operations during the loop can
-            // prevent this optimization.
-            let mut i = 0;
-            let p = &mut (*ret).data as *mut _ as *mut T;
-            try_finally(
-                &mut i, (),
-                |i, ()| while *i < len {
-                    mem::overwrite(
-                        &mut(*p.offset(*i as int)),
-                        self.unsafe_ref(*i).clone());
-                    *i += 1;
-                },
-                |i| if *i < len {
-                    // we must be failing, clean up after ourselves
-                    for j in range(0, *i as int) {
-                        ptr::read(&*p.offset(j));
-                    }
-                    // FIXME: #13994 (should pass align and size here)
-                    deallocate(ret as *mut u8, 0, 8);
-                });
-            mem::transmute(ret)
-        }
+    fn to_owned(&self) -> Vec<T> {
+        Vec::from_slice(*self)
     }
 
     #[inline(always)]
-    fn into_owned(self) -> ~[T] { self.to_owned() }
+    fn into_owned(self) -> Vec<T> {
+        self.to_owned()
+    }
 }
 
 /// Extension methods for owned vectors
-impl<T: Clone> CloneableVector<T> for ~[T] {
+impl<T: Clone> CloneableVector<T> for Vec<T> {
     #[inline]
-    fn to_owned(&self) -> ~[T] { self.clone() }
+    fn to_owned(&self) -> Vec<T> { self.clone() }
 
     #[inline(always)]
-    fn into_owned(self) -> ~[T] { self }
+    fn into_owned(self) -> Vec<T> { self }
 }
 
 /// Extension methods for vectors containing `Clone` elements.
@@ -385,67 +328,6 @@ impl<'a,T:Clone> ImmutableCloneableVector<T> for &'a [T] {
         }
     }
 
-}
-
-/// Extension methods for owned vectors.
-pub trait OwnedVector<T> {
-    /// Creates a consuming iterator, that is, one that moves each
-    /// value out of the vector (from start to end). The vector cannot
-    /// be used after calling this.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let v = ~["a".to_owned(), "b".to_owned()];
-    /// for s in v.move_iter() {
-    ///   // s has type ~str, not &~str
-    ///   println!("{}", s);
-    /// }
-    /// ```
-    fn move_iter(self) -> MoveItems<T>;
-    /// Creates a consuming iterator that moves out of the vector in
-    /// reverse order.
-    #[deprecated = "replaced by .move_iter().rev()"]
-    fn move_rev_iter(self) -> Rev<MoveItems<T>>;
-
-    /**
-     * Partitions the vector into two vectors `(A,B)`, where all
-     * elements of `A` satisfy `f` and all elements of `B` do not.
-     */
-    fn partition(self, f: |&T| -> bool) -> (Vec<T>, Vec<T>);
-}
-
-impl<T> OwnedVector<T> for ~[T] {
-    #[inline]
-    fn move_iter(self) -> MoveItems<T> {
-        unsafe {
-            let iter = transmute(self.iter());
-            let ptr = transmute(self);
-            MoveItems { allocation: ptr, iter: iter }
-        }
-    }
-
-    #[inline]
-    #[deprecated = "replaced by .move_iter().rev()"]
-    fn move_rev_iter(self) -> Rev<MoveItems<T>> {
-        self.move_iter().rev()
-    }
-
-    #[inline]
-    fn partition(self, f: |&T| -> bool) -> (Vec<T>, Vec<T>) {
-        let mut lefts  = Vec::new();
-        let mut rights = Vec::new();
-
-        for elt in self.move_iter() {
-            if f(&elt) {
-                lefts.push(elt);
-            } else {
-                rights.push(elt);
-            }
-        }
-
-        (lefts, rights)
-    }
 }
 
 fn insertion_sort<T>(v: &mut [T], compare: |&T, &T| -> Ordering) {
@@ -686,7 +568,7 @@ pub trait MutableVectorAllocating<'a, T> {
      * * start - The index into `src` to start copying from
      * * end - The index into `str` to stop copying from
      */
-    fn move_from(self, src: ~[T], start: uint, end: uint) -> uint;
+    fn move_from(self, src: Vec<T>, start: uint, end: uint) -> uint;
 }
 
 impl<'a,T> MutableVectorAllocating<'a, T> for &'a mut [T] {
@@ -696,7 +578,7 @@ impl<'a,T> MutableVectorAllocating<'a, T> for &'a mut [T] {
     }
 
     #[inline]
-    fn move_from(self, mut src: ~[T], start: uint, end: uint) -> uint {
+    fn move_from(self, mut src: Vec<T>, start: uint, end: uint) -> uint {
         for (a, b) in self.mut_iter().zip(src.mut_slice(start, end).mut_iter()) {
             mem::swap(a, b);
         }
@@ -892,7 +774,7 @@ mod tests {
     #[test]
     #[should_fail]
     fn test_tail_empty() {
-        let a: ~[int] = box [];
+        let a: Vec<int> = Vec::new();
         a.tail();
     }
 
@@ -907,7 +789,7 @@ mod tests {
     #[test]
     #[should_fail]
     fn test_tailn_empty() {
-        let a: ~[int] = box [];
+        let a: Vec<int> = Vec::new();
         a.tailn(2);
     }
 
@@ -922,7 +804,7 @@ mod tests {
     #[test]
     #[should_fail]
     fn test_init_empty() {
-        let a: ~[int] = box [];
+        let a: Vec<int> = Vec::new();
         a.init();
     }
 
@@ -937,7 +819,7 @@ mod tests {
     #[test]
     #[should_fail]
     fn test_initn_empty() {
-        let a: ~[int] = box [];
+        let a: Vec<int> = Vec::new();
         a.initn(2);
     }
 
@@ -1299,14 +1181,14 @@ mod tests {
 
     #[test]
     fn test_reverse() {
-        let mut v: ~[int] = box [10, 20];
+        let mut v: Vec<int> = vec![10, 20];
         assert_eq!(v[0], 10);
         assert_eq!(v[1], 20);
         v.reverse();
         assert_eq!(v[0], 20);
         assert_eq!(v[1], 10);
 
-        let mut v3: ~[int] = box [];
+        let mut v3: Vec<int> = Vec::new();
         v3.reverse();
         assert!(v3.is_empty());
     }
@@ -1389,7 +1271,7 @@ mod tests {
 
     #[test]
     fn test_concat() {
-        let v: [~[int], ..0] = [];
+        let v: [Vec<int>, ..0] = [];
         assert_eq!(v.concat_vec(), vec![]);
         assert_eq!([box [1], box [2,3]].concat_vec(), vec![1, 2, 3]);
 
@@ -1398,7 +1280,7 @@ mod tests {
 
     #[test]
     fn test_connect() {
-        let v: [~[int], ..0] = [];
+        let v: [Vec<int>, ..0] = [];
         assert_eq!(v.connect_vec(&0), vec![]);
         assert_eq!([box [1], box [2, 3]].connect_vec(&0), vec![1, 0, 2, 3]);
         assert_eq!([box [1], box [2], box [3]].connect_vec(&0), vec![1, 0, 2, 0, 3]);
@@ -1852,7 +1734,7 @@ mod tests {
                 assert_eq!(format!("{}", x.as_slice()), x_str);
             })
         )
-        let empty: ~[int] = box [];
+        let empty: Vec<int> = Vec::new();
         test_show_vec!(empty, "[]".to_strbuf());
         test_show_vec!(box [1], "[1]".to_strbuf());
         test_show_vec!(box [1, 2, 3], "[1, 2, 3]".to_strbuf());
@@ -1878,7 +1760,6 @@ mod tests {
         );
 
         t!(&[int]);
-        t!(~[int]);
         t!(Vec<int>);
     }
 

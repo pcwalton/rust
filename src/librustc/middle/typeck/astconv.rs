@@ -488,6 +488,13 @@ fn mk_pointer<AC:AstConv,
             if a_seq_ty.mutbl == ast::MutMutable {
                 mt.mutbl = ast::MutMutable;
             }
+            match ptr_ty {
+                RPtr(_) => {}
+                _ => {
+                    tcx.sess.span_err(ty.span,
+                                      "unique vectors are not supported")
+                }
+            }
             return constr(ty::mk_vec(tcx, mt, None));
         }
         ast::TyPath(ref path, ref bounds, id) => {
@@ -499,7 +506,9 @@ fn mk_pointer<AC:AstConv,
                     check_path_args(tcx, path, NO_TPS | NO_REGIONS);
                     match ptr_ty {
                         Uniq => {
-                            return constr(ty::mk_str(tcx));
+                            tcx.sess
+                               .span_err(path.span,
+                                         "unique strings are not supported")
                         }
                         RPtr(r) => {
                             return ty::mk_str_slice(tcx, r, ast::MutImmutable);

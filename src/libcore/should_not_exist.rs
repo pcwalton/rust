@@ -24,6 +24,9 @@
 //
 // Currently, no progress has been made on this list.
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use clone::Clone;
 use container::Container;
 use finally::try_finally;
@@ -57,6 +60,7 @@ unsafe fn alloc(cap: uint) -> *mut Vec<()> {
 
 // Arrays
 
+#[cfg(stage0)]
 impl<A: Clone> Clone for ~[A] {
     #[inline]
     fn clone(&self) -> ~[A] {
@@ -93,3 +97,40 @@ impl<A: Clone> Clone for ~[A] {
         }
     }
 }
+
+// FIXME(pcwalton): Self-explanatory.
+#[cfg(not(stage0))]
+fn this_useless_thing_needs_to_be_here_or_linking_fails<A:Clone>(this: &[A]) {
+    let len = this.len();
+    let data_size = len.checked_mul(&mem::size_of::<A>()).unwrap();
+    let size = mem::size_of::<Vec<()>>().checked_add(&data_size).unwrap();
+
+    unsafe {
+        let ret = alloc(size) as *mut Vec<A>;
+
+        let a_size = mem::size_of::<A>();
+        let a_size = if a_size == 0 {1} else {a_size};
+        (*ret).fill = len * a_size;
+        (*ret).alloc = len * a_size;
+
+        let mut i = 0;
+        let p = &mut (*ret).data as *mut _ as *mut A;
+        try_finally(
+            &mut i, (),
+            |i, ()| while *i < len {
+                mem::overwrite(
+                    &mut(*p.offset(*i as int)),
+                    this.unsafe_ref(*i).clone());
+                *i += 1;
+            },
+            |i| if *i < len {
+                // we must be failing, clean up after ourselves
+                for j in range(0, *i as int) {
+                    ptr::read(&*p.offset(j));
+                }
+                rust_free(ret as *u8, 0, 8);
+            });
+        mem::transmute(ret)
+    }
+}
+

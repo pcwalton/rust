@@ -58,7 +58,7 @@ pub mod rt {
         pub fn to_source() -> StrBuf;
 
         // If you can make source, you can definitely make tokens.
-        pub fn to_tokens(cx: &ExtCtxt) -> ~[TokenTree] {
+        pub fn to_tokens(cx: &ExtCtxt) -> Vec<TokenTree> {
             cx.parse_tts(self.to_source())
         }
     }
