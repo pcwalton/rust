@@ -404,10 +404,13 @@ pub mod eabi {
     use libc::{c_void, c_int};
 
     #[repr(C)]
+    #[allow(missing_copy_implementations)]
     pub struct EXCEPTION_RECORD;
     #[repr(C)]
+    #[allow(missing_copy_implementations)]
     pub struct CONTEXT;
     #[repr(C)]
+    #[allow(missing_copy_implementations)]
     pub struct DISPATCHER_CONTEXT;
 
     #[repr(C)]
@@ -417,6 +420,8 @@ pub mod eabi {
         ExceptionNestedException,
         ExceptionCollidedUnwind
     }
+
+    impl Copy for EXCEPTION_DISPOSITION {}
 
     type _Unwind_Personality_Fn =
         extern "C" fn(
